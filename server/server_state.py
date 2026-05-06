@@ -106,10 +106,14 @@ def initialize_state(default_config: Dict[str, Any], config_path: str | None = N
     global _current_config, _memory_instance
     with _state_lock:
         _current_config = deepcopy(default_config)
-        if config_path and os.path.exists(config_path):
-            file_overrides = _load_config_file(config_path)
-            if file_overrides:
-                _current_config = _merge_config(_current_config, file_overrides)
+        if config_path:
+            if os.path.exists(config_path):
+                file_overrides = _load_config_file(config_path)
+                if file_overrides:
+                    _current_config = _merge_config(_current_config, file_overrides)
+                    logging.info("Loaded mem0 config overrides from %s", config_path)
+            else:
+                logging.warning("MEM0_CONFIG_PATH set but file not found: %s", config_path)
         overrides = _load_overrides()
         if overrides:
             _current_config = _merge_config(_current_config, overrides)
