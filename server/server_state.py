@@ -116,12 +116,25 @@ def initialize_state(default_config: Dict[str, Any], config_path: str | None = N
         _memory_instance = Memory.from_config(_current_config)
 
 
+def _config_effectively_changed(old: Dict[str, Any], new: Dict[str, Any]) -> bool:
+    """Compare the parts of config that actually affect Memory initialization.
+
+    Only llm, embedder, vector_store, and history_db_path require a restart.
+    Changes to top-level keys like 'version' are ignored."""
+    _REBUILD_KEYS = {"llm", "embedder", "vector_store", "history_db_path"}
+    for key in _REBUILD_KEYS:
+        if old.get(key) != new.get(key):
+            return True
+    return False
+
+
 def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:
     global _current_config, _memory_instance
     with _state_lock:
         next_config = _merge_config(_current_config, updates)
+        if _config_effectively_changed(_current_config, next_config):
+            _memory_instance = Memory.from_config(next_config)
         _current_config = next_config
-        _memory_instance = Memory.from_config(next_config)
         overrides = _load_overrides()
         overrides = _merge_config(overrides, updates)
         _save_overrides(overrides)
