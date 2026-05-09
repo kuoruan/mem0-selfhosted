@@ -31,6 +31,11 @@ from routers import api_keys as api_keys_router
 from routers import entities as entities_router
 from routers import requests as requests_router
 from schemas import MessageResponse
+# TODO(async): All endpoints and _persist_request_log use synchronous SQLAlchemy
+# sessions. FastAPI dispatches sync path functions to a thread pool, but under high
+# concurrency the thread pool can become a bottleneck. For production workloads,
+# consider migrating to asyncpg + sqlalchemy[asyncio] + AsyncSession. The mem0 SDK
+# calls (add, search, get_all) remain blocking and should stay in run_in_executor.
 from server_state import get_current_config, get_memory_instance, initialize_state, set_session_factory, update_config
 
 load_dotenv()
