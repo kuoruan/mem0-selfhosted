@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -30,6 +31,7 @@ from routers import auth as auth_router
 from routers import api_keys as api_keys_router
 from routers import entities as entities_router
 from routers import requests as requests_router
+from bg_tasks import prune_loop
 from schemas import MessageResponse
 # TODO(async): All endpoints and _persist_request_log use synchronous SQLAlchemy
 # sessions. FastAPI dispatches sync path functions to a thread pool, but under high
@@ -142,7 +144,23 @@ set_session_factory(SessionLocal)
 initialize_state(DEFAULT_CONFIG, config_path=CONFIG_PATH)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start background tasks on startup, clean up on shutdown."""
+    prune_task = asyncio.create_task(prune_loop())
+    try:
+        yield
+    finally:
+        prune_task.cancel()
+        try:
+            await prune_task
+        except asyncio.CancelledError:
+            pass
+        logging.info("Graceful shutdown complete.")
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Mem0 REST APIs",
     description=(
         "A REST API for managing and searching memories for your AI Agents and Apps.\n\n"
