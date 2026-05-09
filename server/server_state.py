@@ -24,15 +24,13 @@ def _load_overrides() -> Dict[str, Any]:
             return {}
         from models import Settings
 
-        session = _session_factory()
-        try:
+        with _session_factory() as session:
             row = session.get(Settings, "config_overrides")
             if row is None:
                 return {}
             return json.loads(row.value)
-        finally:
-            session.close()
     except Exception:
+        logging.exception("Failed to load config overrides from database")
         return {}
 
 
@@ -43,8 +41,7 @@ def _save_overrides(overrides: Dict[str, Any]) -> None:
         from models import Settings
         from sqlalchemy.dialects.postgresql import insert
 
-        session = _session_factory()
-        try:
+        with _session_factory() as session:
             serialized = json.dumps(overrides)
             stmt = (
                 insert(Settings)
@@ -56,8 +53,6 @@ def _save_overrides(overrides: Dict[str, Any]) -> None:
             )
             session.execute(stmt)
             session.commit()
-        finally:
-            session.close()
     except Exception:
         logging.warning("Failed to persist config overrides to database", exc_info=True)
 
