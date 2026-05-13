@@ -29,6 +29,7 @@ from models import RequestLog, User
 import telemetry
 from routers import auth as auth_router
 from routers import api_keys as api_keys_router
+from routers import compat as compat_router
 from routers import entities as entities_router
 from routers import requests as requests_router
 from bg_tasks import prune_loop
@@ -196,6 +197,7 @@ app.add_middleware(
 
 app.include_router(auth_router.router)
 app.include_router(api_keys_router.router)
+app.include_router(compat_router.router)
 app.include_router(entities_router.router)
 app.include_router(requests_router.router)
 
