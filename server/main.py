@@ -38,7 +38,14 @@ from schemas import MessageResponse
 # concurrency the thread pool can become a bottleneck. For production workloads,
 # consider migrating to asyncpg + sqlalchemy[asyncio] + AsyncSession. The mem0 SDK
 # calls (add, search, get_all) remain blocking and should stay in run_in_executor.
-from server_state import get_current_config, get_memory_instance, initialize_state, set_session_factory, update_config
+from server_state import (
+    get_current_config,
+    get_memory_instance,
+    initialize_state,
+    set_session_factory,
+    update_config,
+    list_all_memories,
+)
 
 load_dotenv()
 
@@ -174,8 +181,11 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_exception_handler(UpstreamError, upstream_error_handler)
+
+
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://localhost:3000")
 _cors_origins = [origin.strip() for origin in DASHBOARD_URL.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -405,31 +415,6 @@ def add_memory(memory_create: MemoryCreate, _auth=Depends(verify_auth)):
         raise upstream_error()
 
 
-ALL_MEMORIES_LIMIT = 1000
-_RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "hash", "created_at", "updated_at"}
-
-
-def _serialize_memory(row: Any) -> Dict[str, Any]:
-    payload = getattr(row, "payload", None) or {}
-    return {
-        "id": getattr(row, "id", None),
-        "memory": payload.get("data"),
-        "user_id": payload.get("user_id"),
-        "agent_id": payload.get("agent_id"),
-        "run_id": payload.get("run_id"),
-        "hash": payload.get("hash"),
-        "metadata": {k: v for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS},
-        "created_at": payload.get("created_at"),
-        "updated_at": payload.get("updated_at"),
-    }
-
-
-def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
-    results = get_memory_instance().vector_store.list(top_k=limit)
-    rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
-    return {"results": [_serialize_memory(row) for row in rows]}
-
-
 @app.get("/memories", summary="Get memories")
 def get_all_memories(
     user_id: Optional[str] = None,
@@ -440,7 +425,7 @@ def get_all_memories(
     """Retrieve stored memories. Lists all memories when no identifier is provided."""
     try:
         if not any([user_id, run_id, agent_id]):
-            return _list_all_memories()
+            return list_all_memories()
         filters = {
             k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
         }

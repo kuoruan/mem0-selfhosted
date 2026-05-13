@@ -150,3 +150,28 @@ def get_memory_instance() -> Memory:
         if _memory_instance is None:
             raise RuntimeError("Mem0 runtime has not been initialized.")
         return _memory_instance
+
+
+ALL_MEMORIES_LIMIT = 1000
+_RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "hash", "created_at", "updated_at"}
+
+
+def serialize_memory(row: Any) -> Dict[str, Any]:
+    payload = getattr(row, "payload", None) or {}
+    return {
+        "id": getattr(row, "id", None),
+        "memory": payload.get("data"),
+        "user_id": payload.get("user_id"),
+        "agent_id": payload.get("agent_id"),
+        "run_id": payload.get("run_id"),
+        "hash": payload.get("hash"),
+        "metadata": {k: v for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS},
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
+    results = get_memory_instance().vector_store.list(top_k=limit)
+    rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
+    return {"results": [serialize_memory(row) for row in rows]}
