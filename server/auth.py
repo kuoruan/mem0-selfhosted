@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, Request
-from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBase, HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security.utils import get_authorization_scheme_param
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select, update
@@ -103,21 +104,25 @@ def decode_token(token: str) -> dict:
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
-token_scheme = HTTPBase(scheme="Token", auto_error=False)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-async def api_key_or_token(
+async def _authorization_token(request: Request) -> str | None:
+    authorization = request.headers.get("Authorization")
+    scheme, credentials = get_authorization_scheme_param(authorization)
+    if scheme.lower() == "token" and credentials:
+        return credentials
+    return None
+
+
+async def _api_key_or_token(
     x_api_key: str | None = Depends(api_key_header),
-    token_credentials: HTTPAuthorizationCredentials | None = Depends(token_scheme),
+    token: str | None = Depends(_authorization_token),
 ) -> str | None:
     if x_api_key is not None:
         return x_api_key
 
-    if token_credentials is not None and token_credentials.scheme.lower() == "token":
-        return token_credentials.credentials
-
-    return None
+    return token
 
 
 def _mark_auth_type(request: Request, auth_type: str) -> None:
@@ -159,7 +164,7 @@ def _resolve_user_from_api_key(key: str, db: Session) -> User:
 async def verify_auth(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    x_api_key: str | None = Depends(api_key_or_token),
+    x_api_key: str | None = Depends(_api_key_or_token),
     db: Session = Depends(get_db),
 ) -> User | None:
     """Authenticate via JWT, X-API-Key, or legacy ADMIN_API_KEY. Returns User or None."""
