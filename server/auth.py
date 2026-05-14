@@ -125,6 +125,10 @@ async def _api_key_or_token(
     return token
 
 
+def _is_jwt(token: str) -> bool:
+    return token.startswith("eyJ") and token.count(".") == 2
+
+
 def _mark_auth_type(request: Request, auth_type: str) -> None:
     request.state.auth_type = auth_type
 
@@ -169,8 +173,12 @@ async def verify_auth(
 ) -> User | None:
     """Authenticate via JWT, X-API-Key, or legacy ADMIN_API_KEY. Returns User or None."""
     if credentials is not None:
-        _mark_auth_type(request, "bearer")
-        return _resolve_user_from_jwt(credentials.credentials, db)
+        if _is_jwt(credentials.credentials):
+            _mark_auth_type(request, "bearer")
+            return _resolve_user_from_jwt(credentials.credentials, db)
+        # Not a JWT — try as API key below
+        if x_api_key is None:
+            x_api_key = credentials.credentials
 
     if x_api_key is not None:
         if ADMIN_API_KEY and secrets.compare_digest(x_api_key, ADMIN_API_KEY):
