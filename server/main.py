@@ -15,6 +15,7 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy import func, select
 
 from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, verify_auth
+from mcp_server import setup_mcp_server
 from errors import (
     UpstreamError,
     install_request_id_logging,
@@ -200,6 +201,7 @@ app.include_router(api_keys_router.router)
 app.include_router(compat_router.router)
 app.include_router(entities_router.router)
 app.include_router(requests_router.router)
+setup_mcp_server(app)
 
 
 class Message(BaseModel):

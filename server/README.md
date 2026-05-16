@@ -1,6 +1,6 @@
 # Mem0 Self-Hosted Server
 
-Mem0 ships a self-hosted FastAPI server plus a local dashboard. It is secure by default, supports dashboard login and API keys, and exposes OpenAPI docs at `/docs`.
+Mem0 ships a self-hosted FastAPI server plus a local dashboard. It is secure by default, supports dashboard login and API keys, exposes OpenAPI docs at `/docs`, and provides an MCP endpoint at `/mcp` for MCP-capable clients.
 
 ## Quick Start
 
@@ -89,6 +89,23 @@ Wire the command into cron or a systemd timer in production. The `created_at` co
 - Dashboard: `http://localhost:3000`
 - API: `http://localhost:8888`
 - OpenAPI docs: `http://localhost:8888/docs`
+- MCP (Streamable HTTP): `http://localhost:8888/mcp`
+
+## MCP
+
+The self-hosted server exposes MCP tools aligned with the current Mem0 MCP workflow:
+
+- `add_memory`
+- `search_memories`
+- `get_memories`
+- `get_memory`
+- `update_memory`
+- `delete_memory`
+- `delete_all_memories`
+- `delete_entities`
+- `list_entities`
+
+MCP authentication matches the REST API. Use `Authorization: Bearer ...`, `Authorization: Token ...`, or `X-API-Key` when connecting.
 
 ## Dashboard
 
