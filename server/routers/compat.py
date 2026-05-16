@@ -240,6 +240,9 @@ def v1_delete_all_memories(
     filters: Optional[str] = None,
     _auth=Depends(verify_auth),
 ):
+    # ``filters`` is a legacy query-string JSON blob (not the structured dict
+    # used in v2/v3 body endpoints). Only parse it when no explicit entity
+    # params are given, to avoid silently overriding explicit args.
     if filters and not any([user_id, agent_id, app_id, run_id]):
         try:
             filters_dict = json.loads(filters)

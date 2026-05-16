@@ -130,7 +130,7 @@ def test_add_memory_requires_scope(mcp_testbed):
     assert response.status_code == 200
     # Tool raises HTTPException(400) — MCP layer returns it as an error
     result = response.json()["result"]
-    assert "isError" in result or "error" in response.json()
+    assert result.get("isError") is True
     mock_memory.add.assert_not_called()
 
 

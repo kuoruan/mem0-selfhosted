@@ -129,7 +129,13 @@ def get_memory(
     result = get_memory_instance().get(memory_id)
     if result is None:
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
-    return result if isinstance(result, dict) else {}
+    if not isinstance(result, dict):
+        logger.warning(
+            "get_memory returned unexpected type %s for memory_id=%s",
+            type(result).__name__, memory_id,
+        )
+        return {}
+    return result
 
 
 @mcp.tool(description="Overwrite an existing memory's text.")
@@ -142,7 +148,13 @@ def update_memory(
     if metadata is not None:
         update_kwargs["metadata"] = metadata
     result = get_memory_instance().update(**update_kwargs)
-    return result if isinstance(result, dict) else {"message": "Memory updated successfully"}
+    if not isinstance(result, dict):
+        logger.warning(
+            "update_memory returned unexpected type %s for memory_id=%s",
+            type(result).__name__, memory_id,
+        )
+        return {"message": "Memory updated successfully"}
+    return result
 
 
 @mcp.tool(description="Delete one memory after the user confirms its memory_id.")
