@@ -66,7 +66,6 @@ class MemoryAddInput(BaseModel):
     run_id: Optional[str] = Field(default=None, description="Run identifier to scope the memory.")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata to attach to the memory.")
     infer: Optional[bool] = Field(default=None, description="When False, store messages verbatim without LLM fact extraction.")
-    categories: Optional[List[str]] = Field(default=None, description="Categories to assign to the memory.")
 
 
 class MemorySearchInput(BaseModel):
@@ -79,7 +78,6 @@ class MemorySearchInput(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Metadata filters for the search.")
     top_k: Optional[int] = Field(default=None, description="Maximum number of results to return.")
     threshold: Optional[float] = Field(default=None, description="Minimum similarity threshold (0.0–1.0).")
-    filters: Optional[Dict[str, Any]] = Field(default=None, description="Structured filters with entity IDs and operators.")
 
 
 class MemoryUpdateInput(BaseModel):
@@ -221,12 +219,8 @@ def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
     params = drop_none({**entity_params, "metadata": body.metadata})
     if body.infer is not None:
         params["infer"] = body.infer
-    if body.categories:
-        meta = params.get("metadata") or {}
-        meta["categories"] = body.categories
-        params["metadata"] = meta
     result = get_memory_instance().add(messages=body.messages, **params)
-    return normalize_results(result)
+    return {"results": normalize_results(result)}
 
 
 @router.get("/v1/memories/{memory_id}/", summary="Get a memory (v1)")
@@ -286,7 +280,6 @@ def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verif
 def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     entity_params = collect_entity_params(
-        filters=body.filters,
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
@@ -297,7 +290,7 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     if body.threshold is not None:
         search_kwargs["threshold"] = body.threshold
     result = get_memory_instance().search(query=body.query, **search_kwargs)
-    return normalize_results(result)
+    return {"results": normalize_results(result)}
 
 
 @router.delete("/v1/memories/", summary="Delete all memories (v1)")
@@ -452,7 +445,7 @@ def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
     if body.rerank is not None:
         search_kwargs["rerank"] = body.rerank
     result = get_memory_instance().search(query=body.query, **search_kwargs)
-    return normalize_results(result)
+    return {"results": normalize_results(result)}
 
 
 @router.get("/v2/entities/{entity_type}/{entity_id}/", summary="Get entity details (v2)")
