@@ -336,7 +336,7 @@ def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
-        raise HTTPException(status_code=400, detail="At least one entity ID is required.")
+        raise HTTPException(status_code=400, detail="One of the filters: user_id, agent_id, or run_id is required!")
     params = drop_none({**entity_params, "metadata": body.metadata})
     if body.infer is not None:
         params["infer"] = body.infer
@@ -377,7 +377,7 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
     # Some SDK versions return a list-of-one instead of a plain dict.
     existing = existing_raw[0] if isinstance(existing_raw, list) and existing_raw else existing_raw
     if not isinstance(existing, dict):
-        raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
+        raise HTTPException(status_code=404, detail="Memory not found!")
     existing_text = existing.get("memory") or existing.get("text") or ""
     existing_metadata = existing.get("metadata") or {}
     merged_metadata = {**existing_metadata, **(metadata or {})}
@@ -413,7 +413,7 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
-        raise HTTPException(status_code=400, detail="At least one entity ID is required.")
+        raise HTTPException(status_code=400, detail="At least one of the filters: agent_id, user_id, or run_id is required!")
     search_filters: Dict[str, Any] = {**entity_params}
     if body.metadata:
         # Merge client-supplied metadata filters; entity params take precedence.
@@ -457,7 +457,7 @@ def v1_delete_all_memories(
     if not params:
         raise HTTPException(
             status_code=400,
-            detail="At least one identifier (user_id, agent_id, run_id) is required.",
+            detail="One of the filters: user_id, agent_id, or run_id is required!",
         )
     get_memory_instance().delete_all(**params)
     return {"message": "All memories deleted successfully."}
@@ -555,7 +555,7 @@ def v2_list_memories(
 ):
     entity_params = require_entity_scope(
         filters=body.filters,
-        detail="filters must include at least one entity ID (user_id, agent_id, or run_id).",
+        detail="One of the filters: user_id, agent_id, or run_id is required!",
     )
     raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
@@ -574,7 +574,7 @@ def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
     effective_filters = build_search_filters(
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
         filters=body.filters,
-        detail="At least one entity ID is required.",
+        detail="At least one of the filters: agent_id, user_id, or run_id is required!",
     )
     result = get_memory_instance().search(
         query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
@@ -610,7 +610,7 @@ def v3_add_memory(body: MemoryAddInputV3, _auth=Depends(verify_auth)):
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
-        raise HTTPException(status_code=400, detail="At least one entity ID is required.")
+        raise HTTPException(status_code=400, detail="One of the filters: user_id, agent_id, or run_id is required!")
     params: Dict[str, Any] = drop_none({
         **entity_params,
         "metadata": body.metadata,
@@ -644,7 +644,7 @@ def v3_get_all_memories(
 ):
     entity_params = require_entity_scope(
         filters=body.filters,
-        detail="filters must include at least one entity ID (user_id, agent_id, or run_id).",
+        detail="One of the filters: user_id, agent_id, or run_id is required!",
     )
     raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
@@ -660,7 +660,7 @@ def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
     effective_filters = build_search_filters(
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
         filters=body.filters,
-        detail="At least one entity ID is required.",
+        detail="At least one of the filters: agent_id, user_id, or run_id is required!",
     )
     # Merge convenience fields for flat (non-AND/OR/NOT) dicts.
     if "AND" not in effective_filters and "OR" not in effective_filters and "NOT" not in effective_filters:

@@ -108,7 +108,7 @@ def require_entity_scope(
     app_id: Optional[str] = None,
     run_id: Optional[str] = None,
     filters: Optional[dict[str, Any]] = None,
-    detail: str = "At least one of user_id, agent_id, or run_id is required.",
+    detail: str = "One of the filters: user_id, agent_id, or run_id is required!",
     fallback_user_id: Optional[str] = None,
 ) -> dict[str, str]:
     """Like ``collect_entity_params`` but raises 400 when no scope is found.
@@ -133,7 +133,7 @@ def build_search_filters(
     app_id: Optional[str] = None,
     run_id: Optional[str] = None,
     filters: Optional[dict[str, Any]] = None,
-    detail: str = "At least one of user_id, agent_id, or run_id is required.",
+    detail: str = "At least one of the filters: agent_id, user_id, or run_id is required!",
     fallback_user_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Resolve scope then merge into *filters* dict for ``Memory.search`` / ``get_all``."""
