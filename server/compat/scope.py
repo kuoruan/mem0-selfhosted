@@ -30,6 +30,34 @@ def reject_app_id(app_id: Optional[str]) -> None:
         raise HTTPException(status_code=501, detail="'app_id' is not supported by the self-hosted server.")
 
 
+def _scan_filters(
+    filters: dict[str, Any],
+    reject_keys: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """Recursively walk a filter tree.
+
+    Raises 501 if any key in *reject_keys* is found with a non-None value.
+    Collects and returns entity params (``ENTITY_PARAMS``) found at any depth.
+    Handles flat format, AND/OR/NOT list conditions, and arbitrary nesting.
+    """
+    result: dict[str, str] = {}
+    for key in reject_keys:
+        if filters.get(key) is not None:
+            raise HTTPException(status_code=501, detail=f"'{key}' is not supported by the self-hosted server.")
+    for key in ENTITY_PARAMS:
+        if filters.get(key) is not None:
+            result[key] = filters[key]
+    for op in ("AND", "OR", "NOT"):
+        sub = filters.get(op)
+        if isinstance(sub, list):
+            for cond in sub:
+                if isinstance(cond, dict):
+                    result.update(_scan_filters(cond, reject_keys=reject_keys))
+        elif isinstance(sub, dict):
+            result.update(_scan_filters(sub, reject_keys=reject_keys))
+    return result
+
+
 def collect_entity_params(
     *,
     user_id: Optional[str] = None,
@@ -45,32 +73,14 @@ def collect_entity_params(
     """
     if reject_unsupported:
         reject_app_id(app_id)
-        if filters:
-            for key in UNSUPPORTED_ENTITY_PARAMS:
-                if key in filters and filters[key] is not None:
-                    raise HTTPException(status_code=501, detail=f"'{key}' is not supported by the self-hosted server.")
-                # Also scan nested AND/OR conditions.
-                for op in ("AND", "OR"):
-                    conditions = filters.get(op)
-                    if isinstance(conditions, list):
-                        for cond in conditions:
-                            if isinstance(cond, dict) and cond.get(key) is not None:
-                                raise HTTPException(status_code=501, detail=f"'{key}' is not supported by the self-hosted server.")
     merged: dict[str, Any] = {}
     if filters:
-        # Fast path: flat format {user_id: "...", ...}
-        merged.update({k: v for k, v in filters.items() if k in ENTITY_PARAMS and v is not None})
-        # Slow path: AND/OR nested format {AND: [{user_id: "..."}, ...]}
-        # Used by openclaw's _buildFilters when multiple conditions are present.
-        if not merged:
-            for op in ("AND", "OR"):
-                conditions = filters.get(op)
-                if isinstance(conditions, list):
-                    for cond in conditions:
-                        if isinstance(cond, dict):
-                            merged.update({k: v for k, v in cond.items() if k in ENTITY_PARAMS and v is not None})
-                    if merged:
-                        break
+        merged.update(
+            _scan_filters(
+                filters,
+                reject_keys=UNSUPPORTED_ENTITY_PARAMS if reject_unsupported else frozenset(),
+            )
+        )
     for key, val in (("user_id", user_id), ("agent_id", agent_id), ("run_id", run_id)):
         if val is not None:
             merged[key] = val

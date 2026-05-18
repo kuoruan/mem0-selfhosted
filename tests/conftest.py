@@ -21,8 +21,13 @@ try:
     sys.modules.setdefault("compat.scope", sys.modules["server.compat.scope"])
     sys.modules.setdefault("compat.responses", sys.modules["server.compat.responses"])
 
-    for _stub in ("auth", "server_state"):
-        sys.modules.setdefault(_stub, MagicMock())
+    # server_state: alias to the real module (no DB deps at import time).
+    import server.server_state
+    sys.modules.setdefault("server_state", sys.modules["server.server_state"])
+
+    # auth: must stay a MagicMock — the real server.auth imports sqlalchemy/DB
+    # at module level and cannot be imported outside a live server environment.
+    sys.modules.setdefault("auth", MagicMock())
 
     # compat.entities needs compat.scope + server_state aliased first
     import server.compat.entities

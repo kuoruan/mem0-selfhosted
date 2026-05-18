@@ -48,6 +48,7 @@ from compat.entities import list_entities_payload
 from compat.responses import drop_none, normalize_results
 from compat.scope import (
     VALID_ENTITY_TYPES,
+    build_search_filters,
     collect_entity_params,
     get_entity_field,
     reject_app_id,
@@ -134,7 +135,7 @@ class MemoryGetInputV2(BaseModel):
     filters: Optional[Dict[str, Any]] = Field(
         default=None,
         description="A dictionary of filters to apply to retrieve memories. Available fields are: "
-        "user_id, agent_id, app_id, run_id, created_at, updated_at, categories, keywords. "
+        "user_id, agent_id, run_id, created_at, updated_at, categories, keywords. "
         "Supports logical operators (AND, OR) and comparison operators (in, gte, lte, gt, lt, ne, contains, icontains, *). "
         "For categories field, use 'contains' for partial matching "
         "(e.g., {\"categories\": {\"contains\": \"finance\"}}) or 'in' for exact matching "
@@ -151,7 +152,7 @@ class MemorySearchInputV2(BaseModel):
     filters: Optional[Dict[str, Any]] = Field(
         default=None,
         description="A dictionary of filters to apply to the search. Available fields are: "
-        "user_id, agent_id, app_id, run_id, created_at, updated_at, categories, keywords. "
+        "user_id, agent_id, run_id, created_at, updated_at, categories, keywords. "
         "Supports logical operators (AND, OR) and comparison operators (in, gte, lte, gt, lt, ne, contains, icontains). "
         "For categories field, use 'contains' for partial matching "
         "(e.g., {\"categories\": {\"contains\": \"finance\"}}) or 'in' for exact matching "
@@ -208,7 +209,7 @@ class MemorySearchInputV3(BaseModel):
     filters: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Entity and metadata filters. Must include at least one entity ID "
-        "(`user_id`, `agent_id`, `app_id`, or `run_id`). Supports `AND`, `OR`, `NOT`, and "
+        "(`user_id`, `agent_id`, or `run_id`). Supports `AND`, `OR`, `NOT`, and "
         "comparison operators (`in`, `gte`, `lte`, `gt`, `lt`, `contains`, `icontains`, `ne`).",
     )
     top_k: Optional[int] = Field(default=None, description="Number of results to return.")
@@ -463,6 +464,8 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
         if item.text is not None:
             mem.update(memory_id=item.memory_id, data=item.text, metadata=item.metadata)
         elif item.metadata is not None:
+            # NOTE: metadata-only updates require fetching the existing text first.
+            # This is an inherent N+1 limitation: the OSS SDK has no bulk-get API.
             existing = mem.get(item.memory_id)
             if existing is not None:
                 existing_text = existing.get("memory", "") if isinstance(existing, dict) else ""
