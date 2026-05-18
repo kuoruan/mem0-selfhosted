@@ -371,13 +371,17 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
             data=body.text,
             metadata=metadata,
         )
-    # text is None — metadata-only update: read, merge metadata, write back
+    # text is None — metadata-only update: read existing, merge metadata, write back
     mem = get_memory_instance()
-    existing = mem.get(memory_id)
-    if existing is None:
+    existing_raw = mem.get(memory_id)
+    # Some SDK versions return a list-of-one instead of a plain dict.
+    existing = existing_raw[0] if isinstance(existing_raw, list) and existing_raw else existing_raw
+    if not isinstance(existing, dict):
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
-    existing_text = existing.get("memory", "") if isinstance(existing, dict) else ""
-    return mem.update(memory_id=memory_id, data=existing_text, metadata=metadata)
+    existing_text = existing.get("memory") or existing.get("text") or ""
+    existing_metadata = existing.get("metadata") or {}
+    merged_metadata = {**existing_metadata, **(metadata or {})}
+    return mem.update(memory_id=memory_id, data=existing_text, metadata=merged_metadata)
 
 
 @router.delete("/v1/memories/{memory_id}/", summary="Delete a memory (v1)")
@@ -465,17 +469,23 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     if len(body.memories) > 1000:
         raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be updated in a single request")
     mem = get_memory_instance()
+    updated_count = 0
     for item in body.memories:
         if item.text is not None:
             mem.update(memory_id=item.memory_id, data=item.text, metadata=item.metadata)
+            updated_count += 1
         elif item.metadata is not None:
             # NOTE: metadata-only updates require fetching the existing text first.
             # This is an inherent N+1 limitation: the OSS SDK has no bulk-get API.
-            existing = mem.get(item.memory_id)
-            if existing is not None:
-                existing_text = existing.get("memory", "") if isinstance(existing, dict) else ""
-                mem.update(memory_id=item.memory_id, data=existing_text, metadata=item.metadata)
-    return {"message": f"Successfully updated {len(body.memories)} memories"}
+            existing_raw = mem.get(item.memory_id)
+            existing = existing_raw[0] if isinstance(existing_raw, list) and existing_raw else existing_raw
+            if isinstance(existing, dict):
+                existing_text = existing.get("memory") or existing.get("text") or ""
+                existing_metadata = existing.get("metadata") or {}
+                merged_metadata = {**existing_metadata, **item.metadata}
+                mem.update(memory_id=item.memory_id, data=existing_text, metadata=merged_metadata)
+                updated_count += 1
+    return {"message": f"Successfully updated {updated_count} memories"}
 
 
 @router.delete("/v1/batch/", summary="Batch delete memories (v1)")
