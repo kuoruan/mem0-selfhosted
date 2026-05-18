@@ -468,12 +468,18 @@ def v1_delete_all_memories(
 def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     if len(body.memories) > 1000:
         raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be updated in a single request")
-    # Reject items where neither text nor metadata is provided.
-    invalid = [item.memory_id for item in body.memories if item.text is None and item.metadata is None]
+    # Single pass: collect invalid items and count metadata-only updates.
+    invalid: List[str] = []
+    metadata_only_count = 0
+    for item in body.memories:
+        if item.text is None:
+            if item.metadata is None:
+                invalid.append(item.memory_id)
+            else:
+                metadata_only_count += 1
     if invalid:
         raise HTTPException(status_code=400, detail=f"Items missing both 'text' and 'metadata': {invalid}")
     # Metadata-only updates each require a get() call (N+1). Cap them to avoid timeouts.
-    metadata_only_count = sum(1 for item in body.memories if item.text is None and item.metadata is not None)
     if metadata_only_count > 100:
         raise HTTPException(
             status_code=400,
