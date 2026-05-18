@@ -168,7 +168,7 @@ def delete_memory(
     return {"message": "Memory deleted successfully"}
 
 
-@mcp.tool(description="Delete every memory in the given user/agent/app/run but keep the entity.")
+@mcp.tool(description="Delete every memory in the given user/agent/run but keep the entity.")
 def delete_all_memories(
     user_id: Annotated[Optional[str], Field(default=None, description="User scope to delete; defaults to server user.")] = None,
     agent_id: Annotated[Optional[str], Field(default=None, description="Optional agent scope to delete.")] = None,

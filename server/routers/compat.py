@@ -357,7 +357,7 @@ def v1_get_memory(memory_id: str, _auth=Depends(verify_auth)):
 @router.put("/v1/memories/{memory_id}/", summary="Update a memory (v1)")
 @upstream_guard
 def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(verify_auth)):
-    if not any([body.text, body.metadata, body.timestamp]):
+    if body.text is None and body.metadata is None and body.timestamp is None:
         raise HTTPException(
             status_code=400,
             detail="At least one of text, metadata, or timestamp must be provided for update.",
@@ -410,8 +410,13 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
+    search_filters: Dict[str, Any] = {**entity_params}
+    if body.metadata:
+        # Merge client-supplied metadata filters; entity params take precedence.
+        for k, v in body.metadata.items():
+            search_filters.setdefault(k, v)
     result = get_memory_instance().search(
-        query=body.query, **_build_search_kwargs(entity_params, body.top_k, body.threshold, body.rerank)
+        query=body.query, **_build_search_kwargs(search_filters, body.top_k, body.threshold, body.rerank)
     )
     return normalize_results(result)
 
@@ -528,6 +533,9 @@ def v2_list_memories(
     raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
     # support server-side limit/offset. Known limitation for very large datasets.
+    # NOTE: docs/openapi.json declares this endpoint as returning a bare array, but
+    # MemoryClient parses the pagination envelope {count, next, previous, results}.
+    # We intentionally diverge from openapi.json to remain client-compatible.
     return _paginate_response(request, normalize_results(raw), page, page_size)
 
 
@@ -544,6 +552,8 @@ def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
     result = get_memory_instance().search(
         query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )
+    # NOTE: docs/openapi.json declares a bare array response, but MemoryClient
+    # reads response["results"]. We intentionally return the envelope here.
     return {"results": normalize_results(result)}
 
 
@@ -625,10 +635,14 @@ def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
         filters=body.filters,
         detail="At least one entity ID is required.",
     )
-    # Merge convenience categories field for flat (non-AND/OR) dicts.
-    if "AND" not in effective_filters and "OR" not in effective_filters:
+    # Merge convenience fields for flat (non-AND/OR/NOT) dicts.
+    if "AND" not in effective_filters and "OR" not in effective_filters and "NOT" not in effective_filters:
         if body.categories and "categories" not in effective_filters:
             effective_filters["categories"] = {"contains": body.categories}
+        if body.metadata:
+            # Merge metadata filters; entity params and explicit filters take precedence.
+            for k, v in body.metadata.items():
+                effective_filters.setdefault(k, v)
     result = get_memory_instance().search(
         query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )

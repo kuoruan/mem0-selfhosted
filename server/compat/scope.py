@@ -128,11 +128,11 @@ def build_search_filters(
         filters=filters, detail=detail, fallback_user_id=fallback_user_id,
     )
     merged: dict[str, Any] = dict(filters) if filters else {}
-    if "AND" not in merged and "OR" not in merged:
+    if "AND" not in merged and "OR" not in merged and "NOT" not in merged:
         # Flat format: safe to merge entity scope at top level.
         merged.update(scope)
         return merged
-    # AND/OR format: merging scope at top level would produce a malformed mixed-format dict
+    # AND/OR/NOT format: merging scope at top level would produce a malformed mixed-format dict
     # (e.g. {"AND": [...], "user_id": "bob"}).  Only inject entity params that came from
     # explicit kwargs (plus fallback) — those already inside AND/OR conditions are already
     # present in 'merged' and do not need re-injection.
@@ -140,14 +140,15 @@ def build_search_filters(
     if not kwargs_scope and fallback_user_id:
         kwargs_scope = {"user_id": fallback_user_id}
     if not kwargs_scope:
-        # All scope came from within the AND/OR conditions; nothing extra to inject.
+        # All scope came from within the AND/OR/NOT conditions; nothing extra to inject.
         return merged
-    if "AND" in merged:
+    if "AND" in merged and isinstance(merged["AND"], list):
         # Append extra entity conditions into the AND list (new list to avoid mutating caller's filters).
         merged["AND"] = [*merged["AND"], *({k: v} for k, v in kwargs_scope.items())]
     else:
-        # OR format: wrap in an outer AND to restrict to the entity without modifying OR logic.
-        merged = {"AND": [merged, kwargs_scope]}
+        # OR/NOT format: wrap in an outer AND to restrict to the entity without modifying inner logic.
+        # Each entity param becomes its own dict for uniform filter structure.
+        merged = {"AND": [merged, *({k: v} for k, v in kwargs_scope.items())]}
     return merged
 
 
