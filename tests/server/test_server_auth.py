@@ -501,3 +501,61 @@ class TestStartupLogging:
         with caplog.at_level(logging.WARNING):
             _load_app({"ADMIN_API_KEY": "short"})
         assert any("shorter than" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for bcrypt helper functions (auth module)
+# ---------------------------------------------------------------------------
+
+class TestBcryptHelpers:
+    """Unit tests for hash_password / verify_password / verify_api_key_hash."""
+
+    @pytest.fixture(autouse=True)
+    def _import_auth(self):
+        import server.auth as auth_mod
+        self.auth = auth_mod
+
+    def test_hash_password_returns_valid_bcrypt_hash(self):
+        h = self.auth.hash_password("secret")
+        assert h.startswith("$2b$12$")
+
+    def test_verify_password_correct(self):
+        h = self.auth.hash_password("correct-horse")
+        assert self.auth.verify_password("correct-horse", h) is True
+
+    def test_verify_password_wrong(self):
+        h = self.auth.hash_password("correct-horse")
+        assert self.auth.verify_password("wrong", h) is False
+
+    def test_verify_password_malformed_hash_returns_false(self):
+        """Corrupt DB hash must not raise — should return False (not 500)."""
+        assert self.auth.verify_password("any", "not-a-bcrypt-hash") is False
+
+    def test_verify_password_empty_hash_returns_false(self):
+        assert self.auth.verify_password("any", "") is False
+
+    def test_verify_api_key_hash_correct(self):
+        _, _, key_hash = self.auth.generate_api_key()
+        # generate_api_key hashes the full key; grab it directly for round-trip
+        raw = "m0sk_testkey"
+        h = self.auth.hash_password(raw)
+        assert self.auth.verify_api_key_hash(raw, h) is True
+
+    def test_verify_api_key_hash_wrong(self):
+        raw = "m0sk_testkey"
+        h = self.auth.hash_password(raw)
+        assert self.auth.verify_api_key_hash("m0sk_wrongkey", h) is False
+
+    def test_verify_api_key_hash_malformed_returns_false(self):
+        """Corrupt DB hash must not raise — should return False (not 500)."""
+        assert self.auth.verify_api_key_hash("m0sk_anykey", "not-a-bcrypt-hash") is False
+
+    def test_generate_api_key_format(self):
+        full_key, prefix, key_hash = self.auth.generate_api_key()
+        assert full_key.startswith("m0sk_")
+        assert prefix == full_key[:12]
+        assert key_hash.startswith("$2b$12$")
+
+    def test_generate_api_key_hash_verifies(self):
+        full_key, _, key_hash = self.auth.generate_api_key()
+        assert self.auth.verify_api_key_hash(full_key, key_hash) is True

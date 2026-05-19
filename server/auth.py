@@ -27,7 +27,7 @@ DUMMY_HASH: bytes = b"$2b$12$k/g9O8usX37dgo75GqFaG.nC5QjJnh5e9NhW43zoWPjoaDl21gB
 
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
@@ -39,7 +39,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def dummy_verify_password() -> None:
     """Burn the same bcrypt cycles as a real verify so login timing doesn't leak whether an email exists."""
-    bcrypt.checkpw(b"dummy_plain", DUMMY_HASH)
+    bcrypt.checkpw(b"dummy", DUMMY_HASH)
 
 
 def generate_api_key() -> tuple[str, str, str]:
@@ -47,7 +47,7 @@ def generate_api_key() -> tuple[str, str, str]:
     raw = secrets.token_urlsafe(32)
     full_key = f"m0sk_{raw}"
     prefix = full_key[:12]
-    key_hash = bcrypt.hashpw(full_key.encode(), bcrypt.gensalt()).decode()
+    key_hash = bcrypt.hashpw(full_key.encode(), bcrypt.gensalt(rounds=12)).decode()
     return full_key, prefix, key_hash
 
 
