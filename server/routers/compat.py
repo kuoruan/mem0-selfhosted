@@ -663,7 +663,7 @@ def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
 
 
 @router.delete("/v2/entities/{entity_type}/{entity_id}", include_in_schema=False)
-@router.delete("/v2/entities/{entity_type}/{entity_id}/", summary="Delete entity (v2)", status_code=204)
+@router.delete("/v2/entities/{entity_type}/{entity_id}/", summary="Delete entity (v2)")
 @upstream_guard
 def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     try:
@@ -757,8 +757,8 @@ def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
         query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )
 
-    list = normalize_results(raw)
+    items = normalize_results(raw)
     if body.output_format == "v1.0":
         # Legacy flat-array format requested by the caller.
-        return list
-    return {"results": list}
+        return items
+    return {"results": items}

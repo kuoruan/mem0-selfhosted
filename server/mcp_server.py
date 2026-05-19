@@ -175,7 +175,7 @@ def get_memory(
     result = get_memory_instance().get(memory_id)
     if result is None:
         raise ValueError(f"Memory '{memory_id}' not found.")
-    return normalize_results_dict(result)
+    return result
 
 
 @mcp.tool(description="Overwrite an existing memory's text.")
@@ -190,16 +190,14 @@ def update_memory(
     if metadata is not None:
         update_kwargs["metadata"] = metadata
 
-    raw = get_memory_instance().update(**update_kwargs)
-    return normalize_results_dict(raw)
+    return get_memory_instance().update(**update_kwargs)
 
 
 @mcp.tool(description="Delete one memory after the user confirms its memory_id.")
 def delete_memory(
     memory_id: Annotated[str, Field(description="Exact memory_id to delete.")],
 ) -> dict[str, Any]:
-    raw = get_memory_instance().delete(memory_id)
-    return normalize_results_dict(raw)
+    return get_memory_instance().delete(memory_id)
 
 
 @mcp.tool(description="Delete every memory in the given user/agent/run but keep the entity.")
@@ -221,8 +219,7 @@ def delete_all_memories(
         fallback_user_id=_fallback_uid(),
     )
 
-    raw = get_memory_instance().delete_all(**scope)
-    return normalize_results_dict(raw)
+    return get_memory_instance().delete_all(**scope)
 
 
 @mcp.tool(description="Remove an entity and cascade-delete its memories.")
