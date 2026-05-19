@@ -24,10 +24,17 @@ UNSUPPORTED_ENTITY_TYPES: dict[str, str] = {
 UNSUPPORTED_ENTITY_PARAMS = frozenset({"app_id"})
 
 
-def reject_app_id(app_id: Optional[str]) -> None:
-    """Raise 501 if *app_id* is not None."""
+def reject_app_id(app_id: Optional[str], *, http_error: bool = True) -> None:
+    """Raise an error if *app_id* is not None.
+
+    By default raises ``HTTPException(501)`` for REST routes.
+    Pass ``http_error=False`` to raise ``ValueError`` instead (for MCP tools).
+    """
     if app_id is not None:
-        raise HTTPException(status_code=501, detail="'app_id' is not supported by the self-hosted server.")
+        msg = "'app_id' is not supported by the self-hosted server."
+        if http_error:
+            raise HTTPException(status_code=501, detail=msg)
+        raise ValueError(msg)
 
 
 def _scan_filters(
@@ -117,7 +124,11 @@ def require_entity_scope(
     ``{"user_id": fallback_user_id}`` instead of raising.
     """
     params = collect_entity_params(
-        user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id, filters=filters,
+        user_id=user_id,
+        agent_id=agent_id,
+        app_id=app_id,
+        run_id=run_id,
+        filters=filters,
     )
     if not params:
         if fallback_user_id:
@@ -138,8 +149,13 @@ def build_search_filters(
 ) -> dict[str, Any]:
     """Resolve scope then merge into *filters* dict for ``Memory.search`` / ``get_all``."""
     scope = require_entity_scope(
-        user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id,
-        filters=filters, detail=detail, fallback_user_id=fallback_user_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        app_id=app_id,
+        run_id=run_id,
+        filters=filters,
+        detail=detail,
+        fallback_user_id=fallback_user_id,
     )
     merged: dict[str, Any] = dict(filters) if filters else {}
     if "AND" not in merged and "OR" not in merged and "NOT" not in merged:
@@ -173,7 +189,9 @@ def get_entity_field(entity_type: str) -> str:
     Raises 400 for unknown types.
     """
     if entity_type in UNSUPPORTED_ENTITY_TYPES:
-        raise HTTPException(status_code=501, detail=f"'{entity_type}' entities are not supported by the self-hosted server.")
+        raise HTTPException(
+            status_code=501, detail=f"'{entity_type}' entities are not supported by the self-hosted server."
+        )
     field = COMPAT_TYPE_TO_FIELD.get(entity_type)
     if field is None:
         raise HTTPException(status_code=400, detail="Invalid entity type")

@@ -39,13 +39,12 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from auth import verify_auth
 from compat.decorators import upstream_guard
 from compat.entities import list_entities_payload
-from compat.responses import drop_none, normalize_results
+from compat.responses import drop_none, normalize_results, normalize_results_dict
 from compat.scope import (
     VALID_ENTITY_TYPES,
     build_search_filters,
@@ -55,6 +54,10 @@ from compat.scope import (
     require_entity_scope,
 )
 from server_state import get_memory_instance, list_all_memories
+
+from mem0 import Memory
+
+logger = logging.getLogger("mem0.server.compat")
 
 router = APIRouter(tags=["Client API"])
 
@@ -67,10 +70,19 @@ class MemoryAddInput(BaseModel):
         "indicates the sender ('user' or 'assistant') and 'content' contains the actual message text. "
         "This structure allows for the representation of conversations or multi-part memories."
     )
-    agent_id: Optional[str] = Field(default=None, description="The unique identifier of the agent associated with this memory.")
-    user_id: Optional[str] = Field(default=None, description="The unique identifier of the user associated with this memory.")
-    app_id: Optional[str] = Field(default=None, description="The unique identifier of the application. Not supported by the self-hosted server (returns 501).")
-    run_id: Optional[str] = Field(default=None, description="The unique identifier of the run associated with this memory.")
+    agent_id: Optional[str] = Field(
+        default=None, description="The unique identifier of the agent associated with this memory."
+    )
+    user_id: Optional[str] = Field(
+        default=None, description="The unique identifier of the user associated with this memory."
+    )
+    app_id: Optional[str] = Field(
+        default=None,
+        description="The unique identifier of the application. Not supported by the self-hosted server (returns 501).",
+    )
+    run_id: Optional[str] = Field(
+        default=None, description="The unique identifier of the run associated with this memory."
+    )
     metadata: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Additional metadata associated with the memory. Best practice for incorporating additional "
@@ -78,7 +90,9 @@ class MemoryAddInput(BaseModel):
         "these metadata alongside the query to fetch relevant memories or retrieve memories based on the query "
         "first and then refine the results using metadata during post-processing.",
     )
-    infer: Optional[bool] = Field(default=None, description="Whether to infer the memories or directly store the messages.")
+    infer: Optional[bool] = Field(
+        default=None, description="Whether to infer the memories or directly store the messages."
+    )
     categories: Optional[List[str]] = Field(default=None, description="A list of categories to tag the memory with.")
 
 
@@ -87,13 +101,23 @@ class MemorySearchInput(BaseModel):
     query: str = Field(description="The query to search for in the memory.")
     agent_id: Optional[str] = Field(default=None, description="The agent ID associated with the memory.")
     user_id: Optional[str] = Field(default=None, description="The user ID associated with the memory.")
-    app_id: Optional[str] = Field(default=None, description="The app ID associated with the memory. Not supported by the self-hosted server (returns 501).")
+    app_id: Optional[str] = Field(
+        default=None,
+        description="The app ID associated with the memory. Not supported by the self-hosted server (returns 501).",
+    )
     run_id: Optional[str] = Field(default=None, description="The run ID associated with the memory.")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata associated with the memory.")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, description="Additional metadata associated with the memory."
+    )
     top_k: Optional[int] = Field(default=None, description="The number of top results to return.")
-    threshold: Optional[float] = Field(default=None, description="The minimum similarity threshold for returned results.")
+    threshold: Optional[float] = Field(
+        default=None, description="The minimum similarity threshold for returned results."
+    )
     rerank: Optional[bool] = Field(default=None, description="Whether to rerank the memories.")
-    fields: Optional[List[str]] = Field(default=None, description="A list of field names to include in the response. If not provided, all fields will be returned.")
+    fields: Optional[List[str]] = Field(
+        default=None,
+        description="A list of field names to include in the response. If not provided, all fields will be returned.",
+    )
 
 
 class MemoryUpdateInput(BaseModel):
@@ -138,11 +162,15 @@ class MemoryGetInputV2(BaseModel):
         "user_id, agent_id, run_id, created_at, updated_at, categories, keywords. "
         "Supports logical operators (AND, OR) and comparison operators (in, gte, lte, gt, lt, ne, contains, icontains, *). "
         "For categories field, use 'contains' for partial matching "
-        "(e.g., {\"categories\": {\"contains\": \"finance\"}}) or 'in' for exact matching "
-        "(e.g., {\"categories\": {\"in\": [\"personal_information\"]}}).",
+        '(e.g., {"categories": {"contains": "finance"}}) or \'in\' for exact matching '
+        '(e.g., {"categories": {"in": ["personal_information"]}}).',
     )
-    start_date: Optional[str] = Field(default=None, description="Only return memories created on or after this ISO 8601 date.")
-    end_date: Optional[str] = Field(default=None, description="Only return memories created on or before this ISO 8601 date.")
+    start_date: Optional[str] = Field(
+        default=None, description="Only return memories created on or after this ISO 8601 date."
+    )
+    end_date: Optional[str] = Field(
+        default=None, description="Only return memories created on or before this ISO 8601 date."
+    )
     categories: Optional[List[str]] = Field(default=None, description="A list of categories to filter the memories by.")
 
 
@@ -155,23 +183,36 @@ class MemorySearchInputV2(BaseModel):
         "user_id, agent_id, run_id, created_at, updated_at, categories, keywords. "
         "Supports logical operators (AND, OR) and comparison operators (in, gte, lte, gt, lt, ne, contains, icontains). "
         "For categories field, use 'contains' for partial matching "
-        "(e.g., {\"categories\": {\"contains\": \"finance\"}}) or 'in' for exact matching "
-        "(e.g., {\"categories\": {\"in\": [\"personal_information\"]}}).",
+        '(e.g., {"categories": {"contains": "finance"}}) or \'in\' for exact matching '
+        '(e.g., {"categories": {"in": ["personal_information"]}}).',
     )
     top_k: Optional[int] = Field(default=None, description="The number of top results to return.")
-    threshold: Optional[float] = Field(default=None, description="The minimum similarity threshold for returned results.")
+    threshold: Optional[float] = Field(
+        default=None, description="The minimum similarity threshold for returned results."
+    )
     rerank: Optional[bool] = Field(default=None, description="Whether to rerank the memories.")
-    user_id: Optional[str] = Field(default=None, description="The user ID associated with the memory (also accepted inside filters).")
-    agent_id: Optional[str] = Field(default=None, description="The agent ID associated with the memory (also accepted inside filters).")
+    user_id: Optional[str] = Field(
+        default=None, description="The user ID associated with the memory (also accepted inside filters)."
+    )
+    agent_id: Optional[str] = Field(
+        default=None, description="The agent ID associated with the memory (also accepted inside filters)."
+    )
     app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    run_id: Optional[str] = Field(default=None, description="The run ID associated with the memory (also accepted inside filters).")
-    fields: Optional[List[str]] = Field(default=None, description="A list of field names to include in the response. If not provided, all fields will be returned.")
+    run_id: Optional[str] = Field(
+        default=None, description="The run ID associated with the memory (also accepted inside filters)."
+    )
+    fields: Optional[List[str]] = Field(
+        default=None,
+        description="A list of field names to include in the response. If not provided, all fields will be returned.",
+    )
 
 
 class MemoryAddInputV3(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    messages: List[Dict[str, Any]] = Field(description="Conversation messages to extract memories from. "
-        "Each object must have 'role' ('user', 'assistant', or 'system') and 'content' keys.")
+    messages: List[Dict[str, Any]] = Field(
+        description="Conversation messages to extract memories from. "
+        "Each object must have 'role' ('user', 'assistant', or 'system') and 'content' keys."
+    )
     agent_id: Optional[str] = Field(default=None, description="Scope memories to this agent.")
     user_id: Optional[str] = Field(default=None, description="Scope memories to this user.")
     app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
@@ -179,7 +220,9 @@ class MemoryAddInputV3(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(
         default=None, description="User-supplied metadata to attach to each extracted memory."
     )
-    filters: Optional[Dict[str, Any]] = Field(default=None, description="Filters containing entity IDs (e.g. {'user_id': '...'}).")
+    filters: Optional[Dict[str, Any]] = Field(
+        default=None, description="Filters containing entity IDs (e.g. {'user_id': '...'})."
+    )
     infer: Optional[bool] = Field(
         default=None, description="When `false`, stores each message verbatim without running the extraction LLM."
     )
@@ -193,9 +236,12 @@ class MemoryAddInputV3(BaseModel):
         default=None, description="Schema for structured data extraction from the memory."
     )
     timestamp: Optional[int] = Field(default=None, description="The timestamp of the memory. Format: Unix timestamp")
-    source: Optional[str] = Field(default=None, description="Source identifier for the memory (e.g. 'OPENCLAW'). Stored in metadata.")
+    source: Optional[str] = Field(
+        default=None, description="Source identifier for the memory (e.g. 'OPENCLAW'). Stored in metadata."
+    )
     deduced_memories: Optional[List[Any]] = Field(
-        default=None, description="Pre-extracted fact strings used by agentic harnesses when infer=False. Stored in metadata."
+        default=None,
+        description="Pre-extracted fact strings used by agentic harnesses when infer=False. Stored in metadata.",
     )
 
 
@@ -216,15 +262,20 @@ class MemorySearchInputV3(BaseModel):
     threshold: Optional[float] = Field(
         default=None, description="Minimum semantic relevance score. Pass `0.0` to disable filtering."
     )
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata associated with the memory.")
-    rerank: Optional[bool] = Field(default=None, description="Apply the managed reranker for better ordering (adds latency).")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, description="Additional metadata associated with the memory."
+    )
+    rerank: Optional[bool] = Field(
+        default=None, description="Apply the managed reranker for better ordering (adds latency)."
+    )
     fields: Optional[List[str]] = Field(
-        default=None, description="A list of field names to include in the response. If not provided, all fields will be returned."
+        default=None,
+        description="A list of field names to include in the response. If not provided, all fields will be returned.",
     )
     categories: Optional[List[str]] = Field(default=None, description="A list of categories to filter the memories by.")
     output_format: Optional[str] = Field(
         default=None,
-        description="Response format. `v1.1` (default) returns `{\"results\": [...]}`. "
+        description='Response format. `v1.1` (default) returns `{"results": [...]}`. '
         "`v1.0` returns a flat array `[{...}]` for backwards compatibility.",
     )
 
@@ -273,16 +324,15 @@ def _paginate_response(
         "count": total,
         "next": _build_page_url(request, page=page + 1, page_size=page_size) if start + page_size < total else None,
         "previous": _build_page_url(request, page=page - 1, page_size=page_size) if page > 1 else None,
-        "results": items[start: start + page_size],
+        "results": items[start : start + page_size],
     }
 
 
 def _warn_unsupported_fields(fields: Optional[List[str]], endpoint: str) -> None:
     """Log a warning when 'fields' projection is requested but not supported by the OSS SDK."""
     if fields:
-        logging.warning(
-            "%s: 'fields' projection is not supported by the OSS SDK "
-            "and will be ignored. Requested fields: %s",
+        logger.warning(
+            "%s: 'fields' projection is not supported by the OSS SDK and will be ignored. Requested fields: %s",
             endpoint,
             fields,
         )
@@ -305,6 +355,26 @@ def _build_search_kwargs(
     return kwargs
 
 
+def _resolve_existing(mem: Memory, memory_id: str) -> dict:
+    """Fetch an existing memory and return its dict, or raise 404."""
+    raw = mem.get(memory_id)
+    item = raw[0] if isinstance(raw, list) and raw else raw
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
+    return item
+
+
+def _merge_and_update(
+    mem: Memory, memory_id: str, *, text: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
+) -> Any:
+    """Read current memory, merge text/metadata changes, write back."""
+    existing = _resolve_existing(mem, memory_id)
+    final_text = text if text is not None else (existing.get("memory") or existing.get("text") or "")
+    merged = {**(existing.get("metadata") or {}), **(metadata or {})}
+    return mem.update(memory_id=memory_id, data=final_text, metadata=merged)
+
+
+@router.get("/v1/ping", include_in_schema=False)
 @router.get("/v1/ping/", summary="Ping / validate API key")
 def ping(_auth=Depends(verify_auth)):
     """Used by ``MemoryClient`` to validate the API key on initialisation."""
@@ -312,6 +382,7 @@ def ping(_auth=Depends(verify_auth)):
     return {"status": "ok", "message": "pong", "user_email": user_email}
 
 
+@router.get("/v1/memories", include_in_schema=False)
 @router.get("/v1/memories/", summary="Get all memories (v1)")
 @upstream_guard
 def v1_list_memories(
@@ -323,16 +394,20 @@ def v1_list_memories(
 ):
     reject_app_id(app_id)
     filters = drop_none({"user_id": user_id, "agent_id": agent_id, "run_id": run_id})
+
     raw = get_memory_instance().get_all(filters=filters) if filters else list_all_memories()
     return normalize_results(raw)
 
 
+@router.post("/v1/memories", include_in_schema=False)
 @router.post("/v1/memories/", summary="Add memories (v1)")
 @upstream_guard
 def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     entity_params = collect_entity_params(
-        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
+        user_id=body.user_id,
+        agent_id=body.agent_id,
+        run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="One of the filters: user_id, agent_id, or run_id is required!")
@@ -343,16 +418,19 @@ def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
         meta = params.get("metadata") or {}
         meta.setdefault("categories", body.categories)
         params["metadata"] = meta
-    result = get_memory_instance().add(messages=body.messages, **params)
-    return normalize_results(result)
+
+    raw = get_memory_instance().add(messages=body.messages, **params)
+    return normalize_results(raw)
 
 
+@router.get("/v1/memories/{memory_id}", include_in_schema=False)
 @router.get("/v1/memories/{memory_id}/", summary="Get a memory (v1)")
 @upstream_guard
 def v1_get_memory(memory_id: str, _auth=Depends(verify_auth)):
-    return get_memory_instance().get(memory_id)
+    return _resolve_existing(get_memory_instance(), memory_id)
 
 
+@router.put("/v1/memories/{memory_id}", include_in_schema=False)
 @router.put("/v1/memories/{memory_id}/", summary="Update a memory (v1)")
 @upstream_guard
 def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(verify_auth)):
@@ -364,32 +442,28 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
     metadata = body.metadata
     if body.timestamp is not None:
         metadata = {**(metadata or {}), "timestamp": body.timestamp}
-    # Always fetch existing memory to merge metadata (avoid overwriting existing keys).
-    mem = get_memory_instance()
-    existing_raw = mem.get(memory_id)
-    existing = existing_raw[0] if isinstance(existing_raw, list) and existing_raw else existing_raw
-    if not isinstance(existing, dict):
-        raise HTTPException(status_code=404, detail="Memory not found!")
-    existing_text = existing.get("memory") or existing.get("text") or ""
-    existing_metadata = existing.get("metadata") or {}
-    final_text = body.text if body.text is not None else existing_text
-    merged_metadata = {**existing_metadata, **(metadata or {})}
-    return mem.update(memory_id=memory_id, data=final_text, metadata=merged_metadata)
+    return _merge_and_update(get_memory_instance(), memory_id, text=body.text, metadata=metadata)
 
 
+@router.delete("/v1/memories/{memory_id}", include_in_schema=False)
 @router.delete("/v1/memories/{memory_id}/", summary="Delete a memory (v1)")
 @upstream_guard
 def v1_delete_memory(memory_id: str, _auth=Depends(verify_auth)):
-    get_memory_instance().delete(memory_id=memory_id)
-    return {"message": "Memory deleted successfully."}
+    try:
+        return get_memory_instance().delete(memory_id=memory_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
 
 
+@router.get("/v1/memories/{memory_id}/history", include_in_schema=False)
 @router.get("/v1/memories/{memory_id}/history/", summary="Get memory history (v1)")
 @upstream_guard
 def v1_memory_history(memory_id: str, _auth=Depends(verify_auth)):
-    return get_memory_instance().history(memory_id=memory_id)
+    raw = get_memory_instance().history(memory_id=memory_id)
+    return normalize_results(raw)
 
 
+@router.get("/v1/memories/{entity_type}/{entity_id}", include_in_schema=False)
 @router.get("/v1/memories/{entity_type}/{entity_id}/", summary="Get memories for an entity (v1)")
 @upstream_guard
 def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
@@ -397,27 +471,34 @@ def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verif
     return normalize_results(raw)
 
 
+@router.post("/v1/memories/search", include_in_schema=False)
 @router.post("/v1/memories/search/", summary="Search memories (v1)")
 @upstream_guard
 def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     _warn_unsupported_fields(body.fields, "v1_search_memories")
     entity_params = collect_entity_params(
-        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
+        user_id=body.user_id,
+        agent_id=body.agent_id,
+        run_id=body.run_id,
     )
     if not entity_params:
-        raise HTTPException(status_code=400, detail="At least one of the filters: agent_id, user_id, or run_id is required!")
+        raise HTTPException(
+            status_code=400, detail="At least one of the filters: agent_id, user_id, or run_id is required!"
+        )
     search_filters: Dict[str, Any] = {**entity_params}
     if body.metadata:
         # Merge client-supplied metadata filters; entity params take precedence.
         for k, v in body.metadata.items():
             search_filters.setdefault(k, v)
-    result = get_memory_instance().search(
+
+    raw = get_memory_instance().search(
         query=body.query, **_build_search_kwargs(search_filters, body.top_k, body.threshold, body.rerank)
     )
-    return normalize_results(result)
+    return normalize_results(raw)
 
 
+@router.delete("/v1/memories", include_in_schema=False)
 @router.delete("/v1/memories/", summary="Delete all memories (v1)")
 @upstream_guard
 def v1_delete_all_memories(
@@ -435,15 +516,14 @@ def v1_delete_all_memories(
     if filters and not any([user_id, agent_id, run_id]):
         try:
             filters_dict = json.loads(filters)
-
-            reject_app_id(filters_dict.get("app_id"))
-            user_id = user_id or filters_dict.get("user_id")
-            agent_id = agent_id or filters_dict.get("agent_id")
-            run_id = run_id or filters_dict.get("run_id")
         except json.JSONDecodeError:
-            pass
-        except AttributeError:
-            pass
+            raise HTTPException(status_code=400, detail="Invalid JSON in 'filters' query parameter.")
+        if not isinstance(filters_dict, dict):
+            raise HTTPException(status_code=400, detail="'filters' query parameter must be a JSON object.")
+        reject_app_id(filters_dict.get("app_id"))
+        user_id = user_id or filters_dict.get("user_id")
+        agent_id = agent_id or filters_dict.get("agent_id")
+        run_id = run_id or filters_dict.get("run_id")
 
     params = drop_none({"user_id": user_id, "agent_id": agent_id, "run_id": run_id})
     if not params:
@@ -451,10 +531,10 @@ def v1_delete_all_memories(
             status_code=400,
             detail="One of the filters: user_id, agent_id, or run_id is required!",
         )
-    get_memory_instance().delete_all(**params)
-    return {"message": "All memories deleted successfully."}
+    return get_memory_instance().delete_all(**params)
 
 
+@router.put("/v1/batch", include_in_schema=False)
 @router.put("/v1/batch/", summary="Batch update memories (v1)")
 @upstream_guard
 def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
@@ -471,19 +551,15 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     mem = get_memory_instance()
     updated_count = 0
     for item in body.memories:
-        existing_raw = mem.get(item.memory_id)
-        existing = existing_raw[0] if isinstance(existing_raw, list) and existing_raw else existing_raw
-        if not isinstance(existing, dict):
+        try:
+            _merge_and_update(mem, item.memory_id, text=item.text, metadata=item.metadata)
+            updated_count += 1
+        except (HTTPException, ValueError):
             continue
-        existing_text = existing.get("memory") or existing.get("text") or ""
-        existing_metadata = existing.get("metadata") or {}
-        final_text = item.text if item.text is not None else existing_text
-        merged_metadata = {**existing_metadata, **(item.metadata or {})}
-        mem.update(memory_id=item.memory_id, data=final_text, metadata=merged_metadata)
-        updated_count += 1
-    return {"message": f"Successfully updated {updated_count} memories"}
+    return {"message": f"Memories updated successfully, count: {updated_count}."}
 
 
+@router.delete("/v1/batch", include_in_schema=False)
 @router.delete("/v1/batch/", summary="Batch delete memories (v1)")
 @upstream_guard
 def v1_batch_delete(
@@ -491,15 +567,24 @@ def v1_batch_delete(
     _auth=Depends(verify_auth),
 ):
     mem = get_memory_instance()
-    memory_ids = body.memory_ids if isinstance(body, MemoryBatchDeleteInput) else [item.memory_id for item in body.memories]
+    memory_ids = (
+        body.memory_ids if isinstance(body, MemoryBatchDeleteInput) else [item.memory_id for item in body.memories]
+    )
     if len(memory_ids) > 1000:
         raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be deleted in a single request")
+    deleted_count = 0
     for memory_id in memory_ids:
-        mem.delete(memory_id=memory_id)
-    return {"message": f"Successfully deleted {len(memory_ids)} memories"}
+        try:
+            mem.delete(memory_id=memory_id)
+            deleted_count += 1
+        except ValueError:
+            continue
+    return {"message": f"Memories deleted successfully, count: {deleted_count}."}
 
 
+@router.get("/v1/entities", include_in_schema=False)
 @router.get("/v1/entities/", summary="List entities (v1)")
+@upstream_guard
 def v1_list_entities(
     request: Request,
     page: int = Query(1, ge=1),
@@ -516,11 +601,13 @@ def v1_list_entities(
     return _paginate_response(request, all_results, page, page_size)
 
 
+@router.get("/v1/entities/filters", include_in_schema=False)
 @router.get("/v1/entities/filters/", summary="List supported entity filters (v1)")
 def v1_list_entity_filters(_auth=Depends(verify_auth)):
     return {"results": sorted(VALID_ENTITY_TYPES)}
 
 
+@router.post("/v2/memories", include_in_schema=False)
 @router.post("/v2/memories/", summary="Get all memories (v2)")
 @upstream_guard
 def v2_list_memories(
@@ -543,24 +630,28 @@ def v2_list_memories(
     return _paginate_response(request, normalize_results(raw), page, page_size)
 
 
+@router.post("/v2/memories/search", include_in_schema=False)
 @router.post("/v2/memories/search/", summary="Search memories (v2)")
 @upstream_guard
 def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     _warn_unsupported_fields(body.fields, "v2_search_memories")
     effective_filters = build_search_filters(
-        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
+        user_id=body.user_id,
+        agent_id=body.agent_id,
+        run_id=body.run_id,
         filters=body.filters,
         detail="At least one of the filters: agent_id, user_id, or run_id is required!",
     )
-    result = get_memory_instance().search(
+    raw = get_memory_instance().search(
         query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )
     # NOTE: docs/openapi.json declares a bare array response, but MemoryClient
     # reads response["results"]. We intentionally return the envelope here.
-    return {"results": normalize_results(result)}
+    return normalize_results_dict(raw)
 
 
+@router.get("/v2/entities/{entity_type}/{entity_id}", include_in_schema=False)
 @router.get("/v2/entities/{entity_type}/{entity_id}/", summary="Get entity details (v2)")
 @upstream_guard
 def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
@@ -568,48 +659,60 @@ def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     for entity in list_entities_payload():
         if entity["type"] == entity_type and entity["id"] == entity_id:
             return entity
-    raise HTTPException(status_code=404, detail="Entity not found.")
+    raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
 
+@router.delete("/v2/entities/{entity_type}/{entity_id}", include_in_schema=False, status_code=204)
 @router.delete("/v2/entities/{entity_type}/{entity_id}/", summary="Delete entity (v2)", status_code=204)
 @upstream_guard
 def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
-    get_memory_instance().delete_all(**{get_entity_field(entity_type): entity_id})
-    return Response(status_code=204)
+    try:
+        get_memory_instance().delete_all(**{get_entity_field(entity_type): entity_id})
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
 
+@router.post("/v3/memories/add", include_in_schema=False)
 @router.post("/v3/memories/add/", summary="Add memory (v3)")
 @upstream_guard
 def v3_add_memory(body: MemoryAddInputV3, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     entity_params = collect_entity_params(
         filters=body.filters,
-        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
+        user_id=body.user_id,
+        agent_id=body.agent_id,
+        run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="One of the filters: user_id, agent_id, or run_id is required!")
-    params: Dict[str, Any] = drop_none({
-        **entity_params,
-        "metadata": body.metadata,
-        "infer": body.infer,
-    })
+    params: Dict[str, Any] = drop_none(
+        {
+            **entity_params,
+            "metadata": body.metadata,
+            "infer": body.infer,
+        }
+    )
     # Merge platform-only fields into metadata for self-hosted preservation
-    extra_meta = drop_none({
-        "custom_categories": body.custom_categories,
-        "custom_instructions": body.custom_instructions,
-        "structured_data_schema": body.structured_data_schema,
-        "timestamp": body.timestamp,
-        "source": body.source,
-        "deduced_memories": body.deduced_memories,
-    })
+    extra_meta = drop_none(
+        {
+            "custom_categories": body.custom_categories,
+            "custom_instructions": body.custom_instructions,
+            "structured_data_schema": body.structured_data_schema,
+            "timestamp": body.timestamp,
+            "source": body.source,
+            "deduced_memories": body.deduced_memories,
+        }
+    )
     if extra_meta:
         meta = params.get("metadata") or {}
         meta.update(extra_meta)
         params["metadata"] = meta
-    result = get_memory_instance().add(messages=body.messages, **params)
-    return result
+
+    raw = get_memory_instance().add(messages=body.messages, **params)
+    return normalize_results_dict(raw)
 
 
+@router.post("/v3/memories", include_in_schema=False)
 @router.post("/v3/memories/", summary="Get all memories (v3)")
 @upstream_guard
 def v3_get_all_memories(
@@ -629,13 +732,16 @@ def v3_get_all_memories(
     return _paginate_response(request, normalize_results(raw), page, page_size)
 
 
+@router.post("/v3/memories/search", include_in_schema=False)
 @router.post("/v3/memories/search/", summary="Search memories (v3)")
 @upstream_guard
 def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     _warn_unsupported_fields(body.fields, "v3_search_memories")
     effective_filters = build_search_filters(
-        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
+        user_id=body.user_id,
+        agent_id=body.agent_id,
+        run_id=body.run_id,
         filters=body.filters,
         detail="At least one of the filters: agent_id, user_id, or run_id is required!",
     )
@@ -647,12 +753,12 @@ def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
             # Merge metadata filters; entity params and explicit filters take precedence.
             for k, v in body.metadata.items():
                 effective_filters.setdefault(k, v)
-    result = get_memory_instance().search(
+    raw = get_memory_instance().search(
         query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )
+
+    items = normalize_results(raw)
     if body.output_format == "v1.0":
         # Legacy flat-array format requested by the caller.
-        return result if isinstance(result, list) else (result or {}).get("results", [])
-    if isinstance(result, list):
-        return {"results": result}
-    return result
+        return items
+    return {"results": items}

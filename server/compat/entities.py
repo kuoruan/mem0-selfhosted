@@ -86,7 +86,5 @@ def list_entities_payload() -> list[dict[str, Any]]:
             "organization": "self-hosted",
             "metadata": data["metadata"],
         }
-        for (entity_type, entity_id), data in sorted(
-            buckets.items(), key=lambda item: (item[0][0], item[0][1])
-        )
+        for (entity_type, entity_id), data in sorted(buckets.items(), key=lambda item: (item[0][0], item[0][1]))
     ]

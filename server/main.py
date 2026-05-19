@@ -35,6 +35,7 @@ from routers import entities as entities_router
 from routers import requests as requests_router
 from bg_tasks import prune_loop
 from schemas import MessageResponse
+
 # TODO(async): All endpoints and _persist_request_log use synchronous SQLAlchemy
 # sessions. FastAPI dispatches sync path functions to a thread pool, but under high
 # concurrency the thread pool can become a bottleneck. For production workloads,

@@ -10,7 +10,7 @@ from sqlalchemy import delete, func, select
 from db import SessionLocal
 from models import RequestLog
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("mem0.server.bg_tasks")
 
 _MIN_INTERVAL = 60  # seconds — floor to avoid hammering the DB
 _BATCH_SIZE = 1000  # rows per DELETE batch
@@ -98,14 +98,8 @@ def _do_prune() -> None:
             while True:
                 # PostgreSQL doesn't support LIMIT on DELETE; use a subquery
                 # to batch-delete rows by ID.
-                subquery = (
-                    select(RequestLog.id)
-                    .where(RequestLog.created_at < cutoff)
-                    .limit(_BATCH_SIZE)
-                )
-                result = session.execute(
-                    delete(RequestLog).where(RequestLog.id.in_(subquery))
-                )
+                subquery = select(RequestLog.id).where(RequestLog.created_at < cutoff).limit(_BATCH_SIZE)
+                result = session.execute(delete(RequestLog).where(RequestLog.id.in_(subquery)))
                 session.commit()
                 removed = result.rowcount or 0
                 total_removed += removed
