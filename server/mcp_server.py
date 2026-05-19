@@ -313,8 +313,10 @@ async def _run_streamable_transport(request: Request) -> Response:
     )
 
 
-@mcp_router.api_route("/", methods=["GET", "POST", "DELETE"], include_in_schema=False)
-@mcp_router.api_route("", methods=["GET", "POST", "DELETE"], summary="MCP Endpoints")
+@mcp_router.api_route(
+    "/", methods=["GET", "POST", "DELETE"], include_in_schema=False, operation_id="handle_streamable_http_slash"
+)
+@mcp_router.api_route("", methods=["GET", "POST", "DELETE"], summary="MCP Endpoint")
 async def handle_streamable_http(request: Request, user=Depends(verify_auth)):
     auth_token = auth_user_id_var.set(str(user.id) if user is not None else None)
     client_token = client_name_var.set(
