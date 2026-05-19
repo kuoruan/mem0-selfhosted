@@ -282,22 +282,26 @@ async def _run_streamable_transport(request: Request) -> Response:
             response_body.extend(message.get("body", b""))
 
     transport = StreamableHTTPServerTransport(mcp_session_id=None, is_json_response_enabled=True)
-    async with anyio.create_task_group() as tg:
+    try:
+        async with anyio.create_task_group() as tg:
 
-        async def run_server(*, task_status=anyio.TASK_STATUS_IGNORED):
-            async with transport.connect() as (read_stream, write_stream):
-                task_status.started()
-                await mcp._mcp_server.run(
-                    read_stream,
-                    write_stream,
-                    mcp._mcp_server.create_initialization_options(),
-                    stateless=True,
-                )
+            async def run_server(*, task_status=anyio.TASK_STATUS_IGNORED):
+                async with transport.connect() as (read_stream, write_stream):
+                    task_status.started()
+                    await mcp._mcp_server.run(
+                        read_stream,
+                        write_stream,
+                        mcp._mcp_server.create_initialization_options(),
+                        stateless=True,
+                    )
 
-        await tg.start(run_server)
-        await transport.handle_request(request.scope, request.receive, capture_send)
-        await transport.terminate()
-        tg.cancel_scope.cancel()
+            await tg.start(run_server)
+            await transport.handle_request(request.scope, request.receive, capture_send)
+            await transport.terminate()
+            tg.cancel_scope.cancel()
+    except Exception:
+        logger.exception("MCP streamable transport error")
+        return Response(status_code=500, content=b"Internal MCP transport error")
 
     if not response_started:
         return Response(status_code=500, content=b"Transport did not produce a response")
@@ -309,8 +313,8 @@ async def _run_streamable_transport(request: Request) -> Response:
     )
 
 
-@mcp_router.api_route("", methods=["GET", "POST", "DELETE"])
-@mcp_router.api_route("/", methods=["GET", "POST", "DELETE"])
+@mcp_router.api_route("/", methods=["GET", "POST", "DELETE"], include_in_schema=False)
+@mcp_router.api_route("", methods=["GET", "POST", "DELETE"], summary="MCP Endpoints")
 async def handle_streamable_http(request: Request, user=Depends(verify_auth)):
     auth_token = auth_user_id_var.set(str(user.id) if user is not None else None)
     client_token = client_name_var.set(
