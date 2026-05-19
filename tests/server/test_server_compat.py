@@ -4,8 +4,10 @@ Covers:
   - compat.scope   : collect_entity_params, require_entity_scope,
                      build_search_filters, reject_app_id, get_entity_field
   - compat.responses: drop_none, normalize_results, normalize_results_dict
+  - compat.decorators: upstream_guard exception mapping
   - routers.compat helpers: _build_list_filters, _paginate_response,
-                             _warn_unsupported_fields, _build_search_kwargs
+                             _warn_unsupported_fields, _build_search_kwargs,
+                             _resolve_existing, _merge_and_update
 """
 
 import logging
@@ -17,7 +19,10 @@ import pytest
 pytest.importorskip("fastapi", reason="fastapi not installed")
 
 from fastapi import HTTPException
+from mem0.exceptions import ValidationError as Mem0ValidationError
+from server.compat.decorators import upstream_guard
 from server.compat.responses import drop_none, normalize_results, normalize_results_dict
+from server.errors import UpstreamError
 from server.compat.scope import (
     build_search_filters,
     collect_entity_params,
@@ -29,7 +34,9 @@ from server.routers.compat import (
     MemoryGetInputV2,
     _build_list_filters,
     _build_search_kwargs,
+    _merge_and_update,
     _paginate_response,
+    _resolve_existing,
     _warn_unsupported_fields,
 )
 
@@ -94,15 +101,11 @@ class TestCollectEntityParams:
         assert result == {"user_id": "explicit"}
 
     def test_and_nested(self):
-        result = collect_entity_params(
-            filters={"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]}
-        )
+        result = collect_entity_params(filters={"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]})
         assert result == {"user_id": "u1"}
 
     def test_or_nested(self):
-        result = collect_entity_params(
-            filters={"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]}
-        )
+        result = collect_entity_params(filters={"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]})
         assert result == {"user_id": "u1", "agent_id": "a1"}
 
     def test_none_values_skipped(self):
@@ -510,3 +513,180 @@ class TestBuildSearchKwargs:
         result = _build_search_kwargs({"user_id": "u1"}, 0, None)
         assert "top_k" in result
         assert result["top_k"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _resolve_existing
+# ---------------------------------------------------------------------------
+
+
+class TestResolveExisting:
+    def test_returns_dict_when_sdk_returns_dict(self):
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "hello"}
+        result = _resolve_existing(mem, "mem-1")
+        assert result == {"id": "mem-1", "memory": "hello"}
+        mem.get.assert_called_once_with("mem-1")
+
+    def test_unwraps_single_item_list(self):
+        mem = MagicMock()
+        mem.get.return_value = [{"id": "mem-1", "memory": "hello"}]
+        result = _resolve_existing(mem, "mem-1")
+        assert result == {"id": "mem-1", "memory": "hello"}
+
+    def test_unwraps_list_takes_first_element(self):
+        """When SDK returns a multi-element list, _resolve_existing picks index 0."""
+        mem = MagicMock()
+        mem.get.return_value = [{"id": "a"}, {"id": "b"}]
+        result = _resolve_existing(mem, "a")
+        assert result == {"id": "a"}
+
+    def test_raises_404_on_none(self):
+        mem = MagicMock()
+        mem.get.return_value = None
+        with pytest.raises(HTTPException) as exc:
+            _resolve_existing(mem, "mem-x")
+        assert exc.value.status_code == 404
+        assert "mem-x" in exc.value.detail
+
+    def test_raises_404_on_empty_list(self):
+        mem = MagicMock()
+        mem.get.return_value = []
+        with pytest.raises(HTTPException) as exc:
+            _resolve_existing(mem, "mem-x")
+        assert exc.value.status_code == 404
+
+    def test_raises_404_on_non_dict(self):
+        mem = MagicMock()
+        mem.get.return_value = "just a string"
+        with pytest.raises(HTTPException) as exc:
+            _resolve_existing(mem, "mem-x")
+        assert exc.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# _merge_and_update
+# ---------------------------------------------------------------------------
+
+
+class TestMergeAndUpdate:
+    def test_new_text_overwrites_existing(self):
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "old text", "metadata": {}}
+        mem.update.return_value = {"message": "updated"}
+        _merge_and_update(mem, "mem-1", text="new text")
+        mem.update.assert_called_once_with(memory_id="mem-1", data="new text", metadata={})
+
+    def test_preserves_existing_text_when_none(self):
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "old text", "metadata": {"key": "val"}}
+        mem.update.return_value = {"message": "updated"}
+        _merge_and_update(mem, "mem-1", text=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", data="old text", metadata={"key": "val"})
+
+    def test_preserves_existing_text_via_text_key(self):
+        """Some SDK responses use 'text' instead of 'memory' for the content field."""
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "text": "via text key", "metadata": {}}
+        mem.update.return_value = {"message": "updated"}
+        _merge_and_update(mem, "mem-1")
+        mem.update.assert_called_once_with(memory_id="mem-1", data="via text key", metadata={})
+
+    def test_metadata_new_keys_override_existing(self):
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"a": 1, "b": 2}}
+        mem.update.return_value = {"message": "updated"}
+        _merge_and_update(mem, "mem-1", metadata={"b": 99, "c": 3})
+        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"a": 1, "b": 99, "c": 3})
+
+    def test_metadata_none_keeps_existing(self):
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"x": 1}}
+        mem.update.return_value = {"message": "updated"}
+        _merge_and_update(mem, "mem-1", metadata=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"x": 1})
+
+    def test_raises_404_when_memory_missing(self):
+        """Delegates to _resolve_existing which raises 404 for missing memory."""
+        mem = MagicMock()
+        mem.get.return_value = None
+        with pytest.raises(HTTPException) as exc:
+            _merge_and_update(mem, "nonexistent", text="new")
+        assert exc.value.status_code == 404
+
+    def test_handles_missing_metadata_on_existing(self):
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "txt"}
+        mem.update.return_value = {"message": "updated"}
+        _merge_and_update(mem, "mem-1", metadata={"new_key": "val"})
+        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"new_key": "val"})
+
+
+# ---------------------------------------------------------------------------
+# upstream_guard exception mapping
+# ---------------------------------------------------------------------------
+
+
+class TestUpstreamGuardExceptionMapping:
+    def _make_wrapped(self, side_effect=None):
+        """Create a function wrapped with @upstream_guard that raises the given side_effect."""
+
+        @upstream_guard
+        def handler():
+            if side_effect:
+                raise side_effect
+            return "ok"
+
+        return handler
+
+    def test_mem0_validation_error_maps_to_400(self):
+        wrapped = self._make_wrapped(Mem0ValidationError("bad input", error_code="VAL_001"))
+        with pytest.raises(HTTPException) as exc:
+            wrapped()
+        assert exc.value.status_code == 400
+        assert "bad input" in exc.value.detail
+
+    def test_value_error_maps_to_400(self):
+        wrapped = self._make_wrapped(ValueError("invalid parameter"))
+        with pytest.raises(HTTPException) as exc:
+            wrapped()
+        assert exc.value.status_code == 400
+        assert "invalid parameter" in exc.value.detail
+
+    def test_http_exception_passes_through(self):
+        original = HTTPException(status_code=403, detail="forbidden")
+        wrapped = self._make_wrapped(original)
+        with pytest.raises(HTTPException) as exc:
+            wrapped()
+        assert exc.value is original
+        assert exc.value.status_code == 403
+
+    def test_other_exception_maps_to_502(self):
+        wrapped = self._make_wrapped(RuntimeError("something broke"))
+        with pytest.raises(UpstreamError) as exc:
+            wrapped()
+        assert exc.value.status_code == 502
+
+    def test_no_exception_returns_normally(self):
+        wrapped = self._make_wrapped()
+        assert wrapped() == "ok"
+
+
+# ---------------------------------------------------------------------------
+# reject_app_id with http_error=False
+# ---------------------------------------------------------------------------
+
+
+class TestRejectAppIdHttpErrorFalse:
+    def test_http_error_false_raises_value_error(self):
+        with pytest.raises(ValueError) as exc:
+            reject_app_id("some-app", http_error=False)
+        assert "app_id" in str(exc.value)
+
+    def test_http_error_true_raises_http_exception(self):
+        with pytest.raises(HTTPException) as exc:
+            reject_app_id("some-app", http_error=True)
+        assert exc.value.status_code == 501
+
+    def test_none_with_http_error_false_passes(self):
+        reject_app_id(None, http_error=False)  # should not raise

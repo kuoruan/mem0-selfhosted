@@ -554,7 +554,7 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
         try:
             _merge_and_update(mem, item.memory_id, text=item.text, metadata=item.metadata)
             updated_count += 1
-        except HTTPException:
+        except (HTTPException, ValueError):
             continue
     return {"message": f"Memories updated successfully, count: {updated_count}."}
 
@@ -663,11 +663,11 @@ def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
 
 
 @router.delete("/v2/entities/{entity_type}/{entity_id}", include_in_schema=False)
-@router.delete("/v2/entities/{entity_type}/{entity_id}/", summary="Delete entity (v2)")
+@router.delete("/v2/entities/{entity_type}/{entity_id}/", summary="Delete entity (v2)", status_code=204)
 @upstream_guard
 def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     try:
-        return get_memory_instance().delete_all(**{get_entity_field(entity_type): entity_id})
+        get_memory_instance().delete_all(**{get_entity_field(entity_type): entity_id})
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
