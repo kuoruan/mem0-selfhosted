@@ -11,6 +11,12 @@
 - Live MCP server: https://mcp.mem0.ai (see `platform/mem0-mcp`).
 - Source repo: https://github.com/mem0ai/mem0
 
+### Don't have a Mem0 API key?
+
+Run: `mem0 init --agent --agent-caller <your-name> --json` — replace `<your-name>` with the AI agent you are (e.g. `claude-code`, `cursor`, `codex`). If you forgot to pass `--agent-caller`, run `mem0 identify <your-name>` after init to attribute the signup.
+
+This mints an evaluation key in <5 seconds — no email, no dashboard, no OTP required. Use it immediately against the Platform API or MCP server. When the human is ready, claim with `mem0 init --email <your-email>` to transfer ownership (memories preserved, same API key, no agent disruption).
+
 ## Install
 
 - Python SDK: `pip install mem0ai`
@@ -153,6 +159,7 @@ If the user is on a pre-current major (Python < 2, TS < 3, or Platform `output_f
 - [Introduction](https://docs.mem0.ai/introduction) [Both]: Use when the user wants a one-page overview of how memory fits between the LLM and the app.
 - [Vibe Code with Mem0](https://docs.mem0.ai/vibecoding) [Both]: Use when the user is in Claude Code, Cursor, or Windsurf and wants memory wired into their editor.
 - [Platform Overview](https://docs.mem0.ai/platform/overview) [Platform]: Use when the user picks the managed product - 4-line integration, sub-50ms retrieval, dashboard.
+- [Sign up as an agent](https://docs.mem0.ai/platform/agent-signup) [Platform]: Use when an AI agent needs to mint a Mem0 API key autonomously - four commands, no email or dashboard, human claims ownership later.
 - [Platform vs Open Source](https://docs.mem0.ai/platform/platform-vs-oss) [Both]: Use when the user is deciding between managed and self-hosted.
 - [Platform Quickstart](https://docs.mem0.ai/platform/quickstart) [Platform]: Use for the first Platform integration - API key plus `MemoryClient.add/search`.
 - [Platform CLI](https://docs.mem0.ai/platform/cli) [Platform]: Use when the user wants to manage Platform memories from the terminal.
@@ -185,8 +192,10 @@ If the user is on a pre-current major (Python < 2, TS < 3, or Platform `output_f
 ### Features - Advanced Retrieval
 - [Advanced Retrieval](https://docs.mem0.ai/platform/features/advanced-retrieval) [Platform]: Use when the user needs keyword search, reranking, or hybrid retrieval.
 - [Criteria-Based Retrieval](https://docs.mem0.ai/platform/features/criteria-retrieval) [Platform]: Use when targeting memories by custom criteria, not just semantic similarity.
+- [Temporal Reasoning](https://docs.mem0.ai/platform/features/temporal-reasoning) [Platform]: Use when time-aware searches like last week, upcoming, or right now need better result ordering.
 - [Contextual Add](https://docs.mem0.ai/platform/features/contextual-add) [Platform]: Use when `add()` should consider the surrounding conversation, not just the latest turn.
 - [Custom Instructions](https://docs.mem0.ai/platform/features/custom-instructions) [Platform]: Use when tailoring what Mem0 extracts and stores on Platform.
+- [Memory Decay](https://docs.mem0.ai/platform/features/memory-decay) [Platform]: Use when search results should boost recently-reinforced memories and dampen stale ones — opt-in per project, search-time only, never filters candidates out.
 - [Advanced Memory Operations](https://docs.mem0.ai/platform/advanced-memory-operations) [Platform]: Use when basic CRUD is not enough - batch ops, complex filters, workflows.
 
 ### Features - Data Management
