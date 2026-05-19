@@ -662,7 +662,7 @@ def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
 
-@router.delete("/v2/entities/{entity_type}/{entity_id}", include_in_schema=False)
+@router.delete("/v2/entities/{entity_type}/{entity_id}", include_in_schema=False, status_code=204)
 @router.delete("/v2/entities/{entity_type}/{entity_id}/", summary="Delete entity (v2)", status_code=204)
 @upstream_guard
 def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
