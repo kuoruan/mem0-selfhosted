@@ -22,8 +22,8 @@ REFRESH_TOKEN_EXPIRE_DAYS = 30
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
 AUTH_DISABLED = os.environ.get("AUTH_DISABLED", "").lower() in {"1", "true", "yes", "on"}
 
-# Pre-computed hash used only for timing-safe dummy verification.
-DUMMY_HASH: bytes = bcrypt.hashpw(b"dummy", bcrypt.gensalt())
+# Pre-computed bcrypt hash of b"dummy" (rounds=12), used only for timing-safe dummy verification.
+DUMMY_HASH: bytes = b"$2b$12$k/g9O8usX37dgo75GqFaG.nC5QjJnh5e9NhW43zoWPjoaDl21gB1q"
 
 
 def hash_password(password: str) -> str:
@@ -31,7 +31,10 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+    try:
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
+    except ValueError:
+        return False
 
 
 def dummy_verify_password() -> None:
@@ -49,7 +52,10 @@ def generate_api_key() -> tuple[str, str, str]:
 
 
 def verify_api_key_hash(plain_key: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain_key.encode(), hashed.encode())
+    try:
+        return bcrypt.checkpw(plain_key.encode(), hashed.encode())
+    except ValueError:
+        return False
 
 
 def _get_secret() -> str:
