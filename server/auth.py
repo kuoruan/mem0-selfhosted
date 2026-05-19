@@ -3,11 +3,12 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
+
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -21,20 +22,21 @@ REFRESH_TOKEN_EXPIRE_DAYS = 30
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
 AUTH_DISABLED = os.environ.get("AUTH_DISABLED", "").lower() in {"1", "true", "yes", "on"}
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Pre-computed hash used only for timing-safe dummy verification.
+DUMMY_HASH: bytes = bcrypt.hashpw(b"dummy", bcrypt.gensalt())
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
 def dummy_verify_password() -> None:
     """Burn the same bcrypt cycles as a real verify so login timing doesn't leak whether an email exists."""
-    pwd_context.dummy_verify()
+    bcrypt.checkpw(b"dummy_plain", DUMMY_HASH)
 
 
 def generate_api_key() -> tuple[str, str, str]:
@@ -42,12 +44,12 @@ def generate_api_key() -> tuple[str, str, str]:
     raw = secrets.token_urlsafe(32)
     full_key = f"m0sk_{raw}"
     prefix = full_key[:12]
-    key_hash = pwd_context.hash(full_key)
+    key_hash = bcrypt.hashpw(full_key.encode(), bcrypt.gensalt()).decode()
     return full_key, prefix, key_hash
 
 
 def verify_api_key_hash(plain_key: str, hashed: str) -> bool:
-    return pwd_context.verify(plain_key, hashed)
+    return bcrypt.checkpw(plain_key.encode(), hashed.encode())
 
 
 def _get_secret() -> str:
