@@ -5,32 +5,32 @@ self-hosted server as closely as practical with ``docs/openapi.json``.
 
 Covered endpoints
 -----------------
-    GET    /v1/ping/
+    GET    /v1/ping
 
-    GET    /v1/memories/
-    POST   /v1/memories/
-    DELETE /v1/memories/
-    GET    /v1/memories/{entity_type}/{entity_id}/
-    GET    /v1/memories/{memory_id}/
-    PUT    /v1/memories/{memory_id}/
-    DELETE /v1/memories/{memory_id}/
-    GET    /v1/memories/{memory_id}/history/
-    POST   /v1/memories/search/
+    GET    /v1/memories
+    POST   /v1/memories
+    DELETE /v1/memories
+    GET    /v1/memories/{entity_type}/{entity_id}
+    GET    /v1/memories/{memory_id}
+    PUT    /v1/memories/{memory_id}
+    DELETE /v1/memories/{memory_id}
+    GET    /v1/memories/{memory_id}/history
+    POST   /v1/memories/search
 
-    POST   /v2/memories/
-    POST   /v2/memories/search/
+    POST   /v2/memories
+    POST   /v2/memories/search
 
-    POST   /v3/memories/
-    POST   /v3/memories/add/
-    POST   /v3/memories/search/
+    POST   /v3/memories
+    POST   /v3/memories/add
+    POST   /v3/memories/search
 
-    GET    /v1/entities/
-    GET    /v1/entities/filters/
-    GET    /v2/entities/{entity_type}/{entity_id}/
-    DELETE /v2/entities/{entity_type}/{entity_id}/
+    GET    /v1/entities
+    GET    /v1/entities/filters
+    GET    /v2/entities/{entity_type}/{entity_id}
+    DELETE /v2/entities/{entity_type}/{entity_id}
 
-    PUT    /v1/batch/
-    DELETE /v1/batch/
+    PUT    /v1/batch
+    DELETE /v1/batch
 """
 
 import json
@@ -374,16 +374,16 @@ def _merge_and_update(
     return mem.update(memory_id=memory_id, data=final_text, metadata=merged)
 
 
-@router.get("/v1/ping", include_in_schema=False)
-@router.get("/v1/ping/", summary="Ping / validate API key")
+@router.get("/v1/ping/", include_in_schema=False)
+@router.get("/v1/ping", summary="Ping / validate API key")
 def ping(_auth=Depends(verify_auth)):
     """Used by ``MemoryClient`` to validate the API key on initialisation."""
     user_email = getattr(_auth, "email", None) if _auth else None
     return {"status": "ok", "message": "pong", "user_email": user_email}
 
 
-@router.get("/v1/memories", include_in_schema=False)
-@router.get("/v1/memories/", summary="Get all memories (v1)")
+@router.get("/v1/memories/", include_in_schema=False)
+@router.get("/v1/memories", summary="Get all memories (v1)")
 @upstream_guard
 def v1_list_memories(
     user_id: Optional[str] = None,
@@ -399,8 +399,8 @@ def v1_list_memories(
     return normalize_results(raw)
 
 
-@router.post("/v1/memories", include_in_schema=False)
-@router.post("/v1/memories/", summary="Add memories (v1)")
+@router.post("/v1/memories/", include_in_schema=False)
+@router.post("/v1/memories", summary="Add memories (v1)")
 @upstream_guard
 def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
@@ -423,8 +423,8 @@ def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
     return normalize_results(raw)
 
 
-@router.get("/v1/memories/{memory_id}", include_in_schema=False)
-@router.get("/v1/memories/{memory_id}/", summary="Get a memory (v1)")
+@router.get("/v1/memories/{memory_id}/", include_in_schema=False)
+@router.get("/v1/memories/{memory_id}", summary="Get a memory (v1)")
 @upstream_guard
 def v1_get_memory(memory_id: str, _auth=Depends(verify_auth)):
     return _resolve_existing(get_memory_instance(), memory_id)
@@ -445,8 +445,8 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
     return _merge_and_update(get_memory_instance(), memory_id, text=body.text, metadata=metadata)
 
 
-@router.delete("/v1/memories/{memory_id}", include_in_schema=False)
-@router.delete("/v1/memories/{memory_id}/", summary="Delete a memory (v1)")
+@router.delete("/v1/memories/{memory_id}/", include_in_schema=False)
+@router.delete("/v1/memories/{memory_id}", summary="Delete a memory (v1)")
 @upstream_guard
 def v1_delete_memory(memory_id: str, _auth=Depends(verify_auth)):
     try:
@@ -455,24 +455,24 @@ def v1_delete_memory(memory_id: str, _auth=Depends(verify_auth)):
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
 
 
-@router.get("/v1/memories/{memory_id}/history", include_in_schema=False)
-@router.get("/v1/memories/{memory_id}/history/", summary="Get memory history (v1)")
+@router.get("/v1/memories/{memory_id}/history/", include_in_schema=False)
+@router.get("/v1/memories/{memory_id}/history", summary="Get memory history (v1)")
 @upstream_guard
 def v1_memory_history(memory_id: str, _auth=Depends(verify_auth)):
     raw = get_memory_instance().history(memory_id=memory_id)
     return normalize_results(raw)
 
 
-@router.get("/v1/memories/{entity_type}/{entity_id}", include_in_schema=False)
-@router.get("/v1/memories/{entity_type}/{entity_id}/", summary="Get memories for an entity (v1)")
+@router.get("/v1/memories/{entity_type}/{entity_id}/", include_in_schema=False)
+@router.get("/v1/memories/{entity_type}/{entity_id}", summary="Get memories for an entity (v1)")
 @upstream_guard
 def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     raw = get_memory_instance().get_all(filters={get_entity_field(entity_type): entity_id})
     return normalize_results(raw)
 
 
-@router.post("/v1/memories/search", include_in_schema=False)
-@router.post("/v1/memories/search/", summary="Search memories (v1)")
+@router.post("/v1/memories/search/", include_in_schema=False)
+@router.post("/v1/memories/search", summary="Search memories (v1)")
 @upstream_guard
 def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
@@ -498,8 +498,8 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     return normalize_results(raw)
 
 
-@router.delete("/v1/memories", include_in_schema=False)
-@router.delete("/v1/memories/", summary="Delete all memories (v1)")
+@router.delete("/v1/memories/", include_in_schema=False)
+@router.delete("/v1/memories", summary="Delete all memories (v1)")
 @upstream_guard
 def v1_delete_all_memories(
     user_id: Optional[str] = None,
@@ -534,8 +534,8 @@ def v1_delete_all_memories(
     return get_memory_instance().delete_all(**params)
 
 
-@router.put("/v1/batch", include_in_schema=False)
-@router.put("/v1/batch/", summary="Batch update memories (v1)")
+@router.put("/v1/batch/", include_in_schema=False)
+@router.put("/v1/batch", summary="Batch update memories (v1)")
 @upstream_guard
 def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     # Validate items: each must have at least text or metadata.
@@ -559,8 +559,8 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     return {"message": f"Memories updated successfully, count: {updated_count}."}
 
 
-@router.delete("/v1/batch", include_in_schema=False)
-@router.delete("/v1/batch/", summary="Batch delete memories (v1)")
+@router.delete("/v1/batch/", include_in_schema=False)
+@router.delete("/v1/batch", summary="Batch delete memories (v1)")
 @upstream_guard
 def v1_batch_delete(
     body: MemoryBatchDeleteLegacyInput | MemoryBatchDeleteInput,
@@ -582,8 +582,8 @@ def v1_batch_delete(
     return {"message": f"Memories deleted successfully, count: {deleted_count}."}
 
 
-@router.get("/v1/entities", include_in_schema=False)
-@router.get("/v1/entities/", summary="List entities (v1)")
+@router.get("/v1/entities/", include_in_schema=False)
+@router.get("/v1/entities", summary="List entities (v1)")
 @upstream_guard
 def v1_list_entities(
     request: Request,
@@ -601,14 +601,14 @@ def v1_list_entities(
     return _paginate_response(request, all_results, page, page_size)
 
 
-@router.get("/v1/entities/filters", include_in_schema=False)
-@router.get("/v1/entities/filters/", summary="List supported entity filters (v1)")
+@router.get("/v1/entities/filters/", include_in_schema=False)
+@router.get("/v1/entities/filters", summary="List supported entity filters (v1)")
 def v1_list_entity_filters(_auth=Depends(verify_auth)):
     return {"results": sorted(VALID_ENTITY_TYPES)}
 
 
-@router.post("/v2/memories", include_in_schema=False)
-@router.post("/v2/memories/", summary="Get all memories (v2)")
+@router.post("/v2/memories/", include_in_schema=False)
+@router.post("/v2/memories", summary="Get all memories (v2)")
 @upstream_guard
 def v2_list_memories(
     request: Request,
@@ -630,8 +630,8 @@ def v2_list_memories(
     return _paginate_response(request, normalize_results(raw), page, page_size)
 
 
-@router.post("/v2/memories/search", include_in_schema=False)
-@router.post("/v2/memories/search/", summary="Search memories (v2)")
+@router.post("/v2/memories/search/", include_in_schema=False)
+@router.post("/v2/memories/search", summary="Search memories (v2)")
 @upstream_guard
 def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
@@ -651,8 +651,8 @@ def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
     return normalize_results_dict(raw)
 
 
-@router.get("/v2/entities/{entity_type}/{entity_id}", include_in_schema=False)
-@router.get("/v2/entities/{entity_type}/{entity_id}/", summary="Get entity details (v2)")
+@router.get("/v2/entities/{entity_type}/{entity_id}/", include_in_schema=False)
+@router.get("/v2/entities/{entity_type}/{entity_id}", summary="Get entity details (v2)")
 @upstream_guard
 def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     get_entity_field(entity_type)  # validate entity_type early
@@ -662,8 +662,8 @@ def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
 
-@router.delete("/v2/entities/{entity_type}/{entity_id}", include_in_schema=False, status_code=204)
-@router.delete("/v2/entities/{entity_type}/{entity_id}/", summary="Delete entity (v2)", status_code=204)
+@router.delete("/v2/entities/{entity_type}/{entity_id}/", include_in_schema=False, status_code=204)
+@router.delete("/v2/entities/{entity_type}/{entity_id}", summary="Delete entity (v2)", status_code=204)
 @upstream_guard
 def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     try:
@@ -672,8 +672,8 @@ def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth
         raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
 
-@router.post("/v3/memories/add", include_in_schema=False)
-@router.post("/v3/memories/add/", summary="Add memory (v3)")
+@router.post("/v3/memories/add/", include_in_schema=False)
+@router.post("/v3/memories/add", summary="Add memory (v3)")
 @upstream_guard
 def v3_add_memory(body: MemoryAddInputV3, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
@@ -712,8 +712,8 @@ def v3_add_memory(body: MemoryAddInputV3, _auth=Depends(verify_auth)):
     return normalize_results_dict(raw)
 
 
-@router.post("/v3/memories", include_in_schema=False)
-@router.post("/v3/memories/", summary="Get all memories (v3)")
+@router.post("/v3/memories/", include_in_schema=False)
+@router.post("/v3/memories", summary="Get all memories (v3)")
 @upstream_guard
 def v3_get_all_memories(
     request: Request,
@@ -732,8 +732,8 @@ def v3_get_all_memories(
     return _paginate_response(request, normalize_results(raw), page, page_size)
 
 
-@router.post("/v3/memories/search", include_in_schema=False)
-@router.post("/v3/memories/search/", summary="Search memories (v3)")
+@router.post("/v3/memories/search/", include_in_schema=False)
+@router.post("/v3/memories/search", summary="Search memories (v3)")
 @upstream_guard
 def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
