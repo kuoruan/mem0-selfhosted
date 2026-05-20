@@ -19,6 +19,7 @@ import pytest
 pytest.importorskip("fastapi", reason="fastapi not installed")
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from mem0.exceptions import ValidationError as Mem0ValidationError
 from server.compat.decorators import upstream_guard
 from server.compat.responses import drop_none, normalize_results, normalize_results_dict
@@ -31,6 +32,8 @@ from server.compat.scope import (
     require_entity_scope,
 )
 from server.routers.compat import (
+    MemoryBatchDeleteInput,
+    MemoryBatchDeleteLegacyInput,
     MemoryGetInputV2,
     _build_list_filters,
     _build_search_kwargs,
@@ -703,8 +706,20 @@ class TestRejectAppIdHttpErrorFalse:
         reject_app_id(None, http_error=False)  # should not raise
 
 
+class TestBatchDeleteInputValidation:
+    def test_legacy_payload_rejects_empty_memories(self):
+        with pytest.raises(ValidationError) as exc:
+            MemoryBatchDeleteLegacyInput(memories=[])
+        assert "must not be empty" in str(exc.value)
+
+    def test_payload_rejects_empty_memory_ids(self):
+        with pytest.raises(ValidationError) as exc:
+            MemoryBatchDeleteInput(memory_ids=[])
+        assert "must not be empty" in str(exc.value)
+
+
 class TestV1ListMemories:
-    def test_filtered_path_returns_results_envelope(self, monkeypatch):
+    def test_filtered_path_returns_bare_results_list(self, monkeypatch):
         mem = MagicMock()
         mem.get_all.return_value = [{"id": "m1"}]
 
