@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from auth import verify_auth
 from compat.decorators import upstream_guard
@@ -152,10 +152,22 @@ class MemoryBatchDeleteLegacyInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     memories: List[MemoryBatchDeleteItem] = Field(description="List of memories to delete (legacy format).")
 
+    @model_validator(mode="after")
+    def _must_have_memories_key(self) -> "MemoryBatchDeleteLegacyInput":
+        if not self.memories:
+            raise ValueError("'memories' must not be empty.")
+        return self
+
 
 class MemoryBatchDeleteInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     memory_ids: List[str] = Field(description="List of memory IDs to delete.")
+
+    @model_validator(mode="after")
+    def _must_have_memory_ids_key(self) -> "MemoryBatchDeleteInput":
+        if not self.memory_ids:
+            raise ValueError("'memory_ids' must not be empty.")
+        return self
 
 
 class MemoryGetInputV2(BaseModel):
