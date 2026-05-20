@@ -23,6 +23,8 @@ UNSUPPORTED_ENTITY_TYPES: dict[str, str] = {
 
 UNSUPPORTED_ENTITY_PARAMS = frozenset({"app_id"})
 
+APP_ID_ERROR_DETAIL = "'app_id' is not supported by the self-hosted server."
+
 
 def reject_app_id(app_id: Optional[str], *, http_error: bool = True) -> None:
     """Raise an error if *app_id* is not None.
@@ -31,10 +33,9 @@ def reject_app_id(app_id: Optional[str], *, http_error: bool = True) -> None:
     Pass ``http_error=False`` to raise ``ValueError`` instead (for MCP tools).
     """
     if app_id is not None:
-        msg = "'app_id' is not supported by the self-hosted server."
         if http_error:
-            raise HTTPException(status_code=501, detail=msg)
-        raise ValueError(msg)
+            raise HTTPException(status_code=501, detail=APP_ID_ERROR_DETAIL)
+        raise ValueError(APP_ID_ERROR_DETAIL)
 
 
 def _scan_filters(
