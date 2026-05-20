@@ -6,6 +6,13 @@ list or dict formats expected by client SDKs and the MCP protocol.
 
 from typing import Any, Dict, List
 
+from fastapi import HTTPException
+
+API_UNSUPPORTED = HTTPException(
+    status_code=501,
+    detail="This API is not supported by the self-hosted server.",
+)
+
 
 def drop_none(d: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy of *d* with all ``None`` values removed."""
