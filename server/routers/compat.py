@@ -309,12 +309,12 @@ def _build_list_filters(
 ) -> Dict[str, Any]:
     """Build SDK filter dict for get_all from a MemoryGetInputV2 body.
 
-    Starts from body.filters so non-entity conditions (e.g. created_at) are
-    preserved, then merges date / categories convenience fields for flat format.
-    setdefault avoids overriding conditions already present in body.filters.
+    Merges entity_params into body.filters so entity scope is always present.
+    setdefault avoids overriding conditions already supplied in body.filters.
     """
     sdk_filters: Dict[str, Any] = dict(body.filters) if body.filters else dict(entity_params)
     if "AND" not in sdk_filters and "OR" not in sdk_filters and "NOT" not in sdk_filters:
+        sdk_filters.update(entity_params)
         date_filter: Dict[str, str] = {}
         if body.start_date:
             date_filter["gte"] = body.start_date
@@ -529,7 +529,7 @@ def v1_delete_all_memories(
     # ``filters`` is a legacy query-string JSON blob (not the structured dict
     # used in v2/v3 body endpoints). Only parse it when no explicit entity
     # params are given, to avoid silently overriding explicit args.
-    if filters and not any([user_id, agent_id, run_id]):
+    if filters and not any((user_id, agent_id, run_id)):
         try:
             filters_dict = json.loads(filters)
         except json.JSONDecodeError:

@@ -38,6 +38,7 @@ from server.routers.compat import (
     _paginate_response,
     _resolve_existing,
     _warn_unsupported_fields,
+    v1_list_memories,
 )
 
 
@@ -366,6 +367,16 @@ class TestBuildListFilters:
         assert "categories" not in result
         assert "AND" in result
 
+    def test_and_filters_do_not_mix_top_level_entity_keys(self):
+        body = self._body(filters={"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]})
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert result == {"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]}
+
+    def test_or_filters_do_not_mix_top_level_entity_keys(self):
+        body = self._body(filters={"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]})
+        result = _build_list_filters(body, {"user_id": "u1", "agent_id": "a1"})
+        assert result == {"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]}
+
     def test_does_not_mutate_body_filters(self):
         original = {"user_id": "u1"}
         body = self._body(filters=original, start_date="2024-01-01")
@@ -690,3 +701,16 @@ class TestRejectAppIdHttpErrorFalse:
 
     def test_none_with_http_error_false_passes(self):
         reject_app_id(None, http_error=False)  # should not raise
+
+
+class TestV1ListMemories:
+    def test_filtered_path_returns_results_envelope(self, monkeypatch):
+        mem = MagicMock()
+        mem.get_all.return_value = [{"id": "m1"}]
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        result = v1_list_memories(user_id="u1", _auth=None)
+
+        assert result == [{"id": "m1"}]
+        mem.get_all.assert_called_once_with(filters={"user_id": "u1"})
