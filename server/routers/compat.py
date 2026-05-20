@@ -29,6 +29,10 @@ Covered endpoints
     GET    /v2/entities/{entity_type}/{entity_id}
     DELETE /v2/entities/{entity_type}/{entity_id}
 
+    GET    /v1/events
+    GET    /v1/event/{event_id}
+    GET    /v1/memories/events
+
     PUT    /v1/batch
     DELETE /v1/batch
 """
@@ -532,6 +536,59 @@ def v1_delete_all_memories(
             detail="One of the filters: user_id, agent_id, or run_id is required!",
         )
     return get_memory_instance().delete_all(**params)
+
+
+@router.get("/v1/events/", include_in_schema=False)
+@router.get("/v1/events", summary="List events (v1)")
+@upstream_guard
+def v1_list_events(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=200),
+    _auth=Depends(verify_auth),
+):
+    """Retrieve all events for the current project.
+
+    The hosted platform returns a paginated envelope ``{count, next, previous,
+    results}`` where each result tracks an asynchronous operation (ADD, SEARCH,
+    etc.) with status (PENDING, RUNNING, FAILED, SUCCEEDED) and timing metadata.
+    The self-hosted server does not implement event tracking.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Event tracking is only available on the Mem0 hosted platform.",
+    )
+
+
+@router.get("/v1/event/{event_id}/", include_in_schema=False)
+@router.get("/v1/event/{event_id}", summary="Get event details (v1)")
+@upstream_guard
+def v1_get_event(event_id: str, _auth=Depends(verify_auth)):
+    """Retrieve details of a specific event by its ID.
+
+    The hosted platform returns an event object with ``id``, ``event_type``,
+    ``status``, ``payload``, ``results``, and timing fields. The self-hosted
+    server does not implement event tracking.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Event tracking is only available on the Mem0 hosted platform.",
+    )
+
+
+@router.get("/v1/memories/events/", include_in_schema=False)
+@router.get("/v1/memories/events", summary="List memory events (v1)")
+@upstream_guard
+def v1_list_memory_events(_auth=Depends(verify_auth)):
+    """Retrieve memory-level events.
+
+    The hosted platform returns memory event entries. The self-hosted server
+    does not implement event tracking.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Event tracking is only available on the Mem0 hosted platform.",
+    )
 
 
 @router.put("/v1/batch/", include_in_schema=False)
