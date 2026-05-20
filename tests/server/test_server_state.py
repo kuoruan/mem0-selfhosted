@@ -58,3 +58,37 @@ def test_load_config_file_raises_runtime_error_for_unreadable_file(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Failed to read mem0 config file"):
         server_state._load_config_file("/tmp/config.json")
+
+
+def test_list_all_memories_handles_tuple_vector_store_shape(monkeypatch):
+    class Row:
+        def __init__(self, row_id, payload):
+            self.id = row_id
+            self.payload = payload
+
+    class VectorStore:
+        def list(self, top_k):
+            return ([Row("m1", {"data": "hello", "user_id": "u1"})], "next-token")
+
+    class MemoryInstance:
+        vector_store = VectorStore()
+
+    monkeypatch.setattr(server_state, "get_memory_instance", lambda: MemoryInstance())
+
+    result = server_state.list_all_memories()
+
+    assert result == {
+        "results": [
+            {
+                "id": "m1",
+                "memory": "hello",
+                "user_id": "u1",
+                "agent_id": None,
+                "run_id": None,
+                "hash": None,
+                "metadata": {},
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+    }
