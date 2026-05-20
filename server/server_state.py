@@ -173,5 +173,12 @@ def serialize_memory(row: Any) -> Dict[str, Any]:
 
 def list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
     results = get_memory_instance().vector_store.list(top_k=limit)
-    rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
+    if not results:
+        rows = []
+    elif isinstance(results, tuple):
+        rows = results[0] if isinstance(results[0], list) else []
+    elif isinstance(results, list) and results and isinstance(results[0], list):
+        rows = results[0]
+    else:
+        rows = results
     return {"results": [serialize_memory(row) for row in rows]}
