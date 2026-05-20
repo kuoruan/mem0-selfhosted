@@ -8,10 +8,12 @@ from typing import Any, Dict, List
 
 from fastapi import HTTPException
 
-API_UNSUPPORTED = HTTPException(
-    status_code=501,
-    detail="This API is not supported by the self-hosted server.",
-)
+API_UNSUPPORTED_DETAIL = "This API is not supported by the self-hosted server."
+
+
+def unsupported_api_error() -> HTTPException:
+    """Return a fresh 501 exception for unsupported self-hosted endpoints."""
+    return HTTPException(status_code=501, detail=API_UNSUPPORTED_DETAIL)
 
 
 def drop_none(d: Dict[str, Any]) -> Dict[str, Any]:

@@ -48,7 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from auth import verify_auth
 from compat.decorators import upstream_guard
 from compat.entities import list_entities_payload
-from compat.responses import API_UNSUPPORTED, drop_none, normalize_results, normalize_results_dict
+from compat.responses import drop_none, normalize_results, normalize_results_dict, unsupported_api_error
 from compat.scope import (
     VALID_ENTITY_TYPES,
     build_search_filters,
@@ -153,7 +153,7 @@ class MemoryBatchDeleteLegacyInput(BaseModel):
     memories: List[MemoryBatchDeleteItem] = Field(description="List of memories to delete (legacy format).")
 
     @model_validator(mode="after")
-    def _must_have_memories_key(self) -> "MemoryBatchDeleteLegacyInput":
+    def _validate_memories_not_empty(self) -> "MemoryBatchDeleteLegacyInput":
         if not self.memories:
             raise ValueError("'memories' must not be empty.")
         return self
@@ -164,7 +164,7 @@ class MemoryBatchDeleteInput(BaseModel):
     memory_ids: List[str] = Field(description="List of memory IDs to delete.")
 
     @model_validator(mode="after")
-    def _must_have_memory_ids_key(self) -> "MemoryBatchDeleteInput":
+    def _validate_memory_ids_not_empty(self) -> "MemoryBatchDeleteInput":
         if not self.memory_ids:
             raise ValueError("'memory_ids' must not be empty.")
         return self
@@ -309,12 +309,12 @@ def _build_list_filters(
 ) -> Dict[str, Any]:
     """Build SDK filter dict for get_all from a MemoryGetInputV2 body.
 
-    Merges entity_params into body.filters so entity scope is always present.
-    setdefault avoids overriding conditions already supplied in body.filters.
+    Uses the caller-provided filter tree as-is, falling back to entity_params
+    only when no filters were supplied. Date/category convenience fields are
+    injected only for flat filter dicts (no AND/OR/NOT operators).
     """
     sdk_filters: Dict[str, Any] = dict(body.filters) if body.filters else dict(entity_params)
     if "AND" not in sdk_filters and "OR" not in sdk_filters and "NOT" not in sdk_filters:
-        sdk_filters.update(entity_params)
         date_filter: Dict[str, str] = {}
         if body.start_date:
             date_filter["gte"] = body.start_date
@@ -566,7 +566,7 @@ def v1_list_events(
     etc.) with status (PENDING, RUNNING, FAILED, SUCCEEDED) and timing metadata.
     The self-hosted server does not implement event tracking.
     """
-    raise API_UNSUPPORTED
+    raise unsupported_api_error()
 
 
 @router.get("/v1/event/{event_id}/", include_in_schema=False)
@@ -579,7 +579,7 @@ def v1_get_event(event_id: str, _auth=Depends(verify_auth)):
     ``status``, ``payload``, ``results``, and timing fields. The self-hosted
     server does not implement event tracking.
     """
-    raise API_UNSUPPORTED
+    raise unsupported_api_error()
 
 
 @router.get("/v1/memories/events/", include_in_schema=False)
@@ -591,7 +591,7 @@ def v1_list_memory_events(_auth=Depends(verify_auth)):
     The hosted platform returns memory event entries. The self-hosted server
     does not implement event tracking.
     """
-    raise API_UNSUPPORTED
+    raise unsupported_api_error()
 
 
 @router.put("/v1/batch/", include_in_schema=False)
