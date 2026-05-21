@@ -219,3 +219,24 @@ async def require_auth(
                 return default_user
         raise HTTPException(status_code=401, detail="Authentication required.")
     return user
+
+
+def ensure_admin(request: Request, user: User | None) -> None:
+    """Guard that raises if the caller lacks admin privileges."""
+    if user is not None and user.role == "admin":
+        return
+    if getattr(request.state, "auth_type", "none") in {"admin_api_key", "disabled"}:
+        return
+    raise HTTPException(status_code=403, detail="Admin privileges required.")
+
+
+def require_admin(request: Request, user: User | None = Depends(verify_auth), db: Session = Depends(get_db)) -> User:
+    """Verify the user is an admin. Use for endpoints that require admin privileges."""
+    if user is not None and user.role == "admin":
+        return user
+    if getattr(request.state, "auth_type", "none") in {"admin_api_key", "disabled"}:
+        default_user = _get_default_user(db)
+        if default_user is not None:
+            return default_user
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    raise HTTPException(status_code=403, detail="Admin privileges required.")

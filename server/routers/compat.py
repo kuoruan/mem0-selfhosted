@@ -45,7 +45,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from auth import verify_auth
+from auth import ensure_admin, verify_auth
 from compat.decorators import upstream_guard
 from compat.entities import list_entities_payload
 from compat.responses import drop_none, normalize_results, normalize_results_dict, unsupported_api_error
@@ -402,16 +402,21 @@ def ping(_auth=Depends(verify_auth)):
 @router.get("/v1/memories", summary="Get all memories (v1)")
 @upstream_guard
 def v1_list_memories(
+    request: Request,
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
     run_id: Optional[str] = None,
     app_id: Optional[str] = None,
-    _auth=Depends(verify_auth),
+    auth=Depends(verify_auth),
 ):
     reject_app_id(app_id)
     filters = drop_none({"user_id": user_id, "agent_id": agent_id, "run_id": run_id})
 
-    raw = get_memory_instance().get_all(filters=filters) if filters else list_all_memories()
+    if not filters:
+        ensure_admin(request, auth)
+        raw = list_all_memories()
+    else:
+        raw = get_memory_instance().get_all(filters=filters)
     return normalize_results(raw)
 
 
