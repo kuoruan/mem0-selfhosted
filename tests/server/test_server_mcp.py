@@ -12,7 +12,9 @@ from fastapi.testclient import TestClient
 
 import server.mcp_server as mcp_server
 
-MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
+# MCP_HEADERS with a User-Agent prefixed with "Mozilla" so it's skipped as generic,
+# avoiding platform injection in tests that don't explicitly test that feature.
+MCP_HEADERS = {"Accept": "application/json, text/event-stream", "User-Agent": "Mozilla"}
 
 
 def _jsonrpc(method: str, params: dict | None = None, req_id: int = 1) -> dict:
@@ -109,6 +111,7 @@ def test_add_memory_tool_uses_explicit_user_id(mcp_testbed):
     mock_memory.add.assert_called_once_with(
         messages=[{"role": "user", "content": "remember this"}],
         user_id="alice",
+        metadata={"source": "MCP"},
     )
     assert structured["results"][0]["id"] == "mem-1"
 
@@ -163,6 +166,7 @@ def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):
     mock_memory.add.assert_called_once_with(
         messages=[{"role": "user", "content": "remember this"}],
         user_id=auth_uid,
+        metadata={"source": "MCP"},
     )
 
 
@@ -182,6 +186,7 @@ def test_add_memory_infer_false_passes_flag(mcp_testbed):
     mock_memory.add.assert_called_once_with(
         messages=[{"role": "user", "content": "verbatim"}],
         user_id="alice",
+        metadata={"source": "MCP"},
         infer=False,
     )
 
@@ -205,7 +210,7 @@ def test_add_memory_with_metadata(mcp_testbed):
     mock_memory.add.assert_called_once_with(
         messages=[{"role": "user", "content": "decision made"}],
         user_id="alice",
-        metadata={"type": "decision"},
+        metadata={"source": "MCP", "type": "decision"},
     )
 
 
@@ -337,26 +342,26 @@ def test_update_memory_with_metadata(mcp_testbed):
     mock_memory.update.assert_called_once_with(memory_id="mem-1", data="new text", metadata={"type": "revised"})
 
 
-def test_client_name_context_is_taken_from_header(mcp_testbed):
+def test_platform_context_is_taken_from_header(mcp_testbed):
     module, client, _ = mcp_testbed
     captured: dict[str, str | None] = {}
 
-    @module.mcp.tool(name="__test_client_name", description="test only")
-    def _capture_client_name() -> dict[str, str | None]:
-        captured["client_name"] = module.client_name_var.get(None)
-        return {"client_name": captured["client_name"]}
+    @module.mcp.tool(name="__test_platform", description="test only")
+    def _capture_platform() -> dict[str, str | None]:
+        captured["platform"] = module.platform_var.get(None)
+        return {"platform": captured["platform"]}
 
-    headers = {**MCP_HEADERS, "x-mcp-client-name": "cursor-test"}
+    headers = {**MCP_HEADERS, "x-mem0-platform": "cursor"}
 
     try:
         response = client.post(
             "/mcp",
-            json=_jsonrpc("tools/call", {"name": "__test_client_name", "arguments": {}}, req_id=2),
+            json=_jsonrpc("tools/call", {"name": "__test_platform", "arguments": {}}, req_id=2),
             headers=headers,
         )
         assert response.status_code == 200
         structured = response.json()["result"]["structuredContent"]
-        assert captured["client_name"] == "cursor-test"
-        assert structured["client_name"] == "cursor-test"
+        assert captured["platform"] == "cursor"
+        assert structured["platform"] == "cursor"
     finally:
-        module.mcp._tool_manager._tools.pop("__test_client_name", None)
+        module.mcp._tool_manager._tools.pop("__test_platform", None)
