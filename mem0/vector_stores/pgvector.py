@@ -99,7 +99,7 @@ class PGVector(VectorStoreBase):
             connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
             if sslmode:
                 connection_string = f"{connection_string} sslmode={sslmode}"
-        
+
         if self.connection_pool is None:
             if PSYCOPG_VERSION == 3:
                 # psycopg3 ConnectionPool
@@ -260,7 +260,7 @@ class PGVector(VectorStoreBase):
             )
 
             results = cur.fetchall()
-        return [OutputData(id=str(r[0]), score=float(r[1]), payload=r[2]) for r in results]
+        return [OutputData(id=str(r[0]), score=max(0.0, min(1.0, 1.0 - float(r[1]))), payload=r[2]) for r in results]
 
     def keyword_search(self, query, top_k=5, filters=None):
         """
