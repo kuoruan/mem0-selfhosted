@@ -65,8 +65,7 @@ def add_memory(
     )
     conversation = messages if messages is not None else [{"role": "user", "content": text}]
     add_kwargs: dict[str, Any] = {**scope}
-    if metadata is not None:
-        add_kwargs["metadata"] = metadata
+    add_kwargs["metadata"] = {"source": "MCP", **(metadata or {})}
     if not infer:
         add_kwargs["infer"] = False
 
