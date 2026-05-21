@@ -47,6 +47,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from auth import ensure_admin, verify_auth
 from compat.decorators import upstream_guard
+from compat.requests import RequestMeta, request_meta
 from compat.entities import list_entities_payload
 from compat.responses import drop_none, normalize_results, normalize_results_dict, unsupported_api_error
 from compat.scope import (
@@ -423,7 +424,7 @@ def v1_list_memories(
 @router.post("/v1/memories/", include_in_schema=False)
 @router.post("/v1/memories", summary="Add memories (v1)")
 @upstream_guard
-def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
+def v1_add_memories(body: MemoryAddInput, meta: RequestMeta = Depends(request_meta), _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     entity_params = collect_entity_params(
         user_id=body.user_id,
@@ -435,10 +436,20 @@ def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
     params = drop_none({**entity_params, "metadata": body.metadata})
     if body.infer is not None:
         params["infer"] = body.infer
-    if body.categories:
-        meta = params.get("metadata") or {}
-        meta.setdefault("categories", body.categories)
-        params["metadata"] = meta
+
+    # Three-layer priority: header-injected (lowest) < body.metadata < explicit body fields (highest).
+    # Layer 1 – setdefault: header source/platform only fill in when the key is absent.
+    # Layer 2 – body.metadata: already present in md from params; setdefault preserves its values.
+    # Layer 3 – update: explicit body field (categories) always wins.
+    if meta.source or meta.platform or body.categories:
+        md = params.get("metadata") or {}
+        if meta.source:
+            md.setdefault("source", meta.source)
+        if meta.platform:
+            md.setdefault("platform", meta.platform)
+        if body.categories:
+            md.update({"categories": body.categories})
+        params["metadata"] = md
 
     raw = get_memory_instance().add(messages=body.messages, **params)
     return normalize_results(raw)
@@ -740,7 +751,7 @@ def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth
 @router.post("/v3/memories/add/", include_in_schema=False)
 @router.post("/v3/memories/add", summary="Add memory (v3)")
 @upstream_guard
-def v3_add_memory(body: MemoryAddInputV3, _auth=Depends(verify_auth)):
+def v3_add_memory(body: MemoryAddInputV3, meta: RequestMeta = Depends(request_meta), _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     entity_params = collect_entity_params(
         filters=body.filters,
@@ -757,8 +768,11 @@ def v3_add_memory(body: MemoryAddInputV3, _auth=Depends(verify_auth)):
             "infer": body.infer,
         }
     )
-    # Merge platform-only fields into metadata for self-hosted preservation
-    extra_meta = drop_none(
+    # Three-layer priority: header-injected (lowest) < body.metadata < explicit body fields (highest).
+    # Layer 1 – setdefault: header source/platform only fill in when the key is absent.
+    # Layer 2 – body.metadata: already present in md from params; setdefault preserves its values.
+    # Layer 3 – update: dedicated body fields (custom_categories, body.source, …) always win.
+    extra_md = drop_none(
         {
             "custom_categories": body.custom_categories,
             "custom_instructions": body.custom_instructions,
@@ -768,10 +782,16 @@ def v3_add_memory(body: MemoryAddInputV3, _auth=Depends(verify_auth)):
             "deduced_memories": body.deduced_memories,
         }
     )
-    if extra_meta:
-        meta = params.get("metadata") or {}
-        meta.update(extra_meta)
-        params["metadata"] = meta
+
+    if meta.source or meta.platform or extra_md:
+        md = params.get("metadata") or {}
+        if meta.source:
+            md.setdefault("source", meta.source)
+        if meta.platform:
+            md.setdefault("platform", meta.platform)
+        if extra_md:
+            md.update(extra_md)  # explicit body fields win over body.metadata
+        params["metadata"] = md
 
     raw = get_memory_instance().add(messages=body.messages, **params)
     return normalize_results_dict(raw)

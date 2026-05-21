@@ -12,6 +12,7 @@ from pydantic import Field
 
 from auth import verify_auth
 from compat.entities import list_entities_payload
+from compat.requests import request_meta
 from compat.responses import normalize_results, normalize_results_dict
 from compat.scope import build_search_filters, collect_entity_params, reject_app_id, require_entity_scope
 from server_state import get_memory_instance
@@ -19,7 +20,8 @@ from server_state import get_memory_instance
 logger = logging.getLogger("mem0.server.mcp")
 
 auth_user_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("mcp_user_id", default=None)
-client_name_var: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_client_name", default="mem0-mcp")
+platform_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("mcp_platform", default=None)
+mem0_source_var: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_mem0_source", default="MCP")
 
 mcp = FastMCP("mem0")
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP Endpoints"])
@@ -65,7 +67,11 @@ def add_memory(
     )
     conversation = messages if messages is not None else [{"role": "user", "content": text}]
     add_kwargs: dict[str, Any] = {**scope}
-    add_kwargs["metadata"] = {"source": "MCP", **(metadata or {})}
+    base_md: dict[str, Any] = {"source": mem0_source_var.get()}
+
+    if platform := platform_var.get():
+        base_md["platform"] = platform
+    add_kwargs["metadata"] = {**base_md, **(metadata or {})}
     if not infer:
         add_kwargs["infer"] = False
 
@@ -318,14 +324,18 @@ async def _run_streamable_transport(request: Request) -> Response:
 @mcp_router.api_route("", methods=["GET", "POST", "DELETE"], summary="MCP Endpoint")
 async def handle_streamable_http(request: Request, user=Depends(verify_auth)):
     auth_token = auth_user_id_var.set(str(user.id) if user is not None else None)
-    client_token = client_name_var.set(
-        request.headers.get("x-mcp-client-name") or request.headers.get("user-agent") or "mem0-mcp"
-    )
+
+    meta = request_meta(request)
+
+    platform_token = platform_var.set(meta.platform or meta.ua_tool_name)
+    source_token = mem0_source_var.set(meta.source or "MCP")
+
     try:
         return await _run_streamable_transport(request)
     finally:
         auth_user_id_var.reset(auth_token)
-        client_name_var.reset(client_token)
+        platform_var.reset(platform_token)
+        mem0_source_var.reset(source_token)
 
 
 def setup_mcp_server(app: FastAPI) -> None:
