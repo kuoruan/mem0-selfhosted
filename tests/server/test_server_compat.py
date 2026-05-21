@@ -725,7 +725,7 @@ class TestV1ListMemories:
 
         monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
 
-        result = v1_list_memories(user_id="u1", _auth=None)
+        result = v1_list_memories(request=MagicMock(), user_id="u1", auth=None)
 
         assert result == [{"id": "m1"}]
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"})
