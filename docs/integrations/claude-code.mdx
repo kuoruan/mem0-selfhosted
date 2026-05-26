@@ -22,10 +22,25 @@ Before setting up Mem0 with Claude Code, ensure you have:
 
 2. Claude Code CLI or Claude Cowork desktop app installed
 
-3. Your API key exported in your shell:
+3. Your API key added to your shell profile (persists across sessions):
+
+<CodeGroup>
+```bash zsh
+echo 'export MEM0_API_KEY="m0-your-api-key"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+```bash bash
+echo 'export MEM0_API_KEY="m0-your-api-key"' >> ~/.bashrc
+source ~/.bashrc
+```
+</CodeGroup>
+
+Confirm it's set:
 
 ```bash
-export MEM0_API_KEY="m0-your-api-key"
+echo $MEM0_API_KEY
+# Should print: m0-your-api-key
 ```
 
 ## Installation
@@ -83,6 +98,39 @@ Add to your Claude Code MCP config (`.mcp.json`):
 <Info icon="check">
   Start a new session and ask: *"List my mem0 entities"* or *"Search my memories for hello"*. If the `mem0` tools appear and respond, you're all set.
 </Info>
+
+## Post-Installation: Run `/mem0:onboard`
+
+After installing the plugin, start a new Claude Code session and run:
+
+```
+/mem0:onboard
+```
+
+This runs the setup wizard which:
+1. Verifies your API key and MCP connection
+2. Detects and imports project files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`)
+3. Installs coding-optimized memory categories
+4. Shows your identity (user ID, project scope, branch)
+
+The onboarding is idempotent — safe to re-run anytime. It auto-triggers on first session in a new project, but you can always invoke it manually.
+
+## Available Skills
+
+The plugin includes 17 skills accessible via `/mem0:` commands:
+
+| Command | Description |
+|---------|-------------|
+| `/mem0:remember` | Store a memory verbatim — decisions, preferences, conventions |
+| `/mem0:tour` | Browse all memories grouped by category |
+| `/mem0:peek` | Quick search with compact one-liner results |
+| `/mem0:stats` | Session and project memory statistics |
+| `/mem0:dream` | Consolidate memories — merge duplicates, resolve contradictions |
+| `/mem0:pin` | Protect critical memories from pruning |
+| `/mem0:forget` | Delete memories by search or ID |
+| `/mem0:health` | Diagnose connectivity, API key, and read/write |
+| `/mem0:export` | Export memories to portable Markdown |
+| `/mem0:import` | Import memories from export file or MEMORY.md |
 
 ## What's Included
 
@@ -149,9 +197,10 @@ You: Add refresh token rotation to the auth system.
 
 ## Troubleshooting
 
-- **"Connection failed"** — Verify `MEM0_API_KEY` is set in your shell: `echo $MEM0_API_KEY`
+- **"Connection failed"** — Verify `MEM0_API_KEY` is set in your shell: `echo $MEM0_API_KEY`. If empty, add it to your shell profile (see Prerequisites)
 - **No tools appearing** — Restart your Claude Code session after installation
-- **Memories not being captured** — Ensure you installed via the plugin marketplace (Option A) for lifecycle hooks. MCP-only installs require manual memory operations.
+- **Memories not being captured** — Ensure you installed via the plugin marketplace (Option A) for lifecycle hooks. MCP-only installs require manual memory operations
+- **"Mem0 Inactive" banner every session** — Your API key isn't persisting. Add `export MEM0_API_KEY="m0-..."` to your `~/.zshrc` (or `~/.bashrc`) and run `source ~/.zshrc`
 
 <CardGroup cols={2}>
   <Card title="Mem0 MCP Setup" icon="puzzle-piece" href="/platform/mem0-mcp">

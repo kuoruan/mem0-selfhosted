@@ -22,11 +22,19 @@ Before setting up Mem0 with Codex, ensure you have:
 
 2. OpenAI Codex access
 
-3. Your API key exported in your shell:
+3. Your API key added to your shell profile (persists across sessions):
 
-```bash
-export MEM0_API_KEY="m0-your-api-key"
+<CodeGroup>
+```bash zsh
+echo 'export MEM0_API_KEY="m0-your-api-key"' >> ~/.zshrc
+source ~/.zshrc
 ```
+
+```bash bash
+echo 'export MEM0_API_KEY="m0-your-api-key"' >> ~/.bashrc
+source ~/.bashrc
+```
+</CodeGroup>
 
 ## Installation
 
@@ -172,7 +180,7 @@ The Codex plugin manifest (`.codex-plugin/plugin.json`) follows the Codex plugin
 ```json
 {
   "name": "mem0",
-  "version": "0.1.0",
+  "version": "0.2.5",
   "description": "Mem0 memory layer for AI applications.",
   "skills": "./skills/",
   "mcpServers": "./.codex-mcp.json",
