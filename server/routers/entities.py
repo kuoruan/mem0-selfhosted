@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from auth import verify_auth
 from errors import upstream_error
 from schemas import MessageResponse
+from memory_lock import run_memory_write
 from server_state import get_memory_instance
 
 router = APIRouter(prefix="/entities", tags=["entities"])
@@ -71,7 +72,10 @@ def list_entities(_auth=Depends(verify_auth)):
 @router.delete("/{entity_type}/{entity_id}", response_model=MessageResponse)
 def delete_entity(entity_type: EntityType, entity_id: str, _auth=Depends(verify_auth)):
     try:
-        get_memory_instance().delete_all(**{TYPE_TO_FIELD[entity_type]: entity_id})
+        run_memory_write(
+            lambda memory: memory.delete_all(**{TYPE_TO_FIELD[entity_type]: entity_id}),
+            {TYPE_TO_FIELD[entity_type]: entity_id},
+        )
     except Exception:
         raise upstream_error()
     return MessageResponse(message="Entity deleted")

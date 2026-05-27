@@ -30,6 +30,7 @@ from routers import auth as auth_router
 from routers import compat as compat_router
 from routers import entities as entities_router
 from routers import requests as requests_router
+from memory_lock import entity_scope_from_params, run_memory_write, run_memory_write_for_memory_id
 from schemas import MessageResponse
 from server_state import (
     get_current_config,
@@ -407,7 +408,10 @@ def add_memory(memory_create: MemoryCreate, _auth=Depends(verify_auth)):
 
     params = {k: v for k, v in memory_create.model_dump().items() if v is not None and k != "messages"}
     try:
-        response = get_memory_instance().add(messages=[m.model_dump() for m in memory_create.messages], **params)
+        response = run_memory_write(
+            lambda memory: memory.add(messages=[m.model_dump() for m in memory_create.messages], **params),
+            entity_scope_from_params(params),
+        )
         return JSONResponse(content=response)
     except Exception:
         raise upstream_error()
@@ -476,8 +480,11 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
 def update_memory(memory_id: str, updated_memory: MemoryUpdate, _auth=Depends(verify_auth)):
     """Update an existing memory."""
     try:
-        return get_memory_instance().update(
-            memory_id=memory_id, data=updated_memory.text, metadata=updated_memory.metadata
+        return run_memory_write_for_memory_id(
+            lambda memory: memory.update(
+                memory_id=memory_id, data=updated_memory.text, metadata=updated_memory.metadata
+            ),
+            memory_id,
         )
     except Exception:
         raise upstream_error()
@@ -496,7 +503,7 @@ def memory_history(memory_id: str, _auth=Depends(verify_auth)):
 def delete_memory(memory_id: str, _auth=Depends(verify_auth)):
     """Delete a specific memory by ID."""
     try:
-        get_memory_instance().delete(memory_id=memory_id)
+        run_memory_write_for_memory_id(lambda memory: memory.delete(memory_id=memory_id), memory_id)
         return MessageResponse(message="Memory deleted successfully")
     except Exception:
         raise upstream_error()
@@ -516,7 +523,7 @@ def delete_all_memories(
         params = {
             k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
         }
-        get_memory_instance().delete_all(**params)
+        run_memory_write(lambda memory: memory.delete_all(**params), entity_scope_from_params(params))
         return MessageResponse(message="All relevant memories deleted")
     except Exception:
         raise upstream_error()
@@ -526,7 +533,7 @@ def delete_all_memories(
 def reset_memory(_auth=Depends(require_admin)):
     """Completely reset stored memories."""
     try:
-        get_memory_instance().reset()
+        run_memory_write(lambda memory: memory.reset(), global_lock=True)
         return {"message": "All memories reset"}
     except Exception:
         raise upstream_error()

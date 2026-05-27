@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict
 
 from mem0 import Memory
 
+from memory_lock import memory_scope_lock
+
 _state_lock = threading.RLock()
 _current_config: Dict[str, Any] = {}
 _memory_instance: Memory | None = None
@@ -129,15 +131,16 @@ def _config_effectively_changed(old: Dict[str, Any], new: Dict[str, Any]) -> boo
 
 def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:
     global _current_config, _memory_instance
-    with _state_lock:
-        next_config = _merge_config(_current_config, updates)
-        if _config_effectively_changed(_current_config, next_config):
-            _memory_instance = Memory.from_config(next_config)
-        _current_config = next_config
-        overrides = _load_overrides()
-        overrides = _merge_config(overrides, updates)
-        _save_overrides(overrides)
-        return deepcopy(_current_config)
+    with memory_scope_lock(global_lock=True):
+        with _state_lock:
+            next_config = _merge_config(_current_config, updates)
+            if _config_effectively_changed(_current_config, next_config):
+                _memory_instance = Memory.from_config(next_config)
+            _current_config = next_config
+            overrides = _load_overrides()
+            overrides = _merge_config(overrides, updates)
+            _save_overrides(overrides)
+            return deepcopy(_current_config)
 
 
 def get_current_config() -> Dict[str, Any]:

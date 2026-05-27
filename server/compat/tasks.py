@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from compat.events import event_cache_update
 from compat.responses import normalize_results
+from memory_lock import entity_scope_from_params, run_memory_write
 
 logger = logging.getLogger("mem0.server.compat.tasks")
 
@@ -15,12 +16,15 @@ def run_v3_add_memory_task(
     event_id: str,
     messages: List[Dict[str, Any]],
     params: Dict[str, Any],
-    memory_instance: Any,
 ) -> None:
     """Execute add in the background and update synthetic event status."""
     started_at = time.perf_counter()
+    entity_scope = entity_scope_from_params(params)
     try:
-        raw = memory_instance.add(messages=messages, **params)
+        raw = run_memory_write(
+            lambda memory: memory.add(messages=messages, **params),
+            entity_scope,
+        )
         items = normalize_results(raw)
         finished_iso = datetime.now(timezone.utc).isoformat()
         latency_ms = (time.perf_counter() - started_at) * 1000

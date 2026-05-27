@@ -51,7 +51,7 @@ def mcp_testbed(monkeypatch):
     mock_memory.delete.return_value = None
     mock_memory.delete_all.return_value = {"message": "deleted"}
 
-    monkeypatch.setattr(module, "get_memory_instance", lambda: mock_memory)
+    monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mock_memory)
 
     app = FastAPI()
     app.include_router(module.mcp_router)
@@ -139,7 +139,7 @@ def mcp_testbed_authed(monkeypatch):
 
     mock_memory = MagicMock()
     mock_memory.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "saved"}]}
-    monkeypatch.setattr(module, "get_memory_instance", lambda: mock_memory)
+    monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mock_memory)
 
     auth_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
     mock_user = MagicMock()

@@ -22,6 +22,10 @@ try:
 
     sys.modules.setdefault("server_state", _server_state)
 
+    import server.memory_lock as _memory_lock
+
+    sys.modules.setdefault("memory_lock", _memory_lock)
+
     import server.rate_limit as _rate_limit
 
     sys.modules.setdefault("rate_limit", _rate_limit)
