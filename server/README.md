@@ -95,7 +95,7 @@ Wire the command into cron or a systemd timer in production. The `created_at` co
 
 The self-hosted server exposes MCP tools aligned with the current Mem0 MCP workflow:
 
-- `add_memory`
+- `add_memory` (async — returns `event_id`; poll with `get_event_status`)
 - `search_memories`
 - `get_memories`
 - `get_memory`
@@ -104,6 +104,8 @@ The self-hosted server exposes MCP tools aligned with the current Mem0 MCP workf
 - `delete_all_memories`
 - `delete_entities`
 - `list_entities`
+- `list_events`
+- `get_event_status`
 
 MCP authentication matches the REST API. Use `Authorization: Bearer ...`, `Authorization: Token ...`, or `X-API-Key` when connecting.
 

@@ -1,5 +1,8 @@
 import contextvars
 import logging
+import threading
+import uuid
+from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
 import anyio
@@ -12,10 +15,12 @@ from pydantic import Field
 
 from auth import verify_auth
 from compat.entities import list_entities_payload
+from compat.events import event_cache_all, event_cache_get, event_cache_put, make_event_obj
 from compat.requests import request_meta
 from compat.responses import normalize_results, normalize_results_dict
 from compat.scope import build_search_filters, collect_entity_params, require_entity_scope
-from memory_lock import memory_scope_lock, run_memory_write, run_memory_write_for_memory_id
+from compat.tasks import run_v3_add_memory_task
+from memory_lock import run_memory_write, run_memory_write_for_memory_id
 from server_state import get_memory_instance
 
 logger = logging.getLogger("mem0.server.mcp")
@@ -33,7 +38,11 @@ def _fallback_uid() -> str | None:
 
 
 @mcp.tool(
-    description="Store a new preference, fact, or conversation snippet. Requires at least one: user_id, agent_id, app_id or run_id."
+    description=(
+        "Store a new preference, fact, or conversation snippet. "
+        "Requires at least one: user_id, agent_id, app_id or run_id. "
+        "Returns an event_id for async polling via get_event_status."
+    )
 )
 def add_memory(
     text: Annotated[str, Field(description="Plain sentence summarizing what to store.")],
@@ -56,6 +65,10 @@ def add_memory(
     metadata: Annotated[
         Optional[dict[str, Any]], Field(default=None, description="Attach arbitrary metadata JSON to the memory.")
     ] = None,
+    source: Annotated[
+        Optional[str],
+        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
+    ] = None,
 ) -> dict[str, Any]:
     scope = require_entity_scope(
         user_id=user_id,
@@ -66,7 +79,7 @@ def add_memory(
     )
     conversation = messages if messages is not None else [{"role": "user", "content": text}]
     add_kwargs: dict[str, Any] = {**scope}
-    base_md: dict[str, Any] = {"source": mem0_source_var.get()}
+    base_md: dict[str, Any] = {"source": source or mem0_source_var.get()}
 
     if platform := platform_var.get():
         base_md["platform"] = platform
@@ -74,8 +87,31 @@ def add_memory(
     if not infer:
         add_kwargs["infer"] = False
 
-    raw = run_memory_write(lambda memory: memory.add(messages=conversation, **add_kwargs), scope)
-    return normalize_results_dict(raw)
+    event_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+    event_cache_put(
+        event_id,
+        make_event_obj(
+            event_id,
+            [],
+            now_iso=now_iso,
+            status="PENDING",
+            completed_at=None,
+            latency=None,
+        ),
+    )
+    threading.Thread(
+        target=run_v3_add_memory_task,
+        args=(event_id, conversation, add_kwargs),
+        daemon=True,
+        name=f"mcp-add-memory-{event_id}",
+    ).start()
+
+    return {
+        "message": "Memory processing has been queued for background execution.",
+        "event_id": event_id,
+        "status": "PENDING",
+    }
 
 
 @mcp.tool(
@@ -241,16 +277,48 @@ def list_entities() -> dict[str, Any]:
     return {"count": len(results), "results": results}
 
 
+@mcp.tool(description="List memory operation events with optional filters and pagination.")
+def list_events(
+    event_type: Annotated[
+        Optional[str],
+        Field(default=None, description="Filter by type: ADD, SEARCH, UPDATE, DELETE, GET_ALL, DELETE_ALL."),
+    ] = None,
+    page: Annotated[Optional[int], Field(default=None, description="1-indexed page number.")] = None,
+    page_size: Annotated[
+        Optional[int], Field(default=None, description="Events per page (default 50, max 100).")
+    ] = None,
+) -> dict[str, Any]:
+    items = event_cache_all()
+    if event_type:
+        items = [item for item in items if item.get("event_type") == event_type]
+    if page and page_size:
+        start = max(page - 1, 0) * page_size
+        page_items = items[start : start + page_size]
+        return {"count": len(items), "results": page_items}
+    return {"count": len(items), "results": items}
+
+
+@mcp.tool(description="Check the status of a specific memory operation event by its ID.")
+def get_event_status(
+    event_id: Annotated[str, Field(description="UUID of the event to check.")],
+) -> dict[str, Any]:
+    obj = event_cache_get(event_id)
+    if obj is None:
+        raise ValueError(f"Event '{event_id}' not found.")
+    return obj
+
+
 @mcp.prompt()
 def memory_assistant() -> str:
     return """You are using the Mem0 MCP server for long-term memory management.
 
 Quick Start:
-1. Store memories: Use add_memory to save facts, preferences, or conversations
+1. Store memories: Use add_memory (returns event_id), then poll get_event_status until SUCCEEDED
 2. Search memories: Use search_memories for semantic queries
 3. List memories: Use get_memories for filtered browsing
 4. Update/Delete: Use update_memory and delete_memory for modifications
 5. List entities: Use list_entities to see all users, agents, and runs
+6. Track writes: Use list_events to browse recent add/search operations
 
 Tips:
 - user_id is automatically added to filters
