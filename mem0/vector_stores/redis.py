@@ -22,6 +22,7 @@ DEFAULT_FIELDS = [
     {"name": "agent_id", "type": "tag"},
     {"name": "run_id", "type": "tag"},
     {"name": "user_id", "type": "tag"},
+    {"name": "app_id", "type": "tag"},
     {"name": "memory", "type": "text"},
     {"name": "metadata", "type": "text"},
     # TODO: Although it is numeric but also accepts string
@@ -34,7 +35,7 @@ DEFAULT_FIELDS = [
     },
 ]
 
-excluded_keys = {"user_id", "agent_id", "run_id", "hash", "data", "created_at", "updated_at"}
+excluded_keys = {"user_id", "agent_id", "app_id", "run_id", "hash", "data", "created_at", "updated_at"}
 
 
 class MemoryResult:
@@ -131,7 +132,7 @@ class RedisDB(VectorStoreBase):
             }
 
             # Conditionally add optional fields
-            for field in ["agent_id", "run_id", "user_id"]:
+            for field in ["agent_id", "run_id", "user_id", "app_id"]:
                 if field in payload:
                     entry[field] = payload[field]
 
@@ -148,7 +149,17 @@ class RedisDB(VectorStoreBase):
         v = VectorQuery(
             vector=np.array(vectors, dtype=np.float32).tobytes(),
             vector_field_name="embedding",
-            return_fields=["memory_id", "hash", "agent_id", "run_id", "user_id", "memory", "metadata", "created_at"],
+            return_fields=[
+                "memory_id",
+                "hash",
+                "agent_id",
+                "run_id",
+                "user_id",
+                "app_id",
+                "memory",
+                "metadata",
+                "created_at",
+            ],
             filter_expression=filter,
             num_results=top_k,
         )
@@ -174,7 +185,7 @@ class RedisDB(VectorStoreBase):
                         if "updated_at" in result
                         else {}
                     ),
-                    **{field: result[field] for field in ["agent_id", "run_id", "user_id"] if field in result},
+                    **{field: result[field] for field in ["agent_id", "run_id", "user_id", "app_id"] if field in result},
                     **{k: v for k, v in json.loads(extract_json(result["metadata"])).items()},
                 },
             )
@@ -188,7 +199,7 @@ class RedisDB(VectorStoreBase):
         Args:
             query (str): Search query text.
             top_k (int): Maximum number of results. Defaults to 5.
-            filters (dict, optional): Filters to apply (user_id, agent_id, run_id).
+            filters (dict, optional): Filters to apply (user_id, agent_id, app_id, run_id).
 
         Returns:
             List[MemoryResult]: Search results.
@@ -202,7 +213,17 @@ class RedisDB(VectorStoreBase):
         t = TextQuery(
             text=query,
             text_field_name="memory",
-            return_fields=["memory_id", "hash", "agent_id", "run_id", "user_id", "memory", "metadata", "created_at"],
+            return_fields=[
+                "memory_id",
+                "hash",
+                "agent_id",
+                "run_id",
+                "user_id",
+                "app_id",
+                "memory",
+                "metadata",
+                "created_at",
+            ],
             filter_expression=filter_expression,
             num_results=top_k,
         )
@@ -228,7 +249,7 @@ class RedisDB(VectorStoreBase):
                         if "updated_at" in result
                         else {}
                     ),
-                    **{field: result[field] for field in ["agent_id", "run_id", "user_id"] if field in result},
+                    **{field: result[field] for field in ["agent_id", "run_id", "user_id", "app_id"] if field in result},
                     **{k: v for k, v in json.loads(extract_json(result["metadata"])).items()},
                 },
             )
@@ -251,7 +272,7 @@ class RedisDB(VectorStoreBase):
         if vector is not None:
             data["embedding"] = np.array(vector, dtype=np.float32).tobytes()
 
-        for field in ["agent_id", "run_id", "user_id"]:
+        for field in ["agent_id", "run_id", "user_id", "app_id"]:
             if field in payload:
                 data[field] = payload[field]
 
@@ -275,7 +296,7 @@ class RedisDB(VectorStoreBase):
                 if "updated_at" in result
                 else {}
             ),
-            **{field: result[field] for field in ["agent_id", "run_id", "user_id"] if field in result},
+            **{field: result[field] for field in ["agent_id", "run_id", "user_id", "app_id"] if field in result},
             **{k: v for k, v in json.loads(extract_json(result["metadata"])).items()},
         }
 
@@ -340,7 +361,7 @@ class RedisDB(VectorStoreBase):
                         ),
                         **{
                             field: result[field]
-                            for field in ["agent_id", "run_id", "user_id"]
+                            for field in ["agent_id", "run_id", "user_id", "app_id"]
                             if field in result.__dict__
                         },
                         **{k: v for k, v in json.loads(extract_json(result["metadata"])).items()},

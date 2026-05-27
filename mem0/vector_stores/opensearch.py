@@ -60,6 +60,7 @@ class OpenSearchDB(VectorStoreBase):
                         "properties": {
                             "user_id": {"type": "keyword"},
                             "agent_id": {"type": "keyword"},
+                            "app_id": {"type": "keyword"},
                             "run_id": {"type": "keyword"},
                         },
                     },
@@ -185,7 +186,7 @@ class OpenSearchDB(VectorStoreBase):
         # Prepare filter conditions if applicable
         filter_clauses = []
         if filters:
-            for key in ["user_id", "run_id", "agent_id"]:
+            for key in ["user_id", "agent_id", "app_id", "run_id"]:
                 value = filters.get(key)
                 if value:
                     filter_clauses.append({"term": {f"payload.{key}.keyword": value}})
@@ -235,7 +236,7 @@ class OpenSearchDB(VectorStoreBase):
         # Apply filters consistently with the existing search() method
         filter_clauses = []
         if filters:
-            for key in ["user_id", "run_id", "agent_id"]:
+            for key in ["user_id", "agent_id", "app_id", "run_id"]:
                 value = filters.get(key)
                 if value:
                     filter_clauses.append({"term": {f"payload.{key}.keyword": value}})
@@ -349,7 +350,7 @@ class OpenSearchDB(VectorStoreBase):
 
             filter_clauses = []
             if filters:
-                for key in ["user_id", "run_id", "agent_id"]:
+                for key in ["user_id", "agent_id", "app_id", "run_id"]:
                     value = filters.get(key)
                     if value:
                         filter_clauses.append({"term": {f"payload.{key}.keyword": value}})

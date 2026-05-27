@@ -142,6 +142,7 @@ class Weaviate(VectorStoreBase):
             wvcc.Property(name="updated_at", data_type=wvcc.DataType.TEXT),
             wvcc.Property(name="user_id", data_type=wvcc.DataType.TEXT),
             wvcc.Property(name="agent_id", data_type=wvcc.DataType.TEXT),
+            wvcc.Property(name="app_id", data_type=wvcc.DataType.TEXT),
             wvcc.Property(name="run_id", data_type=wvcc.DataType.TEXT),
         ]
 
@@ -188,7 +189,7 @@ class Weaviate(VectorStoreBase):
         filter_conditions = []
         if filters:
             for key, value in filters.items():
-                if value and key in ["user_id", "agent_id", "run_id"]:
+                if value and key in ["user_id", "agent_id", "app_id", "run_id"]:
                     filter_conditions.append(Filter.by_property(key).equal(value))
         combined_filter = Filter.all_of(filter_conditions) if filter_conditions else None
         response = collection.query.hybrid(
@@ -196,14 +197,14 @@ class Weaviate(VectorStoreBase):
             vector=vectors,
             limit=top_k,
             filters=combined_filter,
-            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "run_id", "data", "category"],
+            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "app_id", "run_id", "data", "category"],
             return_metadata=MetadataQuery(score=True),
         )
         results = []
         for obj in response.objects:
             payload = obj.properties.copy()
 
-            for id_field in ["run_id", "agent_id", "user_id"]:
+            for id_field in ["user_id", "agent_id", "app_id", "run_id"]:
                 if id_field in payload and payload[id_field] is None:
                     del payload[id_field]
 
@@ -239,7 +240,7 @@ class Weaviate(VectorStoreBase):
         filter_conditions = []
         if filters:
             for key, value in filters.items():
-                if value and key in ["user_id", "agent_id", "run_id"]:
+                if value and key in ["user_id", "agent_id", "app_id", "run_id"]:
                     filter_conditions.append(Filter.by_property(key).equal(value))
         combined_filter = Filter.all_of(filter_conditions) if filter_conditions else None
         response = collection.query.bm25(
@@ -247,14 +248,14 @@ class Weaviate(VectorStoreBase):
             query_properties=["data"],
             limit=top_k,
             filters=combined_filter,
-            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "run_id", "data", "category"],
+            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "app_id", "run_id", "data", "category"],
             return_metadata=MetadataQuery(score=True),
         )
         results = []
         for obj in response.objects:
             payload = obj.properties.copy()
 
-            for id_field in ["run_id", "agent_id", "user_id"]:
+            for id_field in ["user_id", "agent_id", "app_id", "run_id"]:
                 if id_field in payload and payload[id_field] is None:
                     del payload[id_field]
 
@@ -320,7 +321,7 @@ class Weaviate(VectorStoreBase):
 
         response = collection.query.fetch_object_by_id(
             uuid=vector_id,
-            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "run_id", "data", "category"],
+            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "app_id", "run_id", "data", "category"],
         )
         # results = {}
         # print("reponse",response)
@@ -370,13 +371,13 @@ class Weaviate(VectorStoreBase):
         filter_conditions = []
         if filters:
             for key, value in filters.items():
-                if value and key in ["user_id", "agent_id", "run_id"]:
+                if value and key in ["user_id", "agent_id", "app_id", "run_id"]:
                     filter_conditions.append(Filter.by_property(key).equal(value))
         combined_filter = Filter.all_of(filter_conditions) if filter_conditions else None
         response = collection.query.fetch_objects(
             limit=top_k,
             filters=combined_filter,
-            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "run_id", "data", "category"],
+            return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "app_id", "run_id", "data", "category"],
         )
         results = []
         for obj in response.objects:

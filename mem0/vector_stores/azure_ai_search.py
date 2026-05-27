@@ -137,6 +137,7 @@ class AzureAISearch(VectorStoreBase):
             SimpleField(name="user_id", type=SearchFieldDataType.String, filterable=True),
             SimpleField(name="run_id", type=SearchFieldDataType.String, filterable=True),
             SimpleField(name="agent_id", type=SearchFieldDataType.String, filterable=True),
+            SimpleField(name="app_id", type=SearchFieldDataType.String, filterable=True),
             SearchField(
                 name="vector",
                 type=vector_type,
@@ -164,7 +165,7 @@ class AzureAISearch(VectorStoreBase):
     def _generate_document(self, vector, payload, id):
         document = {"id": id, "vector": vector, "payload": json.dumps(payload)}
         # Extract additional fields if they exist.
-        for field in ["user_id", "run_id", "agent_id"]:
+        for field in ["user_id", "agent_id", "app_id", "run_id"]:
             if field in payload:
                 document[field] = payload[field]
         return document
@@ -303,7 +304,7 @@ class AzureAISearch(VectorStoreBase):
         if payload:
             json_payload = json.dumps(payload)
             document["payload"] = json_payload
-            for field in ["user_id", "run_id", "agent_id"]:
+            for field in ["user_id", "agent_id", "app_id", "run_id"]:
                 document[field] = payload.get(field)
         response = self.search_client.merge_or_upload_documents(documents=[document])
         for doc in response:

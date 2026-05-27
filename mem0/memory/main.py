@@ -97,7 +97,7 @@ _SENSITIVE_SUFFIXES = (
 )
 
 # Entity parameters that must be passed via filters, not top-level kwargs
-ENTITY_PARAMS = frozenset({"user_id", "agent_id", "run_id"})
+ENTITY_PARAMS = frozenset({"user_id", "agent_id", "app_id", "run_id"})
 
 
 def _reject_top_level_entity_params(kwargs: Dict[str, Any], method_name: str) -> None:
@@ -232,6 +232,7 @@ def _build_filters_and_metadata(
     *,  # Enforce keyword-only arguments
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    app_id: Optional[str] = None,
     run_id: Optional[str] = None,
     actor_id: Optional[str] = None,  # For query-time filtering
     input_metadata: Optional[Dict[str, Any]] = None,
@@ -240,7 +241,7 @@ def _build_filters_and_metadata(
     """
     Constructs metadata for storage and filters for querying based on session and actor identifiers.
 
-    This helper supports multiple session identifiers (`user_id`, `agent_id`, and/or `run_id`)
+    This helper supports multiple session identifiers (`user_id`, `agent_id`, `app_id`, and/or `run_id`)
     for flexible session scoping and optionally narrows queries to a specific `actor_id`. It returns two dicts:
 
     1. `base_metadata_template`: Used as a template for metadata when storing new memories.
@@ -256,6 +257,7 @@ def _build_filters_and_metadata(
     Args:
         user_id (Optional[str]): User identifier, for session scoping.
         agent_id (Optional[str]): Agent identifier, for session scoping.
+        app_id (Optional[str]): App identifier, for session scoping.
         run_id (Optional[str]): Run identifier, for session scoping.
         actor_id (Optional[str]): Explicit actor identifier, used as a potential source for
             actor-specific filtering. See actor resolution precedence in the main description.
@@ -281,6 +283,7 @@ def _build_filters_and_metadata(
     # Validate and trim entity IDs
     user_id = _validate_and_trim_entity_id(user_id, "user_id")
     agent_id = _validate_and_trim_entity_id(agent_id, "agent_id")
+    app_id = _validate_and_trim_entity_id(app_id, "app_id")
     run_id = _validate_and_trim_entity_id(run_id, "run_id")
 
     if user_id:
@@ -293,6 +296,11 @@ def _build_filters_and_metadata(
         effective_query_filters["agent_id"] = agent_id
         session_ids_provided.append("agent_id")
 
+    if app_id:
+        base_metadata_template["app_id"] = app_id
+        effective_query_filters["app_id"] = app_id
+        session_ids_provided.append("app_id")
+
     if run_id:
         base_metadata_template["run_id"] = run_id
         effective_query_filters["run_id"] = run_id
@@ -300,9 +308,9 @@ def _build_filters_and_metadata(
 
     if not session_ids_provided:
         raise Mem0ValidationError(
-            message="At least one of 'user_id', 'agent_id', or 'run_id' must be provided.",
+            message="At least one of 'user_id', 'agent_id', 'app_id', or 'run_id' must be provided.",
             error_code="VALIDATION_001",
-            details={"provided_ids": {"user_id": user_id, "agent_id": agent_id, "run_id": run_id}},
+            details={"provided_ids": {"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id}},
             suggestion="Please provide at least one identifier to scope the memory operation."
         )
 
@@ -317,7 +325,7 @@ def _build_filters_and_metadata(
 def _build_session_scope(filters):
     """Build deterministic session scope string from entity IDs."""
     parts = []
-    for key in sorted(["user_id", "agent_id", "run_id"]):
+    for key in sorted(["user_id", "agent_id", "app_id", "run_id"]):
         val = filters.get(key)
         if val:
             parts.append(f"{key}={val}")
@@ -414,7 +422,7 @@ class Memory(MemoryBase):
         """Upsert an entity into the entity store, linking it to a memory."""
         try:
             entity_embedding = self.embedding_model.embed(entity_text, "add")
-            search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
+            search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "app_id", "run_id") and v}
 
             existing = self.entity_store.search(
                 query=entity_text,
@@ -468,7 +476,7 @@ class Memory(MemoryBase):
         """
         if self._entity_store is None:
             return
-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
+        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "app_id", "run_id") and v}
         try:
             listed = self.entity_store.list(filters=search_filters, top_k=10000)
             rows = listed[0] if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list) else listed
@@ -576,6 +584,7 @@ class Memory(MemoryBase):
         *,
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        app_id: Optional[str] = None,
         run_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         infer: bool = True,
@@ -585,7 +594,7 @@ class Memory(MemoryBase):
         """
         Create a new memory.
 
-        Adds new memories scoped to a single session id (e.g. `user_id`, `agent_id`, or `run_id`). One of those ids is required.
+        Adds new memories scoped to a single session id (e.g. `user_id`, `agent_id`, `app_id`, or `run_id`). One of those ids is required.
 
         Args:
             messages (str or List[Dict[str, str]]): The message content or list of messages
@@ -593,6 +602,7 @@ class Memory(MemoryBase):
                 to be processed and stored.
             user_id (str, optional): ID of the user creating the memory. Defaults to None.
             agent_id (str, optional): ID of the agent creating the memory. Defaults to None.
+            app_id (str, optional): ID of the app/project scope for the memory. Defaults to None.
             run_id (str, optional): ID of the run creating the memory. Defaults to None.
             metadata (dict, optional): Metadata to store with the memory. Defaults to None.
             infer (bool, optional): If True (default), an LLM is used to extract key facts from
@@ -621,6 +631,7 @@ class Memory(MemoryBase):
         processed_metadata, effective_filters = _build_filters_and_metadata(
             user_id=user_id,
             agent_id=agent_id,
+            app_id=app_id,
             run_id=run_id,
             input_metadata=metadata,
         )
@@ -704,7 +715,7 @@ class Memory(MemoryBase):
         parsed_messages = parse_messages(messages)
 
         # Phase 1: Existing memory retrieval
-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
+        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "app_id", "run_id") and v}
         query_embedding = self.embedding_model.embed(parsed_messages, "search")
         existing_results = self.vector_store.search(
             query=parsed_messages,
@@ -988,6 +999,7 @@ class Memory(MemoryBase):
         promoted_payload_keys = [
             "user_id",
             "agent_id",
+            "app_id",
             "run_id",
             "actor_id",
             "role",
@@ -1025,7 +1037,7 @@ class Memory(MemoryBase):
 
         Args:
             filters (dict): Filter dict containing entity IDs and optional metadata filters.
-                Must contain at least one of: user_id, agent_id, run_id.
+                Must contain at least one of: user_id, agent_id, app_id, run_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
 
@@ -1034,7 +1046,7 @@ class Memory(MemoryBase):
                   Example for v1.1+: `{"results": [{"id": "...", "memory": "...", ...}]}`
 
         Raises:
-            ValueError: If filters doesn't contain at least one of user_id, agent_id, run_id,
+            ValueError: If filters doesn't contain at least one of user_id, agent_id, app_id, run_id,
                 or if top_k is invalid.
         """
         # Reject top-level entity params - must use filters instead
@@ -1053,15 +1065,19 @@ class Memory(MemoryBase):
             effective_filters["agent_id"] = _validate_and_trim_entity_id(
                 effective_filters["agent_id"], "agent_id"
             )
+        if "app_id" in effective_filters:
+            effective_filters["app_id"] = _validate_and_trim_entity_id(
+                effective_filters["app_id"], "app_id"
+            )
         if "run_id" in effective_filters:
             effective_filters["run_id"] = _validate_and_trim_entity_id(
                 effective_filters["run_id"], "run_id"
             )
 
         # Validate filters contains at least one entity ID
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id")):
+        if not any(key in effective_filters for key in ("user_id", "agent_id", "app_id", "run_id")):
             raise ValueError(
-                "filters must contain at least one of: user_id, agent_id, run_id. "
+                "filters must contain at least one of: user_id, agent_id, app_id, run_id. "
                 "Example: filters={'user_id': 'u1'}"
             )
 
@@ -1095,6 +1111,7 @@ class Memory(MemoryBase):
         promoted_payload_keys = [
             "user_id",
             "agent_id",
+            "app_id",
             "run_id",
             "actor_id",
             "role",
@@ -1140,7 +1157,7 @@ class Memory(MemoryBase):
             query (str): Query to search for.
             top_k (int, optional): Maximum number of results to return. Defaults to 20.
             filters (dict): Filter dict containing entity IDs and optional metadata filters.
-                Must contain at least one of: user_id, agent_id, run_id.
+                Must contain at least one of: user_id, agent_id, app_id, run_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
 
                 Enhanced metadata filtering with operators:
@@ -1167,7 +1184,7 @@ class Memory(MemoryBase):
                   Example for v1.1+: `{"results": [{"id": "...", "memory": "...", "score": 0.8, ...}]}`
 
         Raises:
-            ValueError: If filters doesn't contain at least one of user_id, agent_id, run_id,
+            ValueError: If filters doesn't contain at least one of user_id, agent_id, app_id, run_id,
                 or if threshold/top_k values are invalid.
         """
         # Reject top-level entity params - must use filters instead
@@ -1186,13 +1203,17 @@ class Memory(MemoryBase):
             effective_filters["agent_id"] = _validate_and_trim_entity_id(
                 effective_filters["agent_id"], "agent_id"
             )
+        if "app_id" in effective_filters:
+            effective_filters["app_id"] = _validate_and_trim_entity_id(
+                effective_filters["app_id"], "app_id"
+            )
         if "run_id" in effective_filters:
             effective_filters["run_id"] = _validate_and_trim_entity_id(
                 effective_filters["run_id"], "run_id"
             )
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id")):
+        if not any(key in effective_filters for key in ("user_id", "agent_id", "app_id", "run_id")):
             raise ValueError(
-                "filters must contain at least one of: user_id, agent_id, run_id. "
+                "filters must contain at least one of: user_id, agent_id, app_id, run_id. "
                 "Example: filters={'user_id': 'u1'}"
             )
 
@@ -1205,7 +1226,7 @@ class Memory(MemoryBase):
             for logical_key in ("AND", "OR", "NOT"):
                 effective_filters.pop(logical_key, None)
             for fk in list(effective_filters.keys()):
-                if fk not in ("AND", "OR", "NOT", "user_id", "agent_id", "run_id") and isinstance(effective_filters.get(fk), dict):
+                if fk not in ("AND", "OR", "NOT", "user_id", "agent_id", "app_id", "run_id") and isinstance(effective_filters.get(fk), dict):
                     effective_filters.pop(fk, None)
             effective_filters.update(processed_filters)
 
@@ -1401,6 +1422,7 @@ class Memory(MemoryBase):
         promoted_payload_keys = [
             "user_id",
             "agent_id",
+            "app_id",
             "run_id",
             "actor_id",
             "role",
@@ -1460,7 +1482,7 @@ class Memory(MemoryBase):
         if not deduped:
             return {}
 
-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
+        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "app_id", "run_id") and v}
         memory_boosts = {}
 
         try:
@@ -1537,13 +1559,20 @@ class Memory(MemoryBase):
         self._delete_memory(memory_id, existing_memory)
         return {"message": "Memory deleted successfully!"}
 
-    def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None):
+    def delete_all(
+        self,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        app_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ):
         """
         Delete all memories.
 
         Args:
             user_id (str, optional): ID of the user to delete memories for. Defaults to None.
             agent_id (str, optional): ID of the agent to delete memories for. Defaults to None.
+            app_id (str, optional): ID of the app/project scope to delete memories for. Defaults to None.
             run_id (str, optional): ID of the run to delete memories for. Defaults to None.
         """
         filters: Dict[str, Any] = {}
@@ -1551,6 +1580,8 @@ class Memory(MemoryBase):
             filters["user_id"] = user_id
         if agent_id:
             filters["agent_id"] = agent_id
+        if app_id:
+            filters["app_id"] = app_id
         if run_id:
             filters["run_id"] = run_id
 
@@ -1681,6 +1712,8 @@ class Memory(MemoryBase):
             new_metadata["user_id"] = existing_memory.payload["user_id"]
         if "agent_id" not in new_metadata and "agent_id" in existing_memory.payload:
             new_metadata["agent_id"] = existing_memory.payload["agent_id"]
+        if "app_id" not in new_metadata and "app_id" in existing_memory.payload:
+            new_metadata["app_id"] = existing_memory.payload["app_id"]
         if "run_id" not in new_metadata and "run_id" in existing_memory.payload:
             new_metadata["run_id"] = existing_memory.payload["run_id"]
         if "actor_id" in existing_memory.payload:
@@ -1713,7 +1746,7 @@ class Memory(MemoryBase):
 
         # Entity-store cleanup: strip this memory's id from old-text entities,
         # then re-extract entities from the new text and link them back.
-        session_filters = {k: new_metadata[k] for k in ("user_id", "agent_id", "run_id") if new_metadata.get(k)}
+        session_filters = {k: new_metadata[k] for k in ("user_id", "agent_id", "app_id", "run_id") if new_metadata.get(k)}
         self._remove_memory_from_entity_store(memory_id, session_filters)
         self._link_entities_for_memory(memory_id, data, session_filters)
 
@@ -1729,7 +1762,7 @@ class Memory(MemoryBase):
         created_at = _normalize_iso_timestamp_to_utc(existing_memory.payload.get("created_at"))
         updated_at = datetime.now(timezone.utc).isoformat()
         payload = existing_memory.payload or {}
-        session_filters = {k: payload[k] for k in ("user_id", "agent_id", "run_id") if payload.get(k)}
+        session_filters = {k: payload[k] for k in ("user_id", "agent_id", "app_id", "run_id") if payload.get(k)}
         self.vector_store.delete(vector_id=memory_id)
         self.db.add_history(
             memory_id,
@@ -1857,7 +1890,7 @@ class AsyncMemory(MemoryBase):
         """Async variant of `_upsert_entity` — per-entity search-then-update-or-insert."""
         try:
             entity_embedding = await asyncio.to_thread(self.embedding_model.embed, entity_text, "add")
-            search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
+            search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "app_id", "run_id") and v}
 
             existing = await asyncio.to_thread(
                 self.entity_store.search,
@@ -1901,7 +1934,7 @@ class AsyncMemory(MemoryBase):
         """Async variant of `Memory._remove_memory_from_entity_store`."""
         if self._entity_store is None:
             return
-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
+        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "app_id", "run_id") and v}
         try:
             listed = await asyncio.to_thread(self.entity_store.list, filters=search_filters, top_k=10000)
             rows = listed[0] if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list) else listed
@@ -2006,6 +2039,7 @@ class AsyncMemory(MemoryBase):
         *,
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        app_id: Optional[str] = None,
         run_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         infer: bool = True,
@@ -2020,6 +2054,7 @@ class AsyncMemory(MemoryBase):
             messages (str or List[Dict[str, str]]): Messages to store in the memory.
             user_id (str, optional): ID of the user creating the memory.
             agent_id (str, optional): ID of the agent creating the memory. Defaults to None.
+            app_id (str, optional): ID of the app/project scope for the memory. Defaults to None.
             run_id (str, optional): ID of the run creating the memory. Defaults to None.
             metadata (dict, optional): Metadata to store with the memory. Defaults to None.
             infer (bool, optional): Whether to infer the memories. Defaults to True.
@@ -2031,7 +2066,7 @@ class AsyncMemory(MemoryBase):
             dict: A dictionary containing the result of the memory addition operation.
         """
         processed_metadata, effective_filters = _build_filters_and_metadata(
-            user_id=user_id, agent_id=agent_id, run_id=run_id, input_metadata=metadata
+            user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id, input_metadata=metadata
         )
 
         if memory_type is not None and memory_type != MemoryType.PROCEDURAL.value:
@@ -2119,7 +2154,7 @@ class AsyncMemory(MemoryBase):
         parsed_messages = parse_messages(messages)
 
         # Phase 1: Existing memory retrieval
-        search_filters = {k: v for k, v in effective_filters.items() if k in ("user_id", "agent_id", "run_id") and v}
+        search_filters = {k: v for k, v in effective_filters.items() if k in ("user_id", "agent_id", "app_id", "run_id") and v}
         query_embedding = await asyncio.to_thread(self.embedding_model.embed, parsed_messages, "search")
         existing_results = await asyncio.to_thread(
             self.vector_store.search,
@@ -2403,6 +2438,7 @@ class AsyncMemory(MemoryBase):
         promoted_payload_keys = [
             "user_id",
             "agent_id",
+            "app_id",
             "run_id",
             "actor_id",
             "role",
@@ -2440,7 +2476,7 @@ class AsyncMemory(MemoryBase):
 
         Args:
             filters (dict): Filter dict containing entity IDs and optional metadata filters.
-                Must contain at least one of: user_id, agent_id, run_id.
+                Must contain at least one of: user_id, agent_id, app_id, run_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
 
@@ -2449,7 +2485,7 @@ class AsyncMemory(MemoryBase):
                   Example for v1.1+: `{"results": [{"id": "...", "memory": "...", ...}]}`
 
         Raises:
-            ValueError: If filters doesn't contain at least one of user_id, agent_id, run_id,
+            ValueError: If filters doesn't contain at least one of user_id, agent_id, app_id, run_id,
                 or if top_k is invalid.
         """
         # Reject top-level entity params - must use filters instead
@@ -2468,15 +2504,19 @@ class AsyncMemory(MemoryBase):
             effective_filters["agent_id"] = _validate_and_trim_entity_id(
                 effective_filters["agent_id"], "agent_id"
             )
+        if "app_id" in effective_filters:
+            effective_filters["app_id"] = _validate_and_trim_entity_id(
+                effective_filters["app_id"], "app_id"
+            )
         if "run_id" in effective_filters:
             effective_filters["run_id"] = _validate_and_trim_entity_id(
                 effective_filters["run_id"], "run_id"
             )
 
         # Validate filters contains at least one entity ID
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id")):
+        if not any(key in effective_filters for key in ("user_id", "agent_id", "app_id", "run_id")):
             raise ValueError(
-                "filters must contain at least one of: user_id, agent_id, run_id. "
+                "filters must contain at least one of: user_id, agent_id, app_id, run_id. "
                 "Example: filters={'user_id': 'u1'}"
             )
 
@@ -2510,6 +2550,7 @@ class AsyncMemory(MemoryBase):
         promoted_payload_keys = [
             "user_id",
             "agent_id",
+            "app_id",
             "run_id",
             "actor_id",
             "role",
@@ -2555,7 +2596,7 @@ class AsyncMemory(MemoryBase):
             query (str): Query to search for.
             top_k (int, optional): Maximum number of results to return. Defaults to 20.
             filters (dict): Filter dict containing entity IDs and optional metadata filters.
-                Must contain at least one of: user_id, agent_id, run_id.
+                Must contain at least one of: user_id, agent_id, app_id, run_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
 
                 Enhanced metadata filtering with operators:
@@ -2582,7 +2623,7 @@ class AsyncMemory(MemoryBase):
                   Example for v1.1+: `{"results": [{"id": "...", "memory": "...", "score": 0.8, ...}]}`
 
         Raises:
-            ValueError: If filters doesn't contain at least one of user_id, agent_id, run_id,
+            ValueError: If filters doesn't contain at least one of user_id, agent_id, app_id, run_id,
                 or if threshold/top_k values are invalid.
         """
         # Reject top-level entity params - must use filters instead
@@ -2601,15 +2642,19 @@ class AsyncMemory(MemoryBase):
             effective_filters["agent_id"] = _validate_and_trim_entity_id(
                 effective_filters["agent_id"], "agent_id"
             )
+        if "app_id" in effective_filters:
+            effective_filters["app_id"] = _validate_and_trim_entity_id(
+                effective_filters["app_id"], "app_id"
+            )
         if "run_id" in effective_filters:
             effective_filters["run_id"] = _validate_and_trim_entity_id(
                 effective_filters["run_id"], "run_id"
             )
 
         # Validate filters contains at least one entity ID
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id")):
+        if not any(key in effective_filters for key in ("user_id", "agent_id", "app_id", "run_id")):
             raise ValueError(
-                "filters must contain at least one of: user_id, agent_id, run_id. "
+                "filters must contain at least one of: user_id, agent_id, app_id, run_id. "
                 "Example: filters={'user_id': 'u1'}"
             )
 
@@ -2622,7 +2667,7 @@ class AsyncMemory(MemoryBase):
             for logical_key in ("AND", "OR", "NOT"):
                 effective_filters.pop(logical_key, None)
             for fk in list(effective_filters.keys()):
-                if fk not in ("AND", "OR", "NOT", "user_id", "agent_id", "run_id") and isinstance(effective_filters.get(fk), dict):
+                if fk not in ("AND", "OR", "NOT", "user_id", "agent_id", "app_id", "run_id") and isinstance(effective_filters.get(fk), dict):
                     effective_filters.pop(fk, None)
             effective_filters.update(processed_filters)
 
@@ -2820,6 +2865,7 @@ class AsyncMemory(MemoryBase):
         promoted_payload_keys = [
             "user_id",
             "agent_id",
+            "app_id",
             "run_id",
             "actor_id",
             "role",
@@ -2868,7 +2914,7 @@ class AsyncMemory(MemoryBase):
         if not deduped:
             return {}
 
-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
+        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "app_id", "run_id") and v}
         memory_boosts = {}
 
         try:
@@ -2946,13 +2992,14 @@ class AsyncMemory(MemoryBase):
         await self._delete_memory(memory_id, existing_memory)
         return {"message": "Memory deleted successfully!"}
 
-    async def delete_all(self, user_id=None, agent_id=None, run_id=None):
+    async def delete_all(self, user_id=None, agent_id=None, app_id=None, run_id=None):
         """
         Delete all memories asynchronously.
 
         Args:
             user_id (str, optional): ID of the user to delete memories for. Defaults to None.
             agent_id (str, optional): ID of the agent to delete memories for. Defaults to None.
+            app_id (str, optional): ID of the app/project scope to delete memories for. Defaults to None.
             run_id (str, optional): ID of the run to delete memories for. Defaults to None.
         """
         filters = {}
@@ -2960,6 +3007,8 @@ class AsyncMemory(MemoryBase):
             filters["user_id"] = user_id
         if agent_id:
             filters["agent_id"] = agent_id
+        if app_id:
+            filters["app_id"] = app_id
         if run_id:
             filters["run_id"] = run_id
 
@@ -3112,6 +3161,8 @@ class AsyncMemory(MemoryBase):
             new_metadata["user_id"] = existing_memory.payload["user_id"]
         if "agent_id" not in new_metadata and "agent_id" in existing_memory.payload:
             new_metadata["agent_id"] = existing_memory.payload["agent_id"]
+        if "app_id" not in new_metadata and "app_id" in existing_memory.payload:
+            new_metadata["app_id"] = existing_memory.payload["app_id"]
         if "run_id" not in new_metadata and "run_id" in existing_memory.payload:
             new_metadata["run_id"] = existing_memory.payload["run_id"]
 
@@ -3147,7 +3198,7 @@ class AsyncMemory(MemoryBase):
 
         # Entity-store cleanup: strip this memory's id from old-text entities,
         # then re-extract entities from the new text and link them back.
-        session_filters = {k: new_metadata[k] for k in ("user_id", "agent_id", "run_id") if new_metadata.get(k)}
+        session_filters = {k: new_metadata[k] for k in ("user_id", "agent_id", "app_id", "run_id") if new_metadata.get(k)}
         await self._remove_memory_from_entity_store(memory_id, session_filters)
         await self._link_entities_for_memory(memory_id, data, session_filters)
 
@@ -3163,7 +3214,7 @@ class AsyncMemory(MemoryBase):
         created_at = _normalize_iso_timestamp_to_utc(existing_memory.payload.get("created_at"))
         updated_at = datetime.now(timezone.utc).isoformat()
         payload = existing_memory.payload or {}
-        session_filters = {k: payload[k] for k in ("user_id", "agent_id", "run_id") if payload.get(k)}
+        session_filters = {k: payload[k] for k in ("user_id", "agent_id", "app_id", "run_id") if payload.get(k)}
 
         await asyncio.to_thread(self.vector_store.delete, vector_id=memory_id)
         await asyncio.to_thread(
