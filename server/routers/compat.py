@@ -54,7 +54,6 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -63,10 +62,25 @@ from auth import ensure_admin, verify_auth
 from compat.decorators import upstream_guard
 from compat.requests import RequestMeta, request_meta
 from compat.entities import list_entities_payload
-from compat.responses import drop_none, normalize_results, normalize_results_dict, unsupported_api_error
-from compat.events import event_cache_all, event_cache_get, event_cache_put, event_visible_to_caller, make_event_obj
+from compat.helpers import (
+    build_search_kwargs,
+    merge_and_update,
+    resolve_existing,
+)
+from compat.metadata import build_v3_add_extra_metadata, merge_v1_add_metadata, merge_v3_add_metadata
+from compat.responses import (
+    paginate_response,
+    warn_unsupported_fields,
+    drop_none,
+    normalize_results,
+    normalize_results_dict,
+    unsupported_api_error,
+)
+from compat.events import event_cache_all, event_cache_get, event_cache_put, make_event_obj
 from compat.scope import (
     VALID_ENTITY_TYPES,
+    build_categories_filter,
+    build_list_filters,
     build_search_filters,
     collect_entity_params,
     get_entity_field,
@@ -74,8 +88,6 @@ from compat.scope import (
 )
 from compat.tasks import run_v3_add_memory_task
 from server_state import get_memory_instance, list_all_memories
-
-from mem0 import Memory
 
 logger = logging.getLogger("mem0.server.compat")
 
@@ -314,100 +326,6 @@ class MemorySearchInputV3(BaseModel):
     )
 
 
-def _build_page_url(request: Request, *, page: int, page_size: int) -> str:
-    params = dict(request.query_params)
-    params["page"] = str(page)
-    params["page_size"] = str(page_size)
-    return f"{request.url.path}?{urlencode(params)}"
-
-
-def _build_list_filters(
-    body: "MemoryGetInputV2",
-    entity_params: Dict[str, str],
-) -> Dict[str, Any]:
-    """Build SDK filter dict for get_all from a MemoryGetInputV2 body.
-
-    Uses the caller-provided filter tree as-is, falling back to entity_params
-    only when no filters were supplied. Date/category convenience fields are
-    injected only for flat filter dicts (no AND/OR/NOT operators).
-    """
-    sdk_filters: Dict[str, Any] = dict(body.filters) if body.filters else dict(entity_params)
-    if "AND" not in sdk_filters and "OR" not in sdk_filters and "NOT" not in sdk_filters:
-        date_filter: Dict[str, str] = {}
-        if body.start_date:
-            date_filter["gte"] = body.start_date
-        if body.end_date:
-            date_filter["lte"] = body.end_date
-        if date_filter:
-            sdk_filters.setdefault("created_at", date_filter)
-        if body.categories:
-            sdk_filters.setdefault("categories", {"contains": body.categories})
-    return sdk_filters
-
-
-def _paginate_response(
-    request: Request,
-    items: List[Any],
-    page: int,
-    page_size: int,
-) -> Dict[str, Any]:
-    """Wrap a list of items in the SDK-compatible pagination envelope."""
-    total = len(items)
-    start = (page - 1) * page_size
-    return {
-        "count": total,
-        "next": _build_page_url(request, page=page + 1, page_size=page_size) if start + page_size < total else None,
-        "previous": _build_page_url(request, page=page - 1, page_size=page_size) if page > 1 else None,
-        "results": items[start : start + page_size],
-    }
-
-
-def _warn_unsupported_fields(fields: Optional[List[str]], endpoint: str) -> None:
-    """Log a warning when 'fields' projection is requested but not supported by the OSS SDK."""
-    if fields:
-        logger.warning(
-            "%s: 'fields' projection is not supported by the OSS SDK and will be ignored. Requested fields: %s",
-            endpoint,
-            fields,
-        )
-
-
-def _build_search_kwargs(
-    filters: Dict[str, Any],
-    top_k: Optional[int],
-    threshold: Optional[float],
-    rerank: Optional[bool] = None,
-) -> Dict[str, Any]:
-    """Build keyword arguments for Memory.search() from common request fields."""
-    kwargs: Dict[str, Any] = {"filters": filters}
-    if top_k is not None:
-        kwargs["top_k"] = top_k
-    if threshold is not None:
-        kwargs["threshold"] = threshold
-    if rerank is not None:
-        kwargs["rerank"] = rerank
-    return kwargs
-
-
-def _resolve_existing(mem: Memory, memory_id: str) -> dict:
-    """Fetch an existing memory and return its dict, or raise 404."""
-    raw = mem.get(memory_id)
-    item = raw[0] if isinstance(raw, list) and raw else raw
-    if not isinstance(item, dict):
-        raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
-    return item
-
-
-def _merge_and_update(
-    mem: Memory, memory_id: str, *, text: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
-) -> Any:
-    """Read current memory, merge text/metadata changes, write back."""
-    existing = _resolve_existing(mem, memory_id)
-    final_text = text if text is not None else (existing.get("memory") or existing.get("text") or "")
-    merged = {**(existing.get("metadata") or {}), **(metadata or {})}
-    return mem.update(memory_id=memory_id, data=final_text, metadata=merged)
-
-
 @router.get("/v1/ping/", include_in_schema=False)
 @router.get("/v1/ping", summary="Ping / validate API key")
 def ping(_auth=Depends(verify_auth)):
@@ -466,19 +384,12 @@ def v1_add_memories(body: MemoryAddInput, meta: RequestMeta = Depends(request_me
     if body.infer is not None:
         params["infer"] = body.infer
 
-    # Three-layer priority: header-injected (lowest) < body.metadata < explicit body fields (highest).
-    # Layer 1 – setdefault: header source/platform only fill in when the key is absent.
-    # Layer 2 – body.metadata: already present in md from params; setdefault preserves its values.
-    # Layer 3 – update: explicit body field (categories) always wins.
-    if meta.source or meta.platform or body.categories:
-        md = params.get("metadata") or {}
-        if meta.source:
-            md.setdefault("source", meta.source)
-        if meta.platform:
-            md.setdefault("platform", meta.platform)
-        if body.categories:
-            md.update({"categories": body.categories})
-        params["metadata"] = md
+    params["metadata"] = merge_v1_add_metadata(
+        params.get("metadata"),
+        source=meta.source,
+        platform=meta.platform,
+        categories=body.categories,
+    )
 
     raw = get_memory_instance().add(messages=body.messages, **params)
     return normalize_results(raw)
@@ -488,7 +399,7 @@ def v1_add_memories(body: MemoryAddInput, meta: RequestMeta = Depends(request_me
 @router.get("/v1/memories/{memory_id}", summary="Get a memory (v1)")
 @upstream_guard
 def v1_get_memory(memory_id: str, _auth=Depends(verify_auth)):
-    return _resolve_existing(get_memory_instance(), memory_id)
+    return resolve_existing(get_memory_instance(), memory_id)
 
 
 @router.put("/v1/memories/{memory_id}", include_in_schema=False)
@@ -503,7 +414,7 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
     metadata = body.metadata
     if body.timestamp is not None:
         metadata = {**(metadata or {}), "timestamp": body.timestamp}
-    return _merge_and_update(get_memory_instance(), memory_id, text=body.text, metadata=metadata)
+    return merge_and_update(get_memory_instance(), memory_id, text=body.text, metadata=metadata)
 
 
 @router.delete("/v1/memories/{memory_id}/", include_in_schema=False)
@@ -536,7 +447,7 @@ def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verif
 @router.post("/v1/memories/search", summary="Search memories (v1)")
 @upstream_guard
 def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
-    _warn_unsupported_fields(body.fields, "v1_search_memories")
+    warn_unsupported_fields(body.fields, "v1_search_memories")
     entity_params = collect_entity_params(
         user_id=body.user_id,
         agent_id=body.agent_id,
@@ -555,7 +466,7 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
             search_filters.setdefault(k, v)
 
     raw = get_memory_instance().search(
-        query=body.query, **_build_search_kwargs(search_filters, body.top_k, body.threshold, body.rerank)
+        query=body.query, **build_search_kwargs(search_filters, body.top_k, body.threshold, body.rerank)
     )
     return normalize_results(raw)
 
@@ -607,15 +518,7 @@ def v1_list_events(
 
     Returns events from the in-memory TTL cache populated by add operations.
     """
-    visible_events = [event for event in event_cache_all() if event_visible_to_caller(event, auth)]
-    total = len(visible_events)
-    start = (page - 1) * page_size
-    return {
-        "count": total,
-        "next": _build_page_url(request, page=page + 1, page_size=page_size) if start + page_size < total else None,
-        "previous": _build_page_url(request, page=page - 1, page_size=page_size) if page > 1 else None,
-        "results": visible_events[start : start + page_size],
-    }
+    return paginate_response(request, event_cache_all(), page, page_size)
 
 
 @router.get("/v1/event/{event_id}/", include_in_schema=False)
@@ -627,8 +530,6 @@ def v1_get_event(event_id: str, auth=Depends(verify_auth)):
     """
     obj = event_cache_get(event_id)
     if obj is None:
-        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found.")
-    if not event_visible_to_caller(obj, auth):
         raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found.")
     return obj
 
@@ -662,7 +563,7 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     updated_count = 0
     for item in body.memories:
         try:
-            _merge_and_update(mem, item.memory_id, text=item.text, metadata=item.metadata)
+            merge_and_update(mem, item.memory_id, text=item.text, metadata=item.metadata)
             updated_count += 1
         except (HTTPException, ValueError):
             continue
@@ -708,7 +609,7 @@ def v1_list_entities(
     include the spec fields on each entity item.
     """
     all_results = list_entities_payload()
-    return _paginate_response(request, all_results, page, page_size)
+    return paginate_response(request, all_results, page, page_size)
 
 
 @router.get("/v1/entities/filters/", include_in_schema=False)
@@ -731,30 +632,30 @@ def v2_list_memories(
         filters=body.filters,
         detail="One of the filters: user_id, agent_id, app_id, or run_id is required!",
     )
-    raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
+    raw = get_memory_instance().get_all(filters=build_list_filters(body, entity_params))
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
     # support server-side limit/offset. Known limitation for very large datasets.
     # NOTE: docs/openapi.json declares this endpoint as returning a bare array, but
     # MemoryClient parses the pagination envelope {count, next, previous, results}.
     # We intentionally diverge from openapi.json to remain client-compatible.
-    return _paginate_response(request, normalize_results(raw), page, page_size)
+    return paginate_response(request, normalize_results(raw), page, page_size)
 
 
 @router.post("/v2/memories/search/", include_in_schema=False)
 @router.post("/v2/memories/search", summary="Search memories (v2)")
 @upstream_guard
 def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
-    _warn_unsupported_fields(body.fields, "v2_search_memories")
+    warn_unsupported_fields(body.fields, "v2_search_memories")
     effective_filters = build_search_filters(
         user_id=body.user_id,
         agent_id=body.agent_id,
-        run_id=body.run_id,
         app_id=body.app_id,
+        run_id=body.run_id,
         filters=body.filters,
         detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
     raw = get_memory_instance().search(
-        query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
+        query=body.query, **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )
     # NOTE: docs/openapi.json declares a bare array response, but MemoryClient
     # reads response["results"]. We intentionally return the envelope here.
@@ -795,8 +696,8 @@ def v3_add_memory(
         filters=body.filters,
         user_id=body.user_id,
         agent_id=body.agent_id,
-        run_id=body.run_id,
         app_id=body.app_id,
+        run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(
@@ -810,35 +711,25 @@ def v3_add_memory(
             "infer": body.infer,
         }
     )
-    # Three-layer priority: header-injected (lowest) < body.metadata < explicit body fields (highest).
-    # Layer 1 – setdefault: header source/platform only fill in when the key is absent.
-    # Layer 2 – body.metadata: already present in md from params; setdefault preserves its values.
-    # Layer 3 – update: dedicated body fields (custom_categories, body.source, …) always win.
-    extra_md = drop_none(
-        {
-            "custom_categories": body.custom_categories,
-            "custom_instructions": body.custom_instructions,
-            "structured_data_schema": body.structured_data_schema,
-            "timestamp": body.timestamp,
-            "source": body.source,
-            "deduced_memories": body.deduced_memories,
-        }
+    extra_md = build_v3_add_extra_metadata(
+        custom_categories=body.custom_categories,
+        custom_instructions=body.custom_instructions,
+        structured_data_schema=body.structured_data_schema,
+        timestamp=body.timestamp,
+        source=body.source,
+        deduced_memories=body.deduced_memories,
     )
 
-    if meta.source or meta.platform or extra_md:
-        md = params.get("metadata") or {}
-        if meta.source:
-            md.setdefault("source", meta.source)
-        if meta.platform:
-            md.setdefault("platform", meta.platform)
-        if extra_md:
-            md.update(extra_md)  # explicit body fields win over body.metadata
-        params["metadata"] = md
+    params["metadata"] = merge_v3_add_metadata(
+        params.get("metadata"),
+        source=meta.source,
+        platform=meta.platform,
+        extra_metadata=extra_md,
+    )
 
     # Synthesize an event entry so GET /v1/event/{event_id} works for polling.
     # Add is processed asynchronously in a background task, so we return PENDING.
     event_id = str(uuid.uuid4())
-    owner_user_id = getattr(auth, "id", None)
     now_iso = datetime.now(timezone.utc).isoformat()
 
     event_cache_put(
@@ -847,8 +738,6 @@ def v3_add_memory(
             event_id,
             [],
             now_iso=now_iso,
-            owner_user_id=str(owner_user_id) if owner_user_id is not None else None,
-            scope={k: str(v) for k, v in entity_params.items()},
             status="PENDING",
             completed_at=None,
             latency=None,
@@ -856,7 +745,7 @@ def v3_add_memory(
     )
     background_tasks.add_task(run_v3_add_memory_task, event_id, body.messages, params, get_memory_instance())
 
-    return {"message": "Memory add request accepted.", "event_id": event_id, "status": "PENDING"}
+    return {"message": "Memory processing has been queued for background execution.", "event_id": event_id, "status": "PENDING"}
 
 
 @router.post("/v3/memories/", include_in_schema=False)
@@ -873,35 +762,35 @@ def v3_get_all_memories(
         filters=body.filters,
         detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
     )
-    raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
+    raw = get_memory_instance().get_all(filters=build_list_filters(body, entity_params))
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
     # support server-side limit/offset. Known limitation for very large datasets.
-    return _paginate_response(request, normalize_results(raw), page, page_size)
+    return paginate_response(request, normalize_results(raw), page, page_size)
 
 
 @router.post("/v3/memories/search/", include_in_schema=False)
 @router.post("/v3/memories/search", summary="Search memories (v3)")
 @upstream_guard
 def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
-    _warn_unsupported_fields(body.fields, "v3_search_memories")
+    warn_unsupported_fields(body.fields, "v3_search_memories")
     effective_filters = build_search_filters(
         user_id=body.user_id,
         agent_id=body.agent_id,
-        run_id=body.run_id,
         app_id=body.app_id,
+        run_id=body.run_id,
         filters=body.filters,
         detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
     # Merge convenience fields for flat (non-AND/OR/NOT) dicts.
     if "AND" not in effective_filters and "OR" not in effective_filters and "NOT" not in effective_filters:
         if body.categories and "categories" not in effective_filters:
-            effective_filters["categories"] = {"contains": body.categories}
+            effective_filters["categories"] = build_categories_filter(body.categories)
         if body.metadata:
             # Merge metadata filters; entity params and explicit filters take precedence.
             for k, v in body.metadata.items():
                 effective_filters.setdefault(k, v)
     raw = get_memory_instance().search(
-        query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
+        query=body.query, **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )
 
     items = normalize_results(raw)

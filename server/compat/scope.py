@@ -19,6 +19,13 @@ COMPAT_TYPE_TO_FIELD: dict[str, str] = {
 VALID_ENTITY_TYPES = frozenset(COMPAT_TYPE_TO_FIELD)
 
 
+def build_categories_filter(categories: list[str]) -> dict[str, Any]:
+    """Build a categories filter matching platform operator semantics."""
+    if len(categories) == 1:
+        return {"contains": categories[0]}
+    return {"in": categories}
+
+
 def _scan_filters(
     filters: dict[str, Any],
 ) -> dict[str, str]:
@@ -157,3 +164,19 @@ def get_entity_field(entity_type: str) -> str:
     if field is None:
         raise HTTPException(status_code=400, detail="Invalid entity type")
     return field
+
+
+def build_list_filters(body: Any, entity_params: dict[str, str]) -> dict[str, Any]:
+    """Build SDK filter dict for get_all from request body and entity params."""
+    sdk_filters: dict[str, Any] = dict(body.filters) if body.filters else dict(entity_params)
+    if "AND" not in sdk_filters and "OR" not in sdk_filters and "NOT" not in sdk_filters:
+        date_filter: dict[str, str] = {}
+        if body.start_date:
+            date_filter["gte"] = body.start_date
+        if body.end_date:
+            date_filter["lte"] = body.end_date
+        if date_filter:
+            sdk_filters.setdefault("created_at", date_filter)
+        if body.categories:
+            sdk_filters.setdefault("categories", build_categories_filter(body.categories))
+    return sdk_filters
