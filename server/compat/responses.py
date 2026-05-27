@@ -4,11 +4,15 @@ Normalises the varied return shapes from the ``Memory`` SDK into consistent
 list or dict formats expected by client SDKs and the MCP protocol.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from fastapi import HTTPException
+from fastapi import Request
 
 API_UNSUPPORTED_DETAIL = "This API is not supported by the self-hosted server."
+logger = logging.getLogger("mem0.server.compat.responses")
 
 
 def unsupported_api_error() -> HTTPException:
@@ -47,3 +51,37 @@ def normalize_results_dict(raw: Any, extra: Optional[Dict[str, Any]] = None) -> 
     if extra:
         base.update(extra)
     return base
+
+
+def build_page_url(request: Request, *, page: int, page_size: int) -> str:
+    params = dict(request.query_params)
+    params["page"] = str(page)
+    params["page_size"] = str(page_size)
+    return f"{request.url.path}?{urlencode(params)}"
+
+
+def paginate_response(
+    request: Request,
+    items: List[Any],
+    page: int,
+    page_size: int,
+) -> Dict[str, Any]:
+    """Wrap a list of items in the SDK-compatible pagination envelope."""
+    total = len(items)
+    start = (page - 1) * page_size
+    return {
+        "count": total,
+        "next": build_page_url(request, page=page + 1, page_size=page_size) if start + page_size < total else None,
+        "previous": build_page_url(request, page=page - 1, page_size=page_size) if page > 1 else None,
+        "results": items[start : start + page_size],
+    }
+
+
+def warn_unsupported_fields(fields: Optional[List[str]], endpoint: str) -> None:
+    """Log a warning when 'fields' projection is requested but not supported by the OSS SDK."""
+    if fields:
+        logger.warning(
+            "%s: 'fields' projection is not supported by the OSS SDK and will be ignored. Requested fields: %s",
+            endpoint,
+            fields,
+        )

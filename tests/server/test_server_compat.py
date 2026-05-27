@@ -1,13 +1,13 @@
 """Unit tests for the server compat utilities.
 
 Covers:
-  - compat.scope   : collect_entity_params, require_entity_scope,
-                     build_search_filters, get_entity_field
+  - compat.scope: collect_entity_params, require_entity_scope,
+                    build_search_filters, get_entity_field
   - compat.responses: drop_none, normalize_results, normalize_results_dict
   - compat.decorators: upstream_guard exception mapping
-  - routers.compat helpers: _build_list_filters, _paginate_response,
-                             _warn_unsupported_fields, _build_search_kwargs,
-                             _resolve_existing, _merge_and_update
+  - routers.compat helpers: build_list_filters, paginate_response,
+                            warn_unsupported_fields, build_search_kwargs,
+                            resolve_existing, merge_and_update
 """
 
 import logging
@@ -22,12 +22,13 @@ pytest.importorskip("fastapi", reason="fastapi not installed")
 from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
 from mem0.exceptions import ValidationError as Mem0ValidationError
-from server.compat.events import event_cache_clear
+from server.compat.events import event_cache_all, event_cache_clear, event_cache_get, event_cache_put, event_cache_update
 from server.compat.requests import RequestMeta
 from server.compat.decorators import upstream_guard
 from server.compat.responses import drop_none, normalize_results, normalize_results_dict
 from server.errors import UpstreamError
 from server.compat.scope import (
+    build_categories_filter,
     build_search_filters,
     collect_entity_params,
     get_entity_field,
@@ -38,12 +39,12 @@ from server.routers.compat import (
     MemoryBatchDeleteLegacyInput,
     MemoryAddInputV3,
     MemoryGetInputV2,
-    _build_list_filters,
-    _build_search_kwargs,
-    _merge_and_update,
-    _paginate_response,
-    _resolve_existing,
-    _warn_unsupported_fields,
+    build_list_filters,
+    build_search_kwargs,
+    merge_and_update,
+    paginate_response,
+    resolve_existing,
+    warn_unsupported_fields,
     v1_get_event,
     v1_list_events,
     v1_list_memories,
@@ -231,6 +232,14 @@ class TestBuildSearchFilters:
         assert any(item.get("app_id") == "app1" for item in result["AND"])
 
 
+class TestBuildCategoriesFilter:
+    def test_single_category_uses_contains(self):
+        assert build_categories_filter(["finance"]) == {"contains": "finance"}
+
+    def test_multiple_categories_use_in(self):
+        assert build_categories_filter(["finance", "travel"]) == {"in": ["finance", "travel"]}
+
+
 # ---------------------------------------------------------------------------
 # compat.responses
 # ---------------------------------------------------------------------------
@@ -302,8 +311,115 @@ class TestNormalizeResultsDict:
         }
 
 
+class TestEventCacheCopies:
+    @pytest.fixture(autouse=True)
+    def _clear_events(self):
+        event_cache_clear()
+        yield
+        event_cache_clear()
+
+    def test_put_validates_and_detaches_from_input(self):
+        event_obj = {
+            "id": "evt-1",
+            "event_type": "ADD",
+            "status": "PENDING",
+            "payload": {},
+            "metadata": {"source": "caller"},
+            "results": [],
+            "created_at": "2024-01-01T00:00:00+00:00",
+            "updated_at": "2024-01-01T00:00:00+00:00",
+            "started_at": "2024-01-01T00:00:00+00:00",
+            "completed_at": None,
+            "latency": None,
+        }
+
+        event_cache_put("evt-1", event_obj)
+        event_obj["status"] = "FAILED"
+
+        cached = event_cache_get("evt-1")
+        assert cached is not None
+        assert cached["status"] == "PENDING"
+
+    def test_get_returns_copy(self):
+        event_cache_put(
+            "evt-1",
+            {
+                "id": "evt-1",
+                "event_type": "ADD",
+                "status": "PENDING",
+                "payload": {},
+                "metadata": None,
+                "results": [],
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+                "started_at": "2024-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "latency": None,
+            },
+        )
+
+        cached = event_cache_get("evt-1")
+        assert cached is not None
+        cached["status"] = "FAILED"
+
+        fresh = event_cache_get("evt-1")
+        assert fresh is not None
+        assert fresh["status"] == "PENDING"
+
+    def test_all_returns_copies(self):
+        event_cache_put(
+            "evt-1",
+            {
+                "id": "evt-1",
+                "event_type": "ADD",
+                "status": "PENDING",
+                "payload": {},
+                "metadata": None,
+                "results": [],
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+                "started_at": "2024-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "latency": None,
+            },
+        )
+
+        listed = event_cache_all()
+        listed[0]["status"] = "FAILED"
+
+        fresh = event_cache_get("evt-1")
+        assert fresh is not None
+        assert fresh["status"] == "PENDING"
+
+    def test_update_returns_copy(self):
+        event_cache_put(
+            "evt-1",
+            {
+                "id": "evt-1",
+                "event_type": "ADD",
+                "status": "PENDING",
+                "payload": {},
+                "metadata": None,
+                "results": [],
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+                "started_at": "2024-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "latency": None,
+            },
+        )
+
+        updated = event_cache_update("evt-1", status="SUCCEEDED")
+        assert updated is not None
+        updated["status"] = "FAILED"
+
+        fresh = event_cache_get("evt-1")
+        assert fresh is not None
+        assert fresh["status"] == "SUCCEEDED"
+
+
 # ---------------------------------------------------------------------------
-# _build_list_filters
+# build_list_filters
 # ---------------------------------------------------------------------------
 
 
@@ -313,22 +429,22 @@ class TestBuildListFilters:
 
     def test_no_filters_falls_back_to_entity_params(self):
         body = self._body()
-        result = _build_list_filters(body, {"user_id": "u1"})
+        result = build_list_filters(body, {"user_id": "u1"})
         assert result == {"user_id": "u1"}
 
     def test_flat_filters_preserved(self):
         body = self._body(filters={"user_id": "u1", "created_at": {"gte": "2024-01-01"}})
-        result = _build_list_filters(body, {"user_id": "u1"})
+        result = build_list_filters(body, {"user_id": "u1"})
         assert result == {"user_id": "u1", "created_at": {"gte": "2024-01-01"}}
 
     def test_start_date_added(self):
         body = self._body(filters={"user_id": "u1"}, start_date="2024-01-01")
-        result = _build_list_filters(body, {"user_id": "u1"})
+        result = build_list_filters(body, {"user_id": "u1"})
         assert result["created_at"] == {"gte": "2024-01-01"}
 
     def test_end_date_added(self):
         body = self._body(filters={"user_id": "u1"}, end_date="2024-12-31")
-        result = _build_list_filters(body, {"user_id": "u1"})
+        result = build_list_filters(body, {"user_id": "u1"})
         assert result["created_at"] == {"lte": "2024-12-31"}
 
     def test_date_range_combined(self):
@@ -337,13 +453,18 @@ class TestBuildListFilters:
             start_date="2024-01-01",
             end_date="2024-12-31",
         )
-        result = _build_list_filters(body, {"user_id": "u1"})
+        result = build_list_filters(body, {"user_id": "u1"})
         assert result["created_at"] == {"gte": "2024-01-01", "lte": "2024-12-31"}
 
     def test_categories_added(self):
         body = self._body(filters={"user_id": "u1"}, categories=["finance"])
-        result = _build_list_filters(body, {"user_id": "u1"})
-        assert result["categories"] == {"contains": ["finance"]}
+        result = build_list_filters(body, {"user_id": "u1"})
+        assert result["categories"] == {"contains": "finance"}
+
+    def test_multiple_categories_use_in_operator(self):
+        body = self._body(filters={"user_id": "u1"}, categories=["finance", "travel"])
+        result = build_list_filters(body, {"user_id": "u1"})
+        assert result["categories"] == {"in": ["finance", "travel"]}
 
     def test_existing_created_at_not_overridden(self):
         """setdefault: body.filters already has created_at, date params should not override."""
@@ -351,7 +472,7 @@ class TestBuildListFilters:
             filters={"user_id": "u1", "created_at": {"gte": "2023-01-01"}},
             start_date="2024-01-01",
         )
-        result = _build_list_filters(body, {"user_id": "u1"})
+        result = build_list_filters(body, {"user_id": "u1"})
         assert result["created_at"] == {"gte": "2023-01-01"}
 
     def test_existing_categories_not_overridden(self):
@@ -359,7 +480,7 @@ class TestBuildListFilters:
             filters={"user_id": "u1", "categories": {"in": ["personal"]}},
             categories=["finance"],
         )
-        result = _build_list_filters(body, {"user_id": "u1"})
+        result = build_list_filters(body, {"user_id": "u1"})
         assert result["categories"] == {"in": ["personal"]}
 
     def test_and_format_skips_date_categories_merge(self):
@@ -369,30 +490,30 @@ class TestBuildListFilters:
             start_date="2024-01-01",
             categories=["finance"],
         )
-        result = _build_list_filters(body, {"user_id": "u1"})
+        result = build_list_filters(body, {"user_id": "u1"})
         assert "created_at" not in result
         assert "categories" not in result
         assert "AND" in result
 
     def test_and_filters_do_not_mix_top_level_entity_keys(self):
         body = self._body(filters={"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]})
-        result = _build_list_filters(body, {"user_id": "u1"})
+        result = build_list_filters(body, {"user_id": "u1"})
         assert result == {"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]}
 
     def test_or_filters_do_not_mix_top_level_entity_keys(self):
         body = self._body(filters={"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]})
-        result = _build_list_filters(body, {"user_id": "u1", "agent_id": "a1"})
+        result = build_list_filters(body, {"user_id": "u1", "agent_id": "a1"})
         assert result == {"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]}
 
     def test_does_not_mutate_body_filters(self):
         original = {"user_id": "u1"}
         body = self._body(filters=original, start_date="2024-01-01")
-        _build_list_filters(body, {"user_id": "u1"})
+        build_list_filters(body, {"user_id": "u1"})
         assert original == {"user_id": "u1"}
 
 
 # ---------------------------------------------------------------------------
-# _paginate_response
+# paginate_response
 # ---------------------------------------------------------------------------
 
 
@@ -406,7 +527,7 @@ class TestPaginateResponse:
     def test_first_page_no_previous(self):
         req = self._request()
         items = list(range(25))
-        result = _paginate_response(req, items, page=1, page_size=10)
+        result = paginate_response(req, items, page=1, page_size=10)
         assert result["count"] == 25
         assert result["previous"] is None
         assert result["next"] is not None
@@ -415,7 +536,7 @@ class TestPaginateResponse:
     def test_last_page_no_next(self):
         req = self._request()
         items = list(range(25))
-        result = _paginate_response(req, items, page=3, page_size=10)
+        result = paginate_response(req, items, page=3, page_size=10)
         assert result["count"] == 25
         assert result["next"] is None
         assert result["previous"] is not None
@@ -424,7 +545,7 @@ class TestPaginateResponse:
     def test_single_page(self):
         req = self._request()
         items = [1, 2, 3]
-        result = _paginate_response(req, items, page=1, page_size=10)
+        result = paginate_response(req, items, page=1, page_size=10)
         assert result["count"] == 3
         assert result["next"] is None
         assert result["previous"] is None
@@ -432,7 +553,7 @@ class TestPaginateResponse:
 
     def test_empty_items(self):
         req = self._request()
-        result = _paginate_response(req, [], page=1, page_size=10)
+        result = paginate_response(req, [], page=1, page_size=10)
         assert result["count"] == 0
         assert result["results"] == []
         assert result["next"] is None
@@ -441,7 +562,7 @@ class TestPaginateResponse:
     def test_middle_page_has_both(self):
         req = self._request()
         items = list(range(30))
-        result = _paginate_response(req, items, page=2, page_size=10)
+        result = paginate_response(req, items, page=2, page_size=10)
         assert result["count"] == 30
         assert result["next"] is not None
         assert result["previous"] is not None
@@ -450,91 +571,91 @@ class TestPaginateResponse:
     def test_next_url_contains_page_param(self):
         req = self._request()
         items = list(range(25))
-        result = _paginate_response(req, items, page=1, page_size=10)
+        result = paginate_response(req, items, page=1, page_size=10)
         assert "page=2" in result["next"]
         assert "page_size=10" in result["next"]
 
     def test_previous_url_contains_page_param(self):
         req = self._request()
         items = list(range(25))
-        result = _paginate_response(req, items, page=3, page_size=10)
+        result = paginate_response(req, items, page=3, page_size=10)
         assert "page=2" in result["previous"]
 
 
 # ---------------------------------------------------------------------------
-# _warn_unsupported_fields
+# warn_unsupported_fields
 # ---------------------------------------------------------------------------
 
 
 class TestWarnUnsupportedFields:
     def test_no_fields_no_warning(self, caplog):
         with caplog.at_level(logging.WARNING):
-            _warn_unsupported_fields(None, "v3_search_memories")
+            warn_unsupported_fields(None, "v3_search_memories")
         assert "fields" not in caplog.text
 
     def test_empty_list_no_warning(self, caplog):
         with caplog.at_level(logging.WARNING):
-            _warn_unsupported_fields([], "v3_search_memories")
+            warn_unsupported_fields([], "v3_search_memories")
         assert "fields" not in caplog.text
 
     def test_fields_emits_warning(self, caplog):
         with caplog.at_level(logging.WARNING):
-            _warn_unsupported_fields(["id", "memory"], "v2_search_memories")
+            warn_unsupported_fields(["id", "memory"], "v2_search_memories")
         assert "v2_search_memories" in caplog.text
         assert "fields" in caplog.text.lower()
 
     def test_warning_includes_field_names(self, caplog):
         with caplog.at_level(logging.WARNING):
-            _warn_unsupported_fields(["score"], "v3_search_memories")
+            warn_unsupported_fields(["score"], "v3_search_memories")
         assert "score" in caplog.text
 
 
 # ---------------------------------------------------------------------------
-# _build_search_kwargs
+# build_search_kwargs
 # ---------------------------------------------------------------------------
 
 
 class TestBuildSearchKwargs:
     def test_filters_always_present(self):
-        result = _build_search_kwargs({"user_id": "u1"}, None, None)
+        result = build_search_kwargs({"user_id": "u1"}, None, None)
         assert result == {"filters": {"user_id": "u1"}}
 
     def test_top_k_included(self):
-        result = _build_search_kwargs({"user_id": "u1"}, 5, None)
+        result = build_search_kwargs({"user_id": "u1"}, 5, None)
         assert result["top_k"] == 5
 
     def test_threshold_included(self):
-        result = _build_search_kwargs({"user_id": "u1"}, None, 0.7)
+        result = build_search_kwargs({"user_id": "u1"}, None, 0.7)
         assert result["threshold"] == 0.7
 
     def test_rerank_included(self):
-        result = _build_search_kwargs({"user_id": "u1"}, None, None, rerank=True)
+        result = build_search_kwargs({"user_id": "u1"}, None, None, rerank=True)
         assert result["rerank"] is True
 
     def test_none_kwargs_omitted(self):
-        result = _build_search_kwargs({"user_id": "u1"}, None, None, None)
+        result = build_search_kwargs({"user_id": "u1"}, None, None, None)
         assert "top_k" not in result
         assert "threshold" not in result
         assert "rerank" not in result
 
     def test_all_params(self):
-        result = _build_search_kwargs({"user_id": "u1"}, 10, 0.5, rerank=False)
+        result = build_search_kwargs({"user_id": "u1"}, 10, 0.5, rerank=False)
         assert result == {"filters": {"user_id": "u1"}, "top_k": 10, "threshold": 0.5, "rerank": False}
 
     def test_zero_threshold_included(self):
         """threshold=0.0 is falsy but must be included (disables score filtering)."""
-        result = _build_search_kwargs({"user_id": "u1"}, None, 0.0)
+        result = build_search_kwargs({"user_id": "u1"}, None, 0.0)
         assert "threshold" in result
         assert result["threshold"] == 0.0
 
     def test_zero_top_k_included(self):
-        result = _build_search_kwargs({"user_id": "u1"}, 0, None)
+        result = build_search_kwargs({"user_id": "u1"}, 0, None)
         assert "top_k" in result
         assert result["top_k"] == 0
 
 
 # ---------------------------------------------------------------------------
-# _resolve_existing
+# resolve_existing
 # ---------------------------------------------------------------------------
 
 
@@ -542,28 +663,28 @@ class TestResolveExisting:
     def test_returns_dict_when_sdk_returns_dict(self):
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "hello"}
-        result = _resolve_existing(mem, "mem-1")
+        result = resolve_existing(mem, "mem-1")
         assert result == {"id": "mem-1", "memory": "hello"}
         mem.get.assert_called_once_with("mem-1")
 
     def test_unwraps_single_item_list(self):
         mem = MagicMock()
         mem.get.return_value = [{"id": "mem-1", "memory": "hello"}]
-        result = _resolve_existing(mem, "mem-1")
+        result = resolve_existing(mem, "mem-1")
         assert result == {"id": "mem-1", "memory": "hello"}
 
     def test_unwraps_list_takes_first_element(self):
-        """When SDK returns a multi-element list, _resolve_existing picks index 0."""
+        """When SDK returns a multi-element list, resolve_existing picks index 0."""
         mem = MagicMock()
         mem.get.return_value = [{"id": "a"}, {"id": "b"}]
-        result = _resolve_existing(mem, "a")
+        result = resolve_existing(mem, "a")
         assert result == {"id": "a"}
 
     def test_raises_404_on_none(self):
         mem = MagicMock()
         mem.get.return_value = None
         with pytest.raises(HTTPException) as exc:
-            _resolve_existing(mem, "mem-x")
+            resolve_existing(mem, "mem-x")
         assert exc.value.status_code == 404
         assert "mem-x" in exc.value.detail
 
@@ -571,19 +692,19 @@ class TestResolveExisting:
         mem = MagicMock()
         mem.get.return_value = []
         with pytest.raises(HTTPException) as exc:
-            _resolve_existing(mem, "mem-x")
+            resolve_existing(mem, "mem-x")
         assert exc.value.status_code == 404
 
     def test_raises_404_on_non_dict(self):
         mem = MagicMock()
         mem.get.return_value = "just a string"
         with pytest.raises(HTTPException) as exc:
-            _resolve_existing(mem, "mem-x")
+            resolve_existing(mem, "mem-x")
         assert exc.value.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# _merge_and_update
+# merge_and_update
 # ---------------------------------------------------------------------------
 
 
@@ -592,14 +713,14 @@ class TestMergeAndUpdate:
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "old text", "metadata": {}}
         mem.update.return_value = {"message": "updated"}
-        _merge_and_update(mem, "mem-1", text="new text")
+        merge_and_update(mem, "mem-1", text="new text")
         mem.update.assert_called_once_with(memory_id="mem-1", data="new text", metadata={})
 
     def test_preserves_existing_text_when_none(self):
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "old text", "metadata": {"key": "val"}}
         mem.update.return_value = {"message": "updated"}
-        _merge_and_update(mem, "mem-1", text=None)
+        merge_and_update(mem, "mem-1", text=None)
         mem.update.assert_called_once_with(memory_id="mem-1", data="old text", metadata={"key": "val"})
 
     def test_preserves_existing_text_via_text_key(self):
@@ -607,36 +728,36 @@ class TestMergeAndUpdate:
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "text": "via text key", "metadata": {}}
         mem.update.return_value = {"message": "updated"}
-        _merge_and_update(mem, "mem-1")
+        merge_and_update(mem, "mem-1")
         mem.update.assert_called_once_with(memory_id="mem-1", data="via text key", metadata={})
 
     def test_metadata_new_keys_override_existing(self):
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"a": 1, "b": 2}}
         mem.update.return_value = {"message": "updated"}
-        _merge_and_update(mem, "mem-1", metadata={"b": 99, "c": 3})
+        merge_and_update(mem, "mem-1", metadata={"b": 99, "c": 3})
         mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"a": 1, "b": 99, "c": 3})
 
     def test_metadata_none_keeps_existing(self):
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"x": 1}}
         mem.update.return_value = {"message": "updated"}
-        _merge_and_update(mem, "mem-1", metadata=None)
+        merge_and_update(mem, "mem-1", metadata=None)
         mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"x": 1})
 
     def test_raises_404_when_memory_missing(self):
-        """Delegates to _resolve_existing which raises 404 for missing memory."""
+        """Delegates to resolve_existing which raises 404 for missing memory."""
         mem = MagicMock()
         mem.get.return_value = None
         with pytest.raises(HTTPException) as exc:
-            _merge_and_update(mem, "nonexistent", text="new")
+            merge_and_update(mem, "nonexistent", text="new")
         assert exc.value.status_code == 404
 
     def test_handles_missing_metadata_on_existing(self):
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "txt"}
         mem.update.return_value = {"message": "updated"}
-        _merge_and_update(mem, "mem-1", metadata={"new_key": "val"})
+        merge_and_update(mem, "mem-1", metadata={"new_key": "val"})
         mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"new_key": "val"})
 
 
@@ -797,7 +918,7 @@ class TestSyntheticEvents:
         assert first_page["next"] is not None
         assert second_page["previous"] is not None
 
-    def test_v1_get_event_hidden_for_other_user(self, monkeypatch):
+    def test_v1_get_event_visible_to_other_user_in_same_server_context(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
         monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
@@ -816,11 +937,10 @@ class TestSyntheticEvents:
             auth=owner,
         )
 
-        with pytest.raises(HTTPException) as exc:
-            v1_get_event(result["event_id"], auth=other)
-        assert exc.value.status_code == 404
+        visible = v1_get_event(result["event_id"], auth=other)
+        assert visible["id"] == result["event_id"]
 
-    def test_v1_list_events_returns_only_owner_events(self, monkeypatch):
+    def test_v1_list_events_returns_project_visible_events(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
         monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
@@ -851,9 +971,28 @@ class TestSyntheticEvents:
         req.query_params = {"page": "1", "page_size": "10"}
 
         listed = v1_list_events(request=req, page=1, page_size=10, auth=user1)
-        assert listed["count"] == 1
-        assert len(listed["results"]) == 1
-        assert listed["results"][0]["owner_user_id"] == "user-1"
+        assert listed["count"] == 2
+        assert len(listed["results"]) == 2
+        assert {item["id"] for item in listed["results"]}
+
+    def test_v3_add_event_latency_is_recorded_in_milliseconds(self, monkeypatch):
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.compat.tasks.time.perf_counter", MagicMock(side_effect=[10.0, 10.25]))
+
+        tasks = BackgroundTasks()
+        result = v3_add_memory(
+            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1"),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=None,
+        )
+
+        self._run_background_tasks(tasks)
+
+        event = v1_get_event(result["event_id"], auth=None)
+        assert event["latency"] == 250.0
 
     def test_v3_add_marks_event_failed_when_add_raises(self, monkeypatch):
         mem = MagicMock()
