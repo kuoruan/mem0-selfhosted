@@ -5,17 +5,11 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel, Field
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from sqlalchemy import func, select
-
+import telemetry
 from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, ensure_admin, require_admin, verify_auth
-from mcp_server import setup_mcp_server
+from bg_tasks import prune_loop
+from db import SessionLocal
+from dotenv import load_dotenv
 from errors import (
     UpstreamError,
     install_request_id_logging,
@@ -24,23 +18,19 @@ from errors import (
     upstream_error,
     upstream_error_handler,
 )
-from rate_limit import limiter
-from db import SessionLocal
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
+from mcp_server import setup_mcp_server
 from models import RequestLog, User
-import telemetry
-from routers import auth as auth_router
+from pydantic import BaseModel, Field
+from rate_limit import limiter
 from routers import api_keys as api_keys_router
+from routers import auth as auth_router
 from routers import compat as compat_router
 from routers import entities as entities_router
 from routers import requests as requests_router
-from bg_tasks import prune_loop
 from schemas import MessageResponse
-
-# TODO(async): All endpoints and _persist_request_log use synchronous SQLAlchemy
-# sessions. FastAPI dispatches sync path functions to a thread pool, but under high
-# concurrency the thread pool can become a bottleneck. For production workloads,
-# consider migrating to asyncpg + sqlalchemy[asyncio] + AsyncSession. The mem0 SDK
-# calls (add, search, get_all) remain blocking and should stay in run_in_executor.
 from server_state import (
     get_current_config,
     get_memory_instance,
@@ -49,6 +39,9 @@ from server_state import (
     update_config,
     list_all_memories,
 )
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from sqlalchemy import func, select
 
 load_dotenv()
 
@@ -228,9 +221,9 @@ class MemoryUpdate(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query.")
-    user_id: Optional[str] = None
-    run_id: Optional[str] = None
-    agent_id: Optional[str] = None
+    user_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
+    run_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
+    agent_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
     filters: Optional[Dict[str, Any]] = None
     top_k: Optional[int] = Field(None, description="Maximum number of results to return.")
     threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
@@ -456,8 +449,25 @@ def get_memory(memory_id: str, _auth=Depends(verify_auth)):
 def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
     """Search for memories based on a query."""
     try:
-        params = {k: v for k, v in search_req.model_dump().items() if v is not None and k != "query"}
-        return get_memory_instance().search(query=search_req.query, **params)
+        filters = search_req.filters or {}
+        deprecated_keys = []
+        for entity_key in ("user_id", "agent_id", "run_id"):
+            entity_val = getattr(search_req, entity_key, None)
+            if entity_val is not None:
+                filters[entity_key] = entity_val
+                deprecated_keys.append(entity_key)
+        if deprecated_keys:
+            logging.warning(
+                "Top-level %s in /search is deprecated. Use filters={%s} instead.",
+                ", ".join(deprecated_keys),
+                ", ".join(f'"{k}": "..."' for k in deprecated_keys),
+            )
+        params = {}
+        if search_req.top_k is not None:
+            params["top_k"] = search_req.top_k
+        if search_req.threshold is not None:
+            params["threshold"] = search_req.threshold
+        return get_memory_instance().search(query=search_req.query, filters=filters, **params)
     except Exception:
         raise upstream_error()
 
