@@ -14,7 +14,7 @@ from auth import verify_auth
 from compat.entities import list_entities_payload
 from compat.requests import request_meta
 from compat.responses import normalize_results, normalize_results_dict
-from compat.scope import build_search_filters, collect_entity_params, reject_app_id, require_entity_scope
+from compat.scope import build_search_filters, collect_entity_params, require_entity_scope
 from server_state import get_memory_instance
 
 logger = logging.getLogger("mem0.server.mcp")
@@ -32,7 +32,7 @@ def _fallback_uid() -> str | None:
 
 
 @mcp.tool(
-    description="Store a new preference, fact, or conversation snippet. Requires at least one: user_id, agent_id, or run_id."
+    description="Store a new preference, fact, or conversation snippet. Requires at least one: user_id, agent_id, app_id or run_id."
 )
 def add_memory(
     text: Annotated[str, Field(description="Plain sentence summarizing what to store.")],
@@ -47,9 +47,7 @@ def add_memory(
         Optional[str], Field(default=None, description="Override the default user scope for this write.")
     ] = None,
     agent_id: Annotated[Optional[str], Field(default=None, description="Optional agent identifier.")] = None,
-    app_id: Annotated[
-        Optional[str], Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    ] = None,
+    app_id: Annotated[Optional[str], Field(default=None, description="Optional app identifier.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Optional run identifier.")] = None,
     infer: Annotated[
         bool, Field(default=True, description="When False, store text verbatim without LLM fact extraction.")
@@ -58,10 +56,10 @@ def add_memory(
         Optional[dict[str, Any]], Field(default=None, description="Attach arbitrary metadata JSON to the memory.")
     ] = None,
 ) -> dict[str, Any]:
-    reject_app_id(app_id, http_error=False)
     scope = require_entity_scope(
         user_id=user_id,
         agent_id=agent_id,
+        app_id=app_id,
         run_id=run_id,
         fallback_user_id=_fallback_uid(),
     )
@@ -95,9 +93,7 @@ def search_memories(
     agent_id: Annotated[
         Optional[str], Field(default=None, description="Limit search to this agent's memories.")
     ] = None,
-    app_id: Annotated[
-        Optional[str], Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    ] = None,
+    app_id: Annotated[Optional[str], Field(default=None, description="Limit search to this app's memories.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Limit search to this run's memories.")] = None,
     filters: Annotated[
         Optional[dict[str, Any]],
@@ -110,10 +106,10 @@ def search_memories(
         Optional[float], Field(default=None, description="Minimum semantic relevance score (0.0–1.0).")
     ] = None,
 ) -> dict[str, Any]:
-    reject_app_id(app_id, http_error=False)
     scoped_filters = build_search_filters(
         user_id=user_id,
         agent_id=agent_id,
+        app_id=app_id,
         run_id=run_id,
         filters=filters,
         fallback_user_id=_fallback_uid(),
@@ -141,9 +137,7 @@ user_id is automatically added to filters if not provided."""
 def get_memories(
     user_id: Annotated[Optional[str], Field(default=None, description="List memories for this user.")] = None,
     agent_id: Annotated[Optional[str], Field(default=None, description="List memories for this agent.")] = None,
-    app_id: Annotated[
-        Optional[str], Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    ] = None,
+    app_id: Annotated[Optional[str], Field(default=None, description="List memories for this app.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="List memories for this run.")] = None,
     filters: Annotated[
         Optional[dict[str, Any]], Field(default=None, description="Structured filters; user_id injected automatically.")
@@ -153,10 +147,10 @@ def get_memories(
         Optional[int], Field(default=None, description="Number of memories per page (default 10).")
     ] = None,
 ) -> dict[str, Any]:
-    reject_app_id(app_id, http_error=False)
     scoped_filters = build_search_filters(
         user_id=user_id,
         agent_id=agent_id,
+        app_id=app_id,
         run_id=run_id,
         filters=filters,
         fallback_user_id=_fallback_uid(),
@@ -205,21 +199,19 @@ def delete_memory(
     return get_memory_instance().delete(memory_id)
 
 
-@mcp.tool(description="Delete every memory in the given user/agent/run but keep the entity.")
+@mcp.tool(description="Delete every memory in the given user/agent/app/run scope but keep the entity.")
 def delete_all_memories(
     user_id: Annotated[
         Optional[str], Field(default=None, description="User scope to delete; defaults to server user.")
     ] = None,
     agent_id: Annotated[Optional[str], Field(default=None, description="Optional agent scope to delete.")] = None,
-    app_id: Annotated[
-        Optional[str], Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    ] = None,
+    app_id: Annotated[Optional[str], Field(default=None, description="Optional app scope to delete.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Optional run scope to delete.")] = None,
 ) -> dict[str, Any]:
-    reject_app_id(app_id, http_error=False)
     scope = require_entity_scope(
         user_id=user_id,
         agent_id=agent_id,
+        app_id=app_id,
         run_id=run_id,
         fallback_user_id=_fallback_uid(),
     )
@@ -231,15 +223,12 @@ def delete_all_memories(
 def delete_entities(
     user_id: Annotated[Optional[str], Field(default=None, description="Delete this user and its memories.")] = None,
     agent_id: Annotated[Optional[str], Field(default=None, description="Delete this agent and its memories.")] = None,
-    app_id: Annotated[
-        Optional[str], Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    ] = None,
+    app_id: Annotated[Optional[str], Field(default=None, description="Delete this app and its memories.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Delete this run and its memories.")] = None,
 ) -> dict[str, Any]:
-    reject_app_id(app_id, http_error=False)
-    selected = list(collect_entity_params(user_id=user_id, agent_id=agent_id, run_id=run_id).items())
+    selected = list(collect_entity_params(user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id).items())
     if not selected:
-        raise ValueError("Provide user_id, agent_id, or run_id before calling delete_entities.")
+        raise ValueError("Provide user_id, agent_id, app_id or run_id before calling delete_entities.")
     memory = get_memory_instance()
     for key, value in selected:
         memory.delete_all(**{key: value})

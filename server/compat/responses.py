@@ -4,7 +4,7 @@ Normalises the varied return shapes from the ``Memory`` SDK into consistent
 list or dict formats expected by client SDKs and the MCP protocol.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
@@ -34,10 +34,16 @@ def normalize_results(raw: Any) -> List[Any]:
     return []
 
 
-def normalize_results_dict(raw: Any) -> Dict[str, Any]:
-    """Normalise SDK output to ``{"results": [...]}``."""
-    if isinstance(raw, dict) and "results" in raw:
-        return raw
-    if isinstance(raw, list):
-        return {"results": raw}
-    return {"results": []}
+def normalize_results_dict(raw: Any, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Normalise SDK output to ``{"results": [...]}`` and merge *extra* into the result.
+
+    If *raw* is already a dict, its existing fields are preserved and only
+    ``results`` is normalised; *extra* is applied last and may override any key.
+    """
+    if isinstance(raw, dict):
+        base: Dict[str, Any] = {**raw, "results": normalize_results(raw)}
+    else:
+        base = {"results": normalize_results(raw)}
+    if extra:
+        base.update(extra)
+    return base

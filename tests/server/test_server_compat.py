@@ -2,7 +2,7 @@
 
 Covers:
   - compat.scope   : collect_entity_params, require_entity_scope,
-                     build_search_filters, reject_app_id, get_entity_field
+                     build_search_filters, get_entity_field
   - compat.responses: drop_none, normalize_results, normalize_results_dict
   - compat.decorators: upstream_guard exception mapping
   - routers.compat helpers: _build_list_filters, _paginate_response,
@@ -11,6 +11,7 @@ Covers:
 """
 
 import logging
+import sys
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -18,9 +19,11 @@ import pytest
 
 pytest.importorskip("fastapi", reason="fastapi not installed")
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
 from mem0.exceptions import ValidationError as Mem0ValidationError
+from server.compat.events import event_cache_clear
+from server.compat.requests import RequestMeta
 from server.compat.decorators import upstream_guard
 from server.compat.responses import drop_none, normalize_results, normalize_results_dict
 from server.errors import UpstreamError
@@ -28,12 +31,12 @@ from server.compat.scope import (
     build_search_filters,
     collect_entity_params,
     get_entity_field,
-    reject_app_id,
     require_entity_scope,
 )
 from server.routers.compat import (
     MemoryBatchDeleteInput,
     MemoryBatchDeleteLegacyInput,
+    MemoryAddInputV3,
     MemoryGetInputV2,
     _build_list_filters,
     _build_search_kwargs,
@@ -41,23 +44,16 @@ from server.routers.compat import (
     _paginate_response,
     _resolve_existing,
     _warn_unsupported_fields,
+    v1_get_event,
+    v1_list_events,
     v1_list_memories,
+    v3_add_memory,
 )
 
 
 # ---------------------------------------------------------------------------
 # compat.scope
 # ---------------------------------------------------------------------------
-
-
-class TestRejectAppId:
-    def test_none_passes(self):
-        reject_app_id(None)  # should not raise
-
-    def test_non_none_raises_501(self):
-        with pytest.raises(HTTPException) as exc:
-            reject_app_id("my-app")
-        assert exc.value.status_code == 501
 
 
 class TestGetEntityField:
@@ -70,10 +66,8 @@ class TestGetEntityField:
     def test_run(self):
         assert get_entity_field("run") == "run_id"
 
-    def test_app_raises_501(self):
-        with pytest.raises(HTTPException) as exc:
-            get_entity_field("app")
-        assert exc.value.status_code == 501
+    def test_app(self):
+        assert get_entity_field("app") == "app_id"
 
     def test_unknown_raises_400(self):
         with pytest.raises(HTTPException) as exc:
@@ -88,6 +82,9 @@ class TestCollectEntityParams:
     def test_multiple_kwargs(self):
         result = collect_entity_params(user_id="u1", agent_id="a1")
         assert result == {"user_id": "u1", "agent_id": "a1"}
+
+    def test_app_id_kwarg(self):
+        assert collect_entity_params(app_id="app1") == {"app_id": "app1"}
 
     def test_flat_filters(self):
         result = collect_entity_params(filters={"user_id": "u1", "agent_id": "a1"})
@@ -112,35 +109,21 @@ class TestCollectEntityParams:
         result = collect_entity_params(filters={"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]})
         assert result == {"user_id": "u1", "agent_id": "a1"}
 
+    def test_app_id_nested_and(self):
+        result = collect_entity_params(filters={"AND": [{"app_id": "app1"}, {"user_id": "u1"}]})
+        assert result == {"app_id": "app1", "user_id": "u1"}
+
+    def test_app_id_nested_or(self):
+        result = collect_entity_params(filters={"OR": [{"app_id": "app1"}, {"agent_id": "a1"}]})
+        assert result == {"app_id": "app1", "agent_id": "a1"}
+
     def test_none_values_skipped(self):
         assert collect_entity_params(user_id=None, agent_id=None) == {}
 
     def test_empty_returns_empty(self):
         assert collect_entity_params() == {}
 
-    def test_app_id_kwarg_raises_501(self):
-        with pytest.raises(HTTPException) as exc:
-            collect_entity_params(app_id="x")
-        assert exc.value.status_code == 501
 
-    def test_app_id_in_flat_filters_raises_501(self):
-        with pytest.raises(HTTPException):
-            collect_entity_params(filters={"app_id": "x"})
-
-    def test_reject_unsupported_false_skips_app_check(self):
-        # reject_unsupported=False should not raise for app_id
-        result = collect_entity_params(app_id="x", reject_unsupported=False)
-        assert "app_id" not in result  # app_id is not an entity param anyway
-
-    def test_app_id_in_nested_and_filters_raises_501(self):
-        with pytest.raises(HTTPException) as exc:
-            collect_entity_params(filters={"AND": [{"app_id": "x"}, {"user_id": "u1"}]})
-        assert exc.value.status_code == 501
-
-    def test_app_id_in_nested_or_filters_raises_501(self):
-        with pytest.raises(HTTPException) as exc:
-            collect_entity_params(filters={"OR": [{"app_id": "x"}, {"user_id": "u1"}]})
-        assert exc.value.status_code == 501
 
 
 class TestRequireEntityScope:
@@ -148,6 +131,7 @@ class TestRequireEntityScope:
         with pytest.raises(HTTPException) as exc:
             require_entity_scope()
         assert exc.value.status_code == 400
+        assert "app_id" in exc.value.detail
 
     def test_custom_detail(self):
         with pytest.raises(HTTPException) as exc:
@@ -234,6 +218,18 @@ class TestBuildSearchFilters:
         result = build_search_filters(fallback_user_id="fallback")
         assert result == {"user_id": "fallback"}
 
+    def test_app_id_flat_filters_merged(self):
+        result = build_search_filters(
+            app_id="app1",
+            filters={"created_at": {"gte": "2024-01-01"}},
+        )
+        assert result == {"app_id": "app1", "created_at": {"gte": "2024-01-01"}}
+
+    def test_app_id_injected_into_and_filters(self):
+        filters = {"AND": [{"user_id": "u1"}]}
+        result = build_search_filters(app_id="app1", filters=filters)
+        assert any(item.get("app_id") == "app1" for item in result["AND"])
+
 
 # ---------------------------------------------------------------------------
 # compat.responses
@@ -296,6 +292,14 @@ class TestNormalizeResultsDict:
     def test_unknown_type_returns_empty_results(self):
         assert normalize_results_dict(None) == {"results": []}
         assert normalize_results_dict("x") == {"results": []}
+
+    def test_extra_fields_are_merged(self):
+        raw = {"results": [{"id": "1"}], "count": 1}
+        assert normalize_results_dict(raw, extra={"status": "ok"}) == {
+            "results": [{"id": "1"}],
+            "count": 1,
+            "status": "ok",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -686,26 +690,6 @@ class TestUpstreamGuardExceptionMapping:
         assert wrapped() == "ok"
 
 
-# ---------------------------------------------------------------------------
-# reject_app_id with http_error=False
-# ---------------------------------------------------------------------------
-
-
-class TestRejectAppIdHttpErrorFalse:
-    def test_http_error_false_raises_value_error(self):
-        with pytest.raises(ValueError) as exc:
-            reject_app_id("some-app", http_error=False)
-        assert "app_id" in str(exc.value)
-
-    def test_http_error_true_raises_http_exception(self):
-        with pytest.raises(HTTPException) as exc:
-            reject_app_id("some-app", http_error=True)
-        assert exc.value.status_code == 501
-
-    def test_none_with_http_error_false_passes(self):
-        reject_app_id(None, http_error=False)  # should not raise
-
-
 class TestBatchDeleteInputValidation:
     def test_legacy_payload_rejects_empty_memories(self):
         with pytest.raises(ValidationError) as exc:
@@ -729,3 +713,165 @@ class TestV1ListMemories:
 
         assert result == [{"id": "m1"}]
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"})
+
+
+class TestSyntheticEvents:
+    @pytest.fixture(autouse=True)
+    def _clear_events(self):
+        event_cache_clear()
+        compat_events = sys.modules.get("compat.events")
+        if compat_events is not None and hasattr(compat_events, "event_cache_clear"):
+            compat_events.event_cache_clear()
+        yield
+        event_cache_clear()
+        compat_events = sys.modules.get("compat.events")
+        if compat_events is not None and hasattr(compat_events, "event_cache_clear"):
+            compat_events.event_cache_clear()
+
+    @staticmethod
+    def _run_background_tasks(tasks: BackgroundTasks) -> None:
+        for task in tasks.tasks:
+            task.func(*task.args, **task.kwargs)
+
+    def test_v3_add_returns_event_id_and_event_is_fetchable(self, monkeypatch):
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        tasks = BackgroundTasks()
+
+        result = v3_add_memory(
+            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1"),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=None,
+        )
+
+        assert result["status"] == "PENDING"
+        assert result["event_id"]
+
+        pending_event = v1_get_event(result["event_id"], auth=None)
+        assert pending_event["status"] == "PENDING"
+
+        self._run_background_tasks(tasks)
+
+        event = v1_get_event(result["event_id"], auth=None)
+        assert event["id"] == result["event_id"]
+        assert event["status"] == "SUCCEEDED"
+        assert event["results"] == [{"id": "m1", "memory": "saved"}]
+
+    def test_v1_events_paginates_cached_events(self, monkeypatch):
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        tasks = BackgroundTasks()
+
+        v3_add_memory(
+            MemoryAddInputV3(messages=[{"role": "user", "content": "first"}], app_id="app1"),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=None,
+        )
+        v3_add_memory(
+            MemoryAddInputV3(messages=[{"role": "user", "content": "second"}], app_id="app1"),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=None,
+        )
+        self._run_background_tasks(tasks)
+
+        req1 = MagicMock()
+        req1.url.path = "/v1/events"
+        req1.query_params = {"page": "1", "page_size": "1"}
+        req2 = MagicMock()
+        req2.url.path = "/v1/events"
+        req2.query_params = {"page": "2", "page_size": "1"}
+
+        first_page = v1_list_events(request=req1, page=1, page_size=1, auth=None)
+        second_page = v1_list_events(request=req2, page=2, page_size=1, auth=None)
+
+        assert first_page["count"] == 2
+        assert len(first_page["results"]) == 1
+        assert len(second_page["results"]) == 1
+        assert first_page["next"] is not None
+        assert second_page["previous"] is not None
+
+    def test_v1_get_event_hidden_for_other_user(self, monkeypatch):
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        tasks = BackgroundTasks()
+
+        owner = MagicMock()
+        owner.id = "user-1"
+        other = MagicMock()
+        other.id = "user-2"
+
+        result = v3_add_memory(
+            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1"),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=owner,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            v1_get_event(result["event_id"], auth=other)
+        assert exc.value.status_code == 404
+
+    def test_v1_list_events_returns_only_owner_events(self, monkeypatch):
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        tasks = BackgroundTasks()
+
+        user1 = MagicMock()
+        user1.id = "user-1"
+        user2 = MagicMock()
+        user2.id = "user-2"
+
+        v3_add_memory(
+            MemoryAddInputV3(messages=[{"role": "user", "content": "u1"}], app_id="app1"),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=user1,
+        )
+        v3_add_memory(
+            MemoryAddInputV3(messages=[{"role": "user", "content": "u2"}], app_id="app1"),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=user2,
+        )
+        self._run_background_tasks(tasks)
+
+        req = MagicMock()
+        req.url.path = "/v1/events"
+        req.query_params = {"page": "1", "page_size": "10"}
+
+        listed = v1_list_events(request=req, page=1, page_size=10, auth=user1)
+        assert listed["count"] == 1
+        assert len(listed["results"]) == 1
+        assert listed["results"][0]["owner_user_id"] == "user-1"
+
+    def test_v3_add_marks_event_failed_when_add_raises(self, monkeypatch):
+        mem = MagicMock()
+        mem.add.side_effect = RuntimeError("boom")
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        tasks = BackgroundTasks()
+        result = v3_add_memory(
+            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1"),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=None,
+        )
+
+        assert result["status"] == "PENDING"
+        self._run_background_tasks(tasks)
+
+        event = v1_get_event(result["event_id"], auth=None)
+        assert event["status"] == "FAILED"
+        assert event["metadata"] is not None
+        assert "boom" in event["metadata"]["error"]
