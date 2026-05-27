@@ -828,7 +828,7 @@ class TestV1ListMemories:
         mem = MagicMock()
         mem.get_all.return_value = [{"id": "m1"}]
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
 
         result = v1_list_memories(request=MagicMock(), user_id="u1", auth=None)
 
@@ -857,7 +857,7 @@ class TestSyntheticEvents:
     def test_v3_add_returns_event_id_and_event_is_fetchable(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
 
         tasks = BackgroundTasks()
 
@@ -884,7 +884,7 @@ class TestSyntheticEvents:
     def test_v1_events_paginates_cached_events(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
 
         tasks = BackgroundTasks()
 
@@ -921,7 +921,7 @@ class TestSyntheticEvents:
     def test_v1_get_event_visible_to_other_user_in_same_server_context(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
 
         tasks = BackgroundTasks()
 
@@ -943,7 +943,7 @@ class TestSyntheticEvents:
     def test_v1_list_events_returns_project_visible_events(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
 
         tasks = BackgroundTasks()
 
@@ -978,7 +978,7 @@ class TestSyntheticEvents:
     def test_v3_add_event_latency_is_recorded_in_milliseconds(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
         monkeypatch.setattr("server.compat.tasks.time.perf_counter", MagicMock(side_effect=[10.0, 10.25]))
 
         tasks = BackgroundTasks()
@@ -997,7 +997,7 @@ class TestSyntheticEvents:
     def test_v3_add_marks_event_failed_when_add_raises(self, monkeypatch):
         mem = MagicMock()
         mem.add.side_effect = RuntimeError("boom")
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
 
         tasks = BackgroundTasks()
         result = v3_add_memory(

@@ -87,6 +87,12 @@ from compat.scope import (
     require_entity_scope,
 )
 from compat.tasks import run_v3_add_memory_task
+from memory_lock import (
+    entity_scope_from_params,
+    memory_scope_lock,
+    run_memory_write,
+    run_memory_write_for_memory_id,
+)
 from server_state import get_memory_instance, list_all_memories
 
 logger = logging.getLogger("mem0.server.compat")
@@ -391,7 +397,7 @@ def v1_add_memories(body: MemoryAddInput, meta: RequestMeta = Depends(request_me
         categories=body.categories,
     )
 
-    raw = get_memory_instance().add(messages=body.messages, **params)
+    raw = run_memory_write(lambda memory: memory.add(messages=body.messages, **params), entity_params)
     return normalize_results(raw)
 
 
@@ -414,7 +420,10 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
     metadata = body.metadata
     if body.timestamp is not None:
         metadata = {**(metadata or {}), "timestamp": body.timestamp}
-    return merge_and_update(get_memory_instance(), memory_id, text=body.text, metadata=metadata)
+    return run_memory_write_for_memory_id(
+        lambda memory: merge_and_update(memory, memory_id, text=body.text, metadata=metadata),
+        memory_id,
+    )
 
 
 @router.delete("/v1/memories/{memory_id}/", include_in_schema=False)
@@ -422,7 +431,7 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
 @upstream_guard
 def v1_delete_memory(memory_id: str, _auth=Depends(verify_auth)):
     try:
-        return get_memory_instance().delete(memory_id=memory_id)
+        return run_memory_write_for_memory_id(lambda memory: memory.delete(memory_id=memory_id), memory_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
 
@@ -503,7 +512,7 @@ def v1_delete_all_memories(
             status_code=400,
             detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
         )
-    return get_memory_instance().delete_all(**params)
+    return run_memory_write(lambda memory: memory.delete_all(**params), entity_scope_from_params(params))
 
 
 @router.get("/v1/events/", include_in_schema=False)
@@ -559,14 +568,15 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
             status_code=400,
             detail=f"Too many updates ({len(body.memories)}). Maximum is 100 per request.",
         )
-    mem = get_memory_instance()
     updated_count = 0
-    for item in body.memories:
-        try:
-            merge_and_update(mem, item.memory_id, text=item.text, metadata=item.metadata)
-            updated_count += 1
-        except (HTTPException, ValueError):
-            continue
+    with memory_scope_lock(global_lock=True):
+        mem = get_memory_instance()
+        for item in body.memories:
+            try:
+                merge_and_update(mem, item.memory_id, text=item.text, metadata=item.metadata)
+                updated_count += 1
+            except (HTTPException, ValueError):
+                continue
     return {"message": f"Memories updated successfully, count: {updated_count}."}
 
 
@@ -577,19 +587,20 @@ def v1_batch_delete(
     body: MemoryBatchDeleteLegacyInput | MemoryBatchDeleteInput,
     _auth=Depends(verify_auth),
 ):
-    mem = get_memory_instance()
     memory_ids = (
         body.memory_ids if isinstance(body, MemoryBatchDeleteInput) else [item.memory_id for item in body.memories]
     )
     if len(memory_ids) > 1000:
         raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be deleted in a single request")
     deleted_count = 0
-    for memory_id in memory_ids:
-        try:
-            mem.delete(memory_id=memory_id)
-            deleted_count += 1
-        except ValueError:
-            continue
+    with memory_scope_lock(global_lock=True):
+        mem = get_memory_instance()
+        for memory_id in memory_ids:
+            try:
+                mem.delete(memory_id=memory_id)
+                deleted_count += 1
+            except ValueError:
+                continue
     return {"message": f"Memories deleted successfully, count: {deleted_count}."}
 
 
@@ -678,7 +689,10 @@ def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
 @upstream_guard
 def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     try:
-        get_memory_instance().delete_all(**{get_entity_field(entity_type): entity_id})
+        run_memory_write(
+            lambda memory: memory.delete_all(**{get_entity_field(entity_type): entity_id}),
+            {get_entity_field(entity_type): entity_id},
+        )
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
@@ -743,7 +757,7 @@ def v3_add_memory(
             latency=None,
         ),
     )
-    background_tasks.add_task(run_v3_add_memory_task, event_id, body.messages, params, get_memory_instance())
+    background_tasks.add_task(run_v3_add_memory_task, event_id, body.messages, params)
 
     return {"message": "Memory processing has been queued for background execution.", "event_id": event_id, "status": "PENDING"}
 

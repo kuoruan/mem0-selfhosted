@@ -15,6 +15,7 @@ from compat.entities import list_entities_payload
 from compat.requests import request_meta
 from compat.responses import normalize_results, normalize_results_dict
 from compat.scope import build_search_filters, collect_entity_params, require_entity_scope
+from memory_lock import memory_scope_lock, run_memory_write, run_memory_write_for_memory_id
 from server_state import get_memory_instance
 
 logger = logging.getLogger("mem0.server.mcp")
@@ -73,7 +74,7 @@ def add_memory(
     if not infer:
         add_kwargs["infer"] = False
 
-    raw = get_memory_instance().add(messages=conversation, **add_kwargs)
+    raw = run_memory_write(lambda memory: memory.add(messages=conversation, **add_kwargs), scope)
     return normalize_results_dict(raw)
 
 
@@ -189,14 +190,14 @@ def update_memory(
     if metadata is not None:
         update_kwargs["metadata"] = metadata
 
-    return get_memory_instance().update(**update_kwargs)
+    return run_memory_write_for_memory_id(lambda memory: memory.update(**update_kwargs), memory_id)
 
 
 @mcp.tool(description="Delete one memory after the user confirms its memory_id.")
 def delete_memory(
     memory_id: Annotated[str, Field(description="Exact memory_id to delete.")],
 ) -> dict[str, Any]:
-    return get_memory_instance().delete(memory_id)
+    return run_memory_write_for_memory_id(lambda memory: memory.delete(memory_id), memory_id)
 
 
 @mcp.tool(description="Delete every memory in the given user/agent/app/run scope but keep the entity.")
@@ -216,7 +217,7 @@ def delete_all_memories(
         fallback_user_id=_fallback_uid(),
     )
 
-    return get_memory_instance().delete_all(**scope)
+    return run_memory_write(lambda memory: memory.delete_all(**scope), scope)
 
 
 @mcp.tool(description="Remove an entity and cascade-delete its memories.")
@@ -229,9 +230,8 @@ def delete_entities(
     selected = list(collect_entity_params(user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id).items())
     if not selected:
         raise ValueError("Provide user_id, agent_id, app_id or run_id before calling delete_entities.")
-    memory = get_memory_instance()
     for key, value in selected:
-        memory.delete_all(**{key: value})
+        run_memory_write(lambda memory, k=key, v=value: memory.delete_all(**{k: v}), {key: value})
     return {"message": f"Entities deleted successfully, count: {len(selected)}."}
 
 
