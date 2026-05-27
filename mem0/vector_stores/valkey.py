@@ -21,6 +21,7 @@ DEFAULT_FIELDS = [
     {"name": "agent_id", "type": "tag"},
     {"name": "run_id", "type": "tag"},
     {"name": "user_id", "type": "tag"},
+    {"name": "app_id", "type": "tag"},
     {"name": "memory", "type": "tag"},  # Using TAG instead of TEXT for Valkey compatibility
     {"name": "metadata", "type": "tag"},  # Using TAG instead of TEXT for Valkey compatibility
     {"name": "created_at", "type": "numeric"},
@@ -32,7 +33,7 @@ DEFAULT_FIELDS = [
     },
 ]
 
-excluded_keys = {"user_id", "agent_id", "run_id", "hash", "data", "created_at", "updated_at"}
+excluded_keys = {"user_id", "agent_id", "app_id", "run_id", "hash", "data", "created_at", "updated_at"}
 
 
 class OutputData(BaseModel):
@@ -167,6 +168,8 @@ class ValkeyDB(VectorStoreBase):
             "run_id",
             "TAG",
             "user_id",
+            "TAG",
+            "app_id",
             "TAG",
             "memory",
             "TAG",
@@ -305,7 +308,7 @@ class ValkeyDB(VectorStoreBase):
                 }
 
                 # Add optional fields
-                for field in ["agent_id", "run_id", "user_id"]:
+                for field in ["user_id", "agent_id", "app_id", "run_id"]:
                     if field in payload:
                         hash_data[field] = payload[field]
 
@@ -403,7 +406,7 @@ class ValkeyDB(VectorStoreBase):
                 payload["updated_at"] = self._format_timestamp(int(doc.updated_at), self.timezone)
 
             # Add optional fields
-            for field in ["agent_id", "run_id", "user_id"]:
+            for field in ["agent_id", "run_id", "user_id", "app_id"]:
                 if hasattr(doc, field):
                     payload[field] = getattr(doc, field)
 
@@ -512,7 +515,7 @@ class ValkeyDB(VectorStoreBase):
                 hash_data["updated_at"] = int(datetime.fromisoformat(payload["updated_at"]).timestamp())
 
             # Add optional fields
-            for field in ["agent_id", "run_id", "user_id"]:
+            for field in ["agent_id", "run_id", "user_id", "app_id"]:
                 if field in payload:
                     hash_data[field] = payload[field]
 
@@ -601,7 +604,7 @@ class ValkeyDB(VectorStoreBase):
                 payload["updated_at"] = result["updated_at"]
 
         # Add optional fields
-        for field in ["agent_id", "run_id", "user_id"]:
+        for field in ["agent_id", "run_id", "user_id", "app_id"]:
             if field in result:
                 payload[field] = result[field]
 

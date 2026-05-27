@@ -73,6 +73,7 @@ class ElasticsearchDB(VectorStoreBase):
                         "properties": {
                             "user_id": {"type": "keyword"},
                             "agent_id": {"type": "keyword"},
+                            "app_id": {"type": "keyword"},
                             "run_id": {"type": "keyword"},
                         },
                     },
