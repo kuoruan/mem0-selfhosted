@@ -35,14 +35,28 @@ Covered endpoints
 
     PUT    /v1/batch
     DELETE /v1/batch
+
+Stub endpoints (501 Not Implemented)
+-------------------------------------
+    GET    /api/v1/orgs/organizations/{org_id}/projects/
+    POST   /api/v1/orgs/organizations/{org_id}/projects/
+    GET    /api/v1/orgs/organizations/{org_id}/projects/{project_id}/
+    PATCH  /api/v1/orgs/organizations/{org_id}/projects/{project_id}/
+    DELETE /api/v1/orgs/organizations/{org_id}/projects/{project_id}/
+    GET    /api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/
+    POST   /api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/
+    PUT    /api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/
+    DELETE /api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/
 """
 
 import json
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from auth import ensure_admin, verify_auth
@@ -50,14 +64,15 @@ from compat.decorators import upstream_guard
 from compat.requests import RequestMeta, request_meta
 from compat.entities import list_entities_payload
 from compat.responses import drop_none, normalize_results, normalize_results_dict, unsupported_api_error
+from compat.events import event_cache_all, event_cache_get, event_cache_put, event_visible_to_caller, make_event_obj
 from compat.scope import (
     VALID_ENTITY_TYPES,
     build_search_filters,
     collect_entity_params,
     get_entity_field,
-    reject_app_id,
     require_entity_scope,
 )
+from compat.tasks import run_v3_add_memory_task
 from server_state import get_memory_instance, list_all_memories
 
 from mem0 import Memory
@@ -75,15 +90,15 @@ class MemoryAddInput(BaseModel):
         "indicates the sender ('user' or 'assistant') and 'content' contains the actual message text. "
         "This structure allows for the representation of conversations or multi-part memories."
     )
-    agent_id: Optional[str] = Field(
-        default=None, description="The unique identifier of the agent associated with this memory."
-    )
     user_id: Optional[str] = Field(
         default=None, description="The unique identifier of the user associated with this memory."
     )
+    agent_id: Optional[str] = Field(
+        default=None, description="The unique identifier of the agent associated with this memory."
+    )
     app_id: Optional[str] = Field(
         default=None,
-        description="The unique identifier of the application. Not supported by the self-hosted server (returns 501).",
+        description="The unique identifier of the application.",
     )
     run_id: Optional[str] = Field(
         default=None, description="The unique identifier of the run associated with this memory."
@@ -104,11 +119,11 @@ class MemoryAddInput(BaseModel):
 class MemorySearchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str = Field(description="The query to search for in the memory.")
-    agent_id: Optional[str] = Field(default=None, description="The agent ID associated with the memory.")
     user_id: Optional[str] = Field(default=None, description="The user ID associated with the memory.")
+    agent_id: Optional[str] = Field(default=None, description="The agent ID associated with the memory.")
     app_id: Optional[str] = Field(
         default=None,
-        description="The app ID associated with the memory. Not supported by the self-hosted server (returns 501).",
+        description="The app ID associated with the memory.",
     )
     run_id: Optional[str] = Field(default=None, description="The run ID associated with the memory.")
     metadata: Optional[Dict[str, Any]] = Field(
@@ -176,7 +191,7 @@ class MemoryGetInputV2(BaseModel):
     filters: Optional[Dict[str, Any]] = Field(
         default=None,
         description="A dictionary of filters to apply to retrieve memories. Available fields are: "
-        "user_id, agent_id, run_id, created_at, updated_at, categories, keywords. "
+        "user_id, agent_id, app_id, run_id, created_at, updated_at, categories, keywords. "
         "Supports logical operators (AND, OR) and comparison operators (in, gte, lte, gt, lt, ne, contains, icontains, *). "
         "For categories field, use 'contains' for partial matching "
         '(e.g., {"categories": {"contains": "finance"}}) or \'in\' for exact matching '
@@ -197,7 +212,7 @@ class MemorySearchInputV2(BaseModel):
     filters: Optional[Dict[str, Any]] = Field(
         default=None,
         description="A dictionary of filters to apply to the search. Available fields are: "
-        "user_id, agent_id, run_id, created_at, updated_at, categories, keywords. "
+        "user_id, agent_id, app_id, run_id, created_at, updated_at, categories, keywords. "
         "Supports logical operators (AND, OR) and comparison operators (in, gte, lte, gt, lt, ne, contains, icontains). "
         "For categories field, use 'contains' for partial matching "
         '(e.g., {"categories": {"contains": "finance"}}) or \'in\' for exact matching '
@@ -214,7 +229,9 @@ class MemorySearchInputV2(BaseModel):
     agent_id: Optional[str] = Field(
         default=None, description="The agent ID associated with the memory (also accepted inside filters)."
     )
-    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
+    app_id: Optional[str] = Field(
+        default=None, description="The app ID associated with the memory (also accepted inside filters)."
+    )
     run_id: Optional[str] = Field(
         default=None, description="The run ID associated with the memory (also accepted inside filters)."
     )
@@ -230,9 +247,9 @@ class MemoryAddInputV3(BaseModel):
         description="Conversation messages to extract memories from. "
         "Each object must have 'role' ('user', 'assistant', or 'system') and 'content' keys."
     )
-    agent_id: Optional[str] = Field(default=None, description="Scope memories to this agent.")
     user_id: Optional[str] = Field(default=None, description="Scope memories to this user.")
-    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
+    agent_id: Optional[str] = Field(default=None, description="Scope memories to this agent.")
+    app_id: Optional[str] = Field(default=None, description="Scope memories to this app / project.")
     run_id: Optional[str] = Field(default=None, description="Scope memories to this session / run.")
     metadata: Optional[Dict[str, Any]] = Field(
         default=None, description="User-supplied metadata to attach to each extracted memory."
@@ -265,14 +282,14 @@ class MemoryAddInputV3(BaseModel):
 class MemorySearchInputV3(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str = Field(description="Natural-language search query.")
-    agent_id: Optional[str] = Field(default=None, description="The agent ID associated with the memory.")
     user_id: Optional[str] = Field(default=None, description="The user ID associated with the memory.")
-    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
+    agent_id: Optional[str] = Field(default=None, description="The agent ID associated with the memory.")
+    app_id: Optional[str] = Field(default=None, description="The app ID associated with the memory.")
     run_id: Optional[str] = Field(default=None, description="The run ID associated with the memory.")
     filters: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Entity and metadata filters. Must include at least one entity ID "
-        "(`user_id`, `agent_id`, or `run_id`). Supports `AND`, `OR`, `NOT`, and "
+        "(`user_id`, `agent_id`, `app_id` or `run_id`). Supports `AND`, `OR`, `NOT`, and "
         "comparison operators (`in`, `gte`, `lte`, `gt`, `lt`, `contains`, `icontains`, `ne`).",
     )
     top_k: Optional[int] = Field(default=None, description="Number of results to return.")
@@ -394,9 +411,19 @@ def _merge_and_update(
 @router.get("/v1/ping/", include_in_schema=False)
 @router.get("/v1/ping", summary="Ping / validate API key")
 def ping(_auth=Depends(verify_auth)):
-    """Used by ``MemoryClient`` to validate the API key on initialisation."""
+    """Used by ``MemoryClient`` to validate the API key on initialisation.
+
+    Returns ``org_id`` and ``project_id`` so that ``MemoryClient.project``
+    initialises without raising ``ValueError``.
+    """
     user_email = getattr(_auth, "email", None) if _auth else None
-    return {"status": "ok", "message": "pong", "user_email": user_email}
+    return {
+        "status": "ok",
+        "message": "pong",
+        "user_email": user_email,
+        "org_id": "local",
+        "project_id": "default",
+    }
 
 
 @router.get("/v1/memories/", include_in_schema=False)
@@ -406,12 +433,11 @@ def v1_list_memories(
     request: Request,
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
-    run_id: Optional[str] = None,
     app_id: Optional[str] = None,
+    run_id: Optional[str] = None,
     auth=Depends(verify_auth),
 ):
-    reject_app_id(app_id)
-    filters = drop_none({"user_id": user_id, "agent_id": agent_id, "run_id": run_id})
+    filters = drop_none({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
 
     if not filters:
         ensure_admin(request, auth)
@@ -425,14 +451,17 @@ def v1_list_memories(
 @router.post("/v1/memories", summary="Add memories (v1)")
 @upstream_guard
 def v1_add_memories(body: MemoryAddInput, meta: RequestMeta = Depends(request_meta), _auth=Depends(verify_auth)):
-    reject_app_id(body.app_id)
     entity_params = collect_entity_params(
         user_id=body.user_id,
         agent_id=body.agent_id,
+        app_id=body.app_id,
         run_id=body.run_id,
     )
     if not entity_params:
-        raise HTTPException(status_code=400, detail="One of the filters: user_id, agent_id, or run_id is required!")
+        raise HTTPException(
+            status_code=400,
+            detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
+        )
     params = drop_none({**entity_params, "metadata": body.metadata})
     if body.infer is not None:
         params["infer"] = body.infer
@@ -507,16 +536,17 @@ def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verif
 @router.post("/v1/memories/search", summary="Search memories (v1)")
 @upstream_guard
 def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
-    reject_app_id(body.app_id)
     _warn_unsupported_fields(body.fields, "v1_search_memories")
     entity_params = collect_entity_params(
         user_id=body.user_id,
         agent_id=body.agent_id,
+        app_id=body.app_id,
         run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(
-            status_code=400, detail="At least one of the filters: agent_id, user_id, or run_id is required!"
+            status_code=400,
+            detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
         )
     search_filters: Dict[str, Any] = {**entity_params}
     if body.metadata:
@@ -536,78 +566,82 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
 def v1_delete_all_memories(
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
-    run_id: Optional[str] = None,
     app_id: Optional[str] = None,
+    run_id: Optional[str] = None,
     filters: Optional[str] = None,
     _auth=Depends(verify_auth),
 ):
-    reject_app_id(app_id)
     # ``filters`` is a legacy query-string JSON blob (not the structured dict
     # used in v2/v3 body endpoints). Only parse it when no explicit entity
     # params are given, to avoid silently overriding explicit args.
-    if filters and not any((user_id, agent_id, run_id)):
+    if filters and not any((user_id, agent_id, app_id, run_id)):
         try:
             filters_dict = json.loads(filters)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON in 'filters' query parameter.")
         if not isinstance(filters_dict, dict):
             raise HTTPException(status_code=400, detail="'filters' query parameter must be a JSON object.")
-        reject_app_id(filters_dict.get("app_id"))
         user_id = user_id or filters_dict.get("user_id")
         agent_id = agent_id or filters_dict.get("agent_id")
+        app_id = app_id or filters_dict.get("app_id")
         run_id = run_id or filters_dict.get("run_id")
 
-    params = drop_none({"user_id": user_id, "agent_id": agent_id, "run_id": run_id})
+    params = drop_none({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
     if not params:
         raise HTTPException(
             status_code=400,
-            detail="One of the filters: user_id, agent_id, or run_id is required!",
+            detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
         )
     return get_memory_instance().delete_all(**params)
 
 
 @router.get("/v1/events/", include_in_schema=False)
 @router.get("/v1/events", summary="List events (v1)")
-@upstream_guard
 def v1_list_events(
     request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=200),
-    _auth=Depends(verify_auth),
+    auth=Depends(verify_auth),
 ):
     """Retrieve all events for the current project.
 
-    The hosted platform returns a paginated envelope ``{count, next, previous,
-    results}`` where each result tracks an asynchronous operation (ADD, SEARCH,
-    etc.) with status (PENDING, RUNNING, FAILED, SUCCEEDED) and timing metadata.
-    The self-hosted server does not implement event tracking.
+    Returns events from the in-memory TTL cache populated by add operations.
     """
-    raise unsupported_api_error()
+    visible_events = [event for event in event_cache_all() if event_visible_to_caller(event, auth)]
+    total = len(visible_events)
+    start = (page - 1) * page_size
+    return {
+        "count": total,
+        "next": _build_page_url(request, page=page + 1, page_size=page_size) if start + page_size < total else None,
+        "previous": _build_page_url(request, page=page - 1, page_size=page_size) if page > 1 else None,
+        "results": visible_events[start : start + page_size],
+    }
 
 
 @router.get("/v1/event/{event_id}/", include_in_schema=False)
 @router.get("/v1/event/{event_id}", summary="Get event details (v1)")
-@upstream_guard
-def v1_get_event(event_id: str, _auth=Depends(verify_auth)):
+def v1_get_event(event_id: str, auth=Depends(verify_auth)):
     """Retrieve details of a specific event by its ID.
 
-    The hosted platform returns an event object with ``id``, ``event_type``,
-    ``status``, ``payload``, ``results``, and timing fields. The self-hosted
-    server does not implement event tracking.
+    Returns the SUCCEEDED event object from the in-memory TTL cache.
     """
-    raise unsupported_api_error()
+    obj = event_cache_get(event_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found.")
+    if not event_visible_to_caller(obj, auth):
+        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found.")
+    return obj
 
 
 @router.get("/v1/memories/events/", include_in_schema=False)
 @router.get("/v1/memories/events", summary="List memory events (v1)")
-@upstream_guard
 def v1_list_memory_events(_auth=Depends(verify_auth)):
     """Retrieve memory-level events.
 
-    The hosted platform returns memory event entries. The self-hosted server
-    does not implement event tracking.
+    Memory-level change events (create/update/delete per memory) are not tracked
+    by the self-hosted server. Returns an empty paginated response.
     """
-    raise unsupported_api_error()
+    return {"count": 0, "next": None, "previous": None, "results": []}
 
 
 @router.put("/v1/batch/", include_in_schema=False)
@@ -695,7 +729,7 @@ def v2_list_memories(
 ):
     entity_params = require_entity_scope(
         filters=body.filters,
-        detail="One of the filters: user_id, agent_id, or run_id is required!",
+        detail="One of the filters: user_id, agent_id, app_id, or run_id is required!",
     )
     raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
@@ -710,14 +744,14 @@ def v2_list_memories(
 @router.post("/v2/memories/search", summary="Search memories (v2)")
 @upstream_guard
 def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
-    reject_app_id(body.app_id)
     _warn_unsupported_fields(body.fields, "v2_search_memories")
     effective_filters = build_search_filters(
         user_id=body.user_id,
         agent_id=body.agent_id,
         run_id=body.run_id,
+        app_id=body.app_id,
         filters=body.filters,
-        detail="At least one of the filters: agent_id, user_id, or run_id is required!",
+        detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
     raw = get_memory_instance().search(
         query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
@@ -751,16 +785,24 @@ def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth
 @router.post("/v3/memories/add/", include_in_schema=False)
 @router.post("/v3/memories/add", summary="Add memory (v3)")
 @upstream_guard
-def v3_add_memory(body: MemoryAddInputV3, meta: RequestMeta = Depends(request_meta), _auth=Depends(verify_auth)):
-    reject_app_id(body.app_id)
+def v3_add_memory(
+    body: MemoryAddInputV3,
+    background_tasks: BackgroundTasks,
+    meta: RequestMeta = Depends(request_meta),
+    auth=Depends(verify_auth),
+):
     entity_params = collect_entity_params(
         filters=body.filters,
         user_id=body.user_id,
         agent_id=body.agent_id,
         run_id=body.run_id,
+        app_id=body.app_id,
     )
     if not entity_params:
-        raise HTTPException(status_code=400, detail="One of the filters: user_id, agent_id, or run_id is required!")
+        raise HTTPException(
+            status_code=400,
+            detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
+        )
     params: Dict[str, Any] = drop_none(
         {
             **entity_params,
@@ -793,8 +835,28 @@ def v3_add_memory(body: MemoryAddInputV3, meta: RequestMeta = Depends(request_me
             md.update(extra_md)  # explicit body fields win over body.metadata
         params["metadata"] = md
 
-    raw = get_memory_instance().add(messages=body.messages, **params)
-    return normalize_results_dict(raw)
+    # Synthesize an event entry so GET /v1/event/{event_id} works for polling.
+    # Add is processed asynchronously in a background task, so we return PENDING.
+    event_id = str(uuid.uuid4())
+    owner_user_id = getattr(auth, "id", None)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    event_cache_put(
+        event_id,
+        make_event_obj(
+            event_id,
+            [],
+            now_iso=now_iso,
+            owner_user_id=str(owner_user_id) if owner_user_id is not None else None,
+            scope={k: str(v) for k, v in entity_params.items()},
+            status="PENDING",
+            completed_at=None,
+            latency=None,
+        ),
+    )
+    background_tasks.add_task(run_v3_add_memory_task, event_id, body.messages, params, get_memory_instance())
+
+    return {"message": "Memory add request accepted.", "event_id": event_id, "status": "PENDING"}
 
 
 @router.post("/v3/memories/", include_in_schema=False)
@@ -809,7 +871,7 @@ def v3_get_all_memories(
 ):
     entity_params = require_entity_scope(
         filters=body.filters,
-        detail="One of the filters: user_id, agent_id, or run_id is required!",
+        detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
     )
     raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
@@ -821,14 +883,14 @@ def v3_get_all_memories(
 @router.post("/v3/memories/search", summary="Search memories (v3)")
 @upstream_guard
 def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
-    reject_app_id(body.app_id)
     _warn_unsupported_fields(body.fields, "v3_search_memories")
     effective_filters = build_search_filters(
         user_id=body.user_id,
         agent_id=body.agent_id,
         run_id=body.run_id,
+        app_id=body.app_id,
         filters=body.filters,
-        detail="At least one of the filters: agent_id, user_id, or run_id is required!",
+        detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
     # Merge convenience fields for flat (non-AND/OR/NOT) dicts.
     if "AND" not in effective_filters and "OR" not in effective_filters and "NOT" not in effective_filters:
@@ -847,3 +909,31 @@ def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
         # Legacy flat-array format requested by the caller.
         return items
     return {"results": items}
+
+
+# ---------------------------------------------------------------------------
+# Project API stubs — return 501 for all project management endpoints.
+# MemoryClient.project calls these; the self-hosted server does not implement
+# a full project management API.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/v1/orgs/organizations/{org_id}/projects/", include_in_schema=False)
+@router.post("/api/v1/orgs/organizations/{org_id}/projects/", include_in_schema=False)
+async def project_list_create(org_id: str) -> None:
+    raise unsupported_api_error()
+
+
+@router.get("/api/v1/orgs/organizations/{org_id}/projects/{project_id}/", include_in_schema=False)
+@router.patch("/api/v1/orgs/organizations/{org_id}/projects/{project_id}/", include_in_schema=False)
+@router.delete("/api/v1/orgs/organizations/{org_id}/projects/{project_id}/", include_in_schema=False)
+async def project_detail(org_id: str, project_id: str) -> None:
+    raise unsupported_api_error()
+
+
+@router.get("/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/", include_in_schema=False)
+@router.post("/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/", include_in_schema=False)
+@router.put("/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/", include_in_schema=False)
+@router.delete("/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/", include_in_schema=False)
+async def project_members(org_id: str, project_id: str) -> None:
+    raise unsupported_api_error()

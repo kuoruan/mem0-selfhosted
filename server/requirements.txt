@@ -25,3 +25,6 @@ posthog>=3.0,<8.0
 
 # Per-IP rate limiting on auth endpoints
 slowapi>=0.1.9,<1.0
+
+# Thread-safe TTL cache for synthetic event tracking
+cachetools>=5.0,<8.0
