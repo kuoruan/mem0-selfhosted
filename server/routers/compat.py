@@ -741,7 +741,11 @@ def v3_add_memory(
     event_cache_put(event_id, CompatEvent.pending(event_id, now_iso=now_iso))
     background_tasks.add_task(run_v3_add_memory_task, event_id, body.messages, params)
 
-    return {"message": "Memory processing has been queued for background execution.", "event_id": event_id, "status": "PENDING"}
+    return {
+        "message": "Memory processing has been queued for background execution.",
+        "event_id": event_id,
+        "status": "PENDING",
+    }
 
 
 @router.post("/v3/memories/", include_in_schema=False)

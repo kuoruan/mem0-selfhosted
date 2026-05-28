@@ -48,7 +48,9 @@ class CompatEvent(BaseModel):
     event_type: str = Field(description="The type of event, for example ADD or SEARCH.")
     status: CompatEventStatus = Field(description="The current processing status of the event.")
     payload: Dict[str, Any] = Field(default_factory=dict, description="The original payload associated with the event.")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata associated with the event.")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, description="Additional metadata associated with the event."
+    )
     results: List[Any] = Field(
         default_factory=list,
         description="Results produced by the event; for ADD this confirms write completion.",
