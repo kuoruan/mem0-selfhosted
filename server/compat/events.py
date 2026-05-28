@@ -20,6 +20,7 @@ Limitations:
   ``PENDING`` or disappear after TTL expiry.
 """
 
+import copy
 import threading
 from typing import Any, Dict, List, Literal, Optional, Union
 
@@ -123,7 +124,7 @@ def event_cache_get(event_id: str) -> Optional[Dict[str, Any]]:
         event_obj = _event_cache.get(event_id)
     if event_obj is None:
         return None
-    return dict(event_obj)
+    return copy.deepcopy(event_obj)
 
 
 def event_cache_update(event_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
@@ -138,13 +139,13 @@ def event_cache_update(event_id: str, **fields: Any) -> Optional[Dict[str, Any]]
         updated = CompatEvent.model_validate(event_obj).model_copy(update=fields)
         validated = updated.model_dump()
         _event_cache[event_id] = validated
-        return dict(validated)
+        return copy.deepcopy(validated)
 
 
 def event_cache_all() -> List[Dict[str, Any]]:
     """Return all non-expired event objects sorted by ``created_at`` descending."""
     with _lock:
-        items = [dict(item) for item in _event_cache.values()]
+        items = [copy.deepcopy(item) for item in _event_cache.values()]
     return sorted(items, key=lambda o: o.get("created_at", ""), reverse=True)
 
 
