@@ -178,6 +178,22 @@ def memory_scope_lock(
     When *global_lock* is True, blocks all other writes (scope + memory-id) for the
     duration of the context.
     """
+    scope = entity_scope or {}
+    if not global_lock:
+        try:
+            scoped_key = scope_lock_key(scope)
+        except ValueError:
+            # Some write operations (e.g. delete-all/reset) may be intentionally unscoped.
+            # Treat them as global operations rather than raising a 500.
+            global_lock = True
+        else:
+            # Use the scoped key inside the read gate.
+            with _GLOBAL_GATE.read():
+                record = _get_lock_record(scoped_key)
+                with _hold_record(record, scoped_key):
+                    yield
+            return
+
     if global_lock:
         with _GLOBAL_GATE.write():
             key = _GLOBAL_LOCK_KEY
@@ -185,12 +201,6 @@ def memory_scope_lock(
             with _hold_record(record, key):
                 yield
         return
-
-    with _GLOBAL_GATE.read():
-        key = scope_lock_key(entity_scope or {})
-        record = _get_lock_record(key)
-        with _hold_record(record, key):
-            yield
 
 
 @contextmanager

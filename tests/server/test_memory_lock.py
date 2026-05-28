@@ -219,3 +219,33 @@ def test_global_lock_blocks_scoped_and_memory_id_locks():
     t_mem.join(timeout=2)
     assert global2_entered.wait(timeout=1)
     t_global2.join(timeout=2)
+
+
+def test_empty_scope_falls_back_to_global_lock():
+    """Unscoped write operations should not raise and should behave like global lock."""
+    started_scoped = threading.Event()
+    allow_scoped_finish = threading.Event()
+    empty_entered = threading.Event()
+
+    def scoped_worker():
+        with memory_scope_lock({"user_id": "alice"}):
+            started_scoped.set()
+            allow_scoped_finish.wait(timeout=2)
+
+    def empty_scope_worker():
+        with memory_scope_lock({}):
+            empty_entered.set()
+
+    t_scoped = threading.Thread(target=scoped_worker)
+    t_scoped.start()
+    assert started_scoped.wait(timeout=1)
+
+    t_empty = threading.Thread(target=empty_scope_worker)
+    t_empty.start()
+    # Empty scope should behave like a global lock and thus block until scoped releases.
+    assert not empty_entered.wait(timeout=0.2)
+
+    allow_scoped_finish.set()
+    t_scoped.join(timeout=2)
+    assert empty_entered.wait(timeout=1)
+    t_empty.join(timeout=2)
