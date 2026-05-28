@@ -53,6 +53,28 @@ def normalize_results_dict(raw: Any, extra: Optional[Dict[str, Any]] = None) -> 
     return base
 
 
+def resolve_optional_pagination(
+    page: Optional[int],
+    page_size: Optional[int],
+    *,
+    default_page: int = 1,
+    default_page_size: int = 50,
+    max_page_size: int = 100,
+) -> Optional[tuple[int, int]]:
+    """Resolve MCP-style optional pagination params.
+
+    Returns ``None`` when neither *page* nor *page_size* is given (return all items).
+    When either is provided, defaults missing values to *default_page* / *default_page_size*
+    and clamps *page_size* to ``[1, max_page_size]``.
+    """
+    if page is None and page_size is None:
+        return None
+    effective_page = default_page if page is None else max(1, page)
+    raw_size = default_page_size if page_size is None else page_size
+    effective_page_size = min(max(1, raw_size), max_page_size)
+    return effective_page, effective_page_size
+
+
 def build_page_url(request: Request, *, page: int, page_size: int) -> str:
     params = dict(request.query_params)
     params["page"] = str(page)

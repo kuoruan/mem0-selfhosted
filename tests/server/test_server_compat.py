@@ -25,7 +25,12 @@ from mem0.exceptions import ValidationError as Mem0ValidationError
 from server.compat.events import event_cache_all, event_cache_clear, event_cache_get, event_cache_put, event_cache_update
 from server.compat.requests import RequestMeta
 from server.compat.decorators import upstream_guard
-from server.compat.responses import drop_none, normalize_results, normalize_results_dict
+from server.compat.responses import (
+    drop_none,
+    normalize_results,
+    normalize_results_dict,
+    resolve_optional_pagination,
+)
 from server.errors import UpstreamError
 from server.compat.scope import (
     build_categories_filter,
@@ -580,6 +585,23 @@ class TestPaginateResponse:
         items = list(range(25))
         result = paginate_response(req, items, page=3, page_size=10)
         assert "page=2" in result["previous"]
+
+
+class TestResolveOptionalPagination:
+    def test_returns_none_when_both_omitted(self):
+        assert resolve_optional_pagination(None, None) is None
+
+    def test_page_only_defaults_page_size(self):
+        assert resolve_optional_pagination(2, None) == (2, 50)
+
+    def test_page_size_only_defaults_page(self):
+        assert resolve_optional_pagination(None, 25) == (1, 25)
+
+    def test_clamps_page_size_to_max(self):
+        assert resolve_optional_pagination(1, 500) == (1, 100)
+
+    def test_normalizes_invalid_page(self):
+        assert resolve_optional_pagination(0, 10) == (1, 10)
 
 
 # ---------------------------------------------------------------------------
