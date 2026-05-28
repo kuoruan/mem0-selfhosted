@@ -1,15 +1,14 @@
-from collections import defaultdict
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from auth import verify_auth
+from compat.entities import aggregate_entity_buckets, iter_payloads
 from errors import upstream_error
 from schemas import MessageResponse
 from memory_lock import run_memory_write
-from server_state import get_memory_instance
 
 router = APIRouter(prefix="/entities", tags=["entities"])
 
@@ -27,41 +26,9 @@ class Entity(BaseModel):
     updated_at: Optional[datetime] = None
 
 
-def _iter_payloads() -> list[dict[str, Any]]:
-    results = get_memory_instance().vector_store.list(top_k=SCAN_LIMIT)
-    rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
-    return [getattr(row, "payload", None) or {} for row in rows]
-
-
-def _parse_timestamp(value: Any) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
 @router.get("", response_model=list[Entity])
 def list_entities(_auth=Depends(verify_auth)):
-    buckets: dict[tuple[EntityType, str], dict[str, Any]] = defaultdict(
-        lambda: {"total_memories": 0, "created_at": None, "updated_at": None}
-    )
-
-    for payload in _iter_payloads():
-        created = _parse_timestamp(payload.get("created_at"))
-        updated = _parse_timestamp(payload.get("updated_at")) or created
-
-        for entity_type, field in TYPE_TO_FIELD.items():
-            value = payload.get(field)
-            if not value:
-                continue
-            bucket = buckets[(entity_type, str(value))]
-            bucket["total_memories"] += 1
-            if created and (bucket["created_at"] is None or created < bucket["created_at"]):
-                bucket["created_at"] = created
-            if updated and (bucket["updated_at"] is None or updated > bucket["updated_at"]):
-                bucket["updated_at"] = updated
+    buckets = aggregate_entity_buckets(iter_payloads(limit=SCAN_LIMIT), TYPE_TO_FIELD)
 
     return [
         Entity(id=entity_id, type=entity_type, **data)

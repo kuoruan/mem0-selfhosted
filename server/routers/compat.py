@@ -76,7 +76,7 @@ from compat.responses import (
     normalize_results_dict,
     unsupported_api_error,
 )
-from compat.events import event_cache_all, event_cache_get, event_cache_put, make_event_obj
+from compat.events import CompatEvent, event_cache_all, event_cache_get, event_cache_put
 from compat.scope import (
     VALID_ENTITY_TYPES,
     append_search_convenience_filters,
@@ -671,7 +671,7 @@ def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
 def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     get_entity_field(entity_type)  # validate entity_type early
     for entity in list_entities_payload():
-        if entity["type"] == entity_type and entity["id"] == entity_id:
+        if entity.type == entity_type and entity.id == entity_id:
             return entity
     raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
@@ -738,17 +738,7 @@ def v3_add_memory(
     event_id = str(uuid.uuid4())
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    event_cache_put(
-        event_id,
-        make_event_obj(
-            event_id,
-            [],
-            now_iso=now_iso,
-            status="PENDING",
-            completed_at=None,
-            latency=None,
-        ),
-    )
+    event_cache_put(event_id, CompatEvent.pending(event_id, now_iso=now_iso))
     background_tasks.add_task(run_v3_add_memory_task, event_id, body.messages, params)
 
     return {"message": "Memory processing has been queued for background execution.", "event_id": event_id, "status": "PENDING"}

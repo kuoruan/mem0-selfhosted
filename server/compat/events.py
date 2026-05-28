@@ -21,17 +21,21 @@ Limitations:
 """
 
 import threading
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from cachetools import TTLCache
 from pydantic import BaseModel, ConfigDict, Field
+
+from compat.responses import normalize_results
+from compat.utils import now_iso as utc_now_iso
 
 _EVENT_CACHE_TTL_SECONDS = 600  # 10 minutes
 _EVENT_CACHE_MAXSIZE = 10_000
 
 _lock = threading.Lock()
 _event_cache: TTLCache = TTLCache(maxsize=_EVENT_CACHE_MAXSIZE, ttl=_EVENT_CACHE_TTL_SECONDS)
+
+CompatEventStatus = Literal["PENDING", "RUNNING", "FAILED", "SUCCEEDED"]
 
 
 class CompatEvent(BaseModel):
@@ -41,9 +45,7 @@ class CompatEvent(BaseModel):
 
     id: str = Field(description="The unique identifier of the event.")
     event_type: str = Field(description="The type of event, for example ADD or SEARCH.")
-    status: Literal["PENDING", "RUNNING", "FAILED", "SUCCEEDED"] = Field(
-        description="The current processing status of the event."
-    )
+    status: CompatEventStatus = Field(description="The current processing status of the event.")
     payload: Dict[str, Any] = Field(default_factory=dict, description="The original payload associated with the event.")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata associated with the event.")
     results: List[Any] = Field(
@@ -59,10 +61,58 @@ class CompatEvent(BaseModel):
     )
     latency: Optional[float] = Field(default=None, description="Processing time in milliseconds.")
 
+    @classmethod
+    def pending(cls, event_id: str, *, now_iso: Optional[str] = None) -> "CompatEvent":
+        """Build a queued ADD event returned immediately to the client."""
+        ts = utc_now_iso(now_iso)
+        return cls(
+            id=event_id,
+            event_type="ADD",
+            status="PENDING",
+            payload={},
+            metadata=None,
+            results=[],
+            created_at=ts,
+            updated_at=ts,
+            started_at=ts,
+            completed_at=None,
+            latency=None,
+        )
 
-def event_cache_put(event_id: str, event_obj: Dict[str, Any]) -> None:
+    @classmethod
+    def create_add(
+        cls,
+        event_id: str,
+        results: Any,
+        *,
+        status: CompatEventStatus = "SUCCEEDED",
+        now_iso: Optional[str] = None,
+        completed_at: Optional[str] = None,
+        latency: Optional[float] = 0.0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "CompatEvent":
+        """Build a synthetic ADD event (default ``SUCCEEDED`` after background work)."""
+        ts = utc_now_iso(now_iso)
+        if completed_at is None and status == "SUCCEEDED":
+            completed_at = ts
+        return cls(
+            id=event_id,
+            event_type="ADD",
+            status=status,
+            payload={},
+            metadata=metadata,
+            results=normalize_results(results),
+            created_at=ts,
+            updated_at=ts,
+            started_at=ts,
+            completed_at=completed_at,
+            latency=latency,
+        )
+
+
+def event_cache_put(event_id: str, event: Union[CompatEvent, Dict[str, Any]]) -> None:
     """Store an event object in the TTL cache."""
-    validated = CompatEvent.model_validate(event_obj).model_dump()
+    validated = event.model_dump() if isinstance(event, CompatEvent) else CompatEvent.model_validate(event).model_dump()
     with _lock:
         _event_cache[event_id] = validated
 
@@ -85,9 +135,8 @@ def event_cache_update(event_id: str, **fields: Any) -> Optional[Dict[str, Any]]
         event_obj = _event_cache.get(event_id)
         if event_obj is None:
             return None
-        updated = dict(event_obj)
-        updated.update(fields)
-        validated = CompatEvent.model_validate(updated).model_dump()
+        updated = CompatEvent.model_validate(event_obj).model_copy(update=fields)
+        validated = updated.model_dump()
         _event_cache[event_id] = validated
         return dict(validated)
 
@@ -109,27 +158,18 @@ def make_event_obj(
     event_id: str,
     results: Any,
     now_iso: Optional[str] = None,
-    status: str = "SUCCEEDED",
+    status: CompatEventStatus = "SUCCEEDED",
     completed_at: Optional[str] = None,
     latency: Optional[float] = 0.0,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build a synthetic event object matching the platform's schema."""
-    if now_iso is None:
-        now_iso = datetime.now(timezone.utc).isoformat()
-    if completed_at is None and status == "SUCCEEDED":
-        completed_at = now_iso
-    event = CompatEvent(
-        id=event_id,
-        event_type="ADD",
+    """Build a synthetic event dict (backward-compatible wrapper around ``CompatEvent.create_add``)."""
+    return CompatEvent.create_add(
+        event_id,
+        results,
         status=status,
-        payload={},
-        metadata=metadata,
-        results=results if isinstance(results, list) else [],
-        created_at=now_iso,
-        updated_at=now_iso,
-        started_at=now_iso,
+        now_iso=now_iso,
         completed_at=completed_at,
         latency=latency,
-    )
-    return event.model_dump()
+        metadata=metadata,
+    ).model_dump()
