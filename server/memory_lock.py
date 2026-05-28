@@ -47,15 +47,15 @@ def memory_id_lock_key(memory_id: str) -> ScopeLockKey:
     """Build a lock key for a single memory record."""
     if not memory_id or not str(memory_id).strip():
         raise ValueError("memory_id is required for a memory-id lock.")
-    return (("memory_id", str(memory_id)),)
+    return (("memory_id", str(memory_id).strip()),)
 
 
 def scope_lock_key(entity_scope: Dict[str, str]) -> ScopeLockKey:
     """Build a hashable lock key from entity scope fields present in *entity_scope*."""
     items = tuple(
-        (field, str(entity_scope[field]))
+        (field, str(entity_scope[field]).strip())
         for field in _SCOPE_KEY_ORDER
-        if entity_scope.get(field) is not None
+        if entity_scope.get(field) is not None and str(entity_scope[field]).strip()
     )
     if not items:
         raise ValueError(
@@ -74,7 +74,9 @@ def entity_scope_from_params(params: Dict[str, Any]) -> Dict[str, str]:
         # Writes (add/delete_all) require a concrete scope string. Ignore operator
         # dicts/lists (e.g. {"in": [...]}) to avoid creating unstable lock keys.
         if isinstance(value, (str, int, float, bool)):
-            scope[key] = str(value)
+            trimmed = str(value).strip()
+            if trimmed:
+                scope[key] = trimmed
     return scope
 
 
