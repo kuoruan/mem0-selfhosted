@@ -141,14 +141,15 @@ def event_cache_update(event_id: str, **fields: Any) -> Optional[Dict[str, Any]]
         updated = CompatEvent.model_validate(event_obj).model_copy(update=fields)
         validated = updated.model_dump()
         _event_cache[event_id] = validated
-        return copy.deepcopy(validated)
+    return copy.deepcopy(validated)
 
 
 def event_cache_all() -> List[Dict[str, Any]]:
     """Return all non-expired event objects sorted by ``created_at`` descending."""
     with _lock:
-        items = [copy.deepcopy(item) for item in _event_cache.values()]
-    return sorted(items, key=lambda o: o.get("created_at", ""), reverse=True)
+        items = list(_event_cache.values())
+    copied = [copy.deepcopy(item) for item in items]
+    return sorted(copied, key=lambda o: o.get("created_at", ""), reverse=True)
 
 
 def event_cache_clear() -> None:
