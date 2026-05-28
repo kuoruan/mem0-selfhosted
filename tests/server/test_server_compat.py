@@ -21,6 +21,7 @@ pytest.importorskip("fastapi", reason="fastapi not installed")
 
 from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
+from starlette.datastructures import URL
 from mem0.exceptions import ValidationError as Mem0ValidationError
 from server.compat.events import event_cache_all, event_cache_clear, event_cache_get, event_cache_put, event_cache_update
 from server.compat.requests import RequestMeta
@@ -524,8 +525,12 @@ class TestBuildListFilters:
 
 class TestPaginateResponse:
     def _request(self, path: str = "/v2/memories/", params: dict | None = None) -> MagicMock:
+        query = "&".join(f"{k}={v}" for k, v in (params or {}).items())
+        base = f"http://testserver{path}"
+        if query:
+            base = f"{base}?{query}"
         req = MagicMock()
-        req.url.path = path
+        req.url = URL(base)
         req.query_params = params or {}
         return req
 

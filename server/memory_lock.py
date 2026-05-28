@@ -101,20 +101,21 @@ def _get_lock_record(key: ScopeLockKey) -> _LockRecord:
         if record is None:
             record = _LockRecord(threading.RLock())
             _locks[key] = record
+        record.in_use += 1
         _touch_lock_key(key)
         return record
 
 
 @contextmanager
 def _hold_record(record: _LockRecord, key: ScopeLockKey) -> Iterator[None]:
-    record.lock.acquire()
-    with _registry_lock:
-        record.in_use += 1
-        _touch_lock_key(key)
+    acquired = False
     try:
+        record.lock.acquire()
+        acquired = True
         yield
     finally:
-        record.lock.release()
+        if acquired:
+            record.lock.release()
         with _registry_lock:
             record.in_use = max(record.in_use - 1, 0)
             _touch_lock_key(key)
