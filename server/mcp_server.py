@@ -15,7 +15,7 @@ from pydantic import Field
 
 from auth import verify_auth
 from compat.entities import list_entities_payload
-from compat.events import event_cache_all, event_cache_get, event_cache_put, make_event_obj
+from compat.events import CompatEvent, event_cache_all, event_cache_get, event_cache_put
 from compat.requests import request_meta
 from compat.responses import normalize_results, normalize_results_dict, resolve_optional_pagination
 from compat.scope import build_search_filters, collect_entity_params, require_entity_scope
@@ -92,17 +92,7 @@ def add_memory(
 
     event_id = str(uuid.uuid4())
     now_iso = datetime.now(timezone.utc).isoformat()
-    event_cache_put(
-        event_id,
-        make_event_obj(
-            event_id,
-            [],
-            now_iso=now_iso,
-            status="PENDING",
-            completed_at=None,
-            latency=None,
-        ),
-    )
+    event_cache_put(event_id, CompatEvent.pending(event_id, now_iso=now_iso))
     _ADD_EXECUTOR.submit(run_v3_add_memory_task, event_id, conversation, add_kwargs)
 
     return {
@@ -274,7 +264,7 @@ def delete_entities(
 @mcp.tool(description="List which users/agents/apps/runs currently hold memories.")
 def list_entities() -> dict[str, Any]:
     results = list_entities_payload()
-    return {"count": len(results), "results": results}
+    return {"count": len(results), "results": [item.model_dump() for item in results]}
 
 
 @mcp.tool(description="List memory operation events with optional filters and pagination.")

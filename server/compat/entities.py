@@ -6,15 +6,57 @@ providing ``list_entities_payload`` in a neutral location.
 
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Iterable, Literal, Mapping, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from compat.scope import COMPAT_TYPE_TO_FIELD
+from compat.utils import datetime_to_iso, parse_timestamp
 from server_state import get_memory_instance
+
+CompatEntityType = Literal["user", "agent", "app", "run"]
 
 SCAN_LIMIT = 10_000
 
 
-def _normalize_list_result(raw: Any) -> list:
+class CompatEntity(BaseModel):
+    """Entity summary aligned with ``GET /v1/entities`` and MemoryClient envelopes."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(description="Unique identifier for the entity.")
+    name: str = Field(description="Display name of the entity.")
+    type: CompatEntityType = Field(description="Entity kind: user, agent, app, or run.")
+    total_memories: int = Field(description="Total memories associated with this entity.")
+    created_at: Optional[str] = Field(default=None, description="Earliest memory timestamp (ISO 8601).")
+    updated_at: Optional[str] = Field(default=None, description="Latest memory timestamp (ISO 8601).")
+    owner: str = Field(default="self-hosted", description="Owner label for hosted API compatibility.")
+    organization: str = Field(default="self-hosted", description="Organization label for hosted API compatibility.")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional entity metadata.")
+
+    @classmethod
+    def from_bucket(
+        cls,
+        entity_type: CompatEntityType,
+        entity_id: str,
+        *,
+        total_memories: int,
+        created_at: Optional[datetime],
+        updated_at: Optional[datetime],
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> "CompatEntity":
+        return cls(
+            id=entity_id,
+            name=entity_id,
+            type=entity_type,
+            total_memories=total_memories,
+            created_at=datetime_to_iso(created_at),
+            updated_at=datetime_to_iso(updated_at),
+            metadata=metadata or {},
+        )
+
+
+def normalize_vector_store_list(raw: Any) -> list:
     """Unpack different ``vector_store.list()`` return shapes into a flat list of rows.
 
     Backend return shapes:
@@ -33,37 +75,26 @@ def _normalize_list_result(raw: Any) -> list:
     return []
 
 
-def iter_payloads() -> list[dict[str, Any]]:
+def iter_payloads(*, limit: int = SCAN_LIMIT) -> list[dict[str, Any]]:
     """Return raw vector-store payloads for all stored memories."""
-    rows = _normalize_list_result(get_memory_instance().vector_store.list(top_k=SCAN_LIMIT))
+    rows = normalize_vector_store_list(get_memory_instance().vector_store.list(top_k=limit))
     return [getattr(row, "payload", None) or {} for row in rows if row is not None]
 
 
-def parse_timestamp(value: Any) -> Optional[datetime]:
-    """Parse an ISO-8601 timestamp string, returning ``None`` on failure."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def list_entities_payload() -> list[dict[str, Any]]:
-    """Aggregate memory counts and timestamps by entity (user / agent / app / run).
-
-    Returns a list of dicts compatible with the ``MemoryClient`` SDK envelope
-    (includes ``owner``, ``organization``, ``metadata`` fields).
-    """
-    buckets: dict[Any, dict[str, Any]] = defaultdict(
-        lambda: {"total_memories": 0, "created_at": None, "updated_at": None, "metadata": {}}
+def aggregate_entity_buckets(
+    payloads: Iterable[dict[str, Any]],
+    type_to_field: Mapping[str, str],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Aggregate memory counts and created/updated timestamps by entity type and id."""
+    buckets: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: {"total_memories": 0, "created_at": None, "updated_at": None}
     )
 
-    for payload in iter_payloads():
+    for payload in payloads:
         created = parse_timestamp(payload.get("created_at"))
         updated = parse_timestamp(payload.get("updated_at")) or created
 
-        for entity_type, field in COMPAT_TYPE_TO_FIELD.items():
+        for entity_type, field in type_to_field.items():
             value = payload.get(field)
             if not value:
                 continue
@@ -74,17 +105,24 @@ def list_entities_payload() -> list[dict[str, Any]]:
             if updated and (bucket["updated_at"] is None or updated > bucket["updated_at"]):
                 bucket["updated_at"] = updated
 
+    return dict(buckets)
+
+
+def list_entities_payload() -> list[CompatEntity]:
+    """Aggregate memory counts and timestamps by entity (user / agent / app / run).
+
+    Returns validated models compatible with the hosted platform entity schema.
+    """
+    buckets = aggregate_entity_buckets(iter_payloads(), COMPAT_TYPE_TO_FIELD)
+
     return [
-        {
-            "id": entity_id,
-            "name": entity_id,
-            "type": entity_type,
-            "total_memories": data["total_memories"],
-            "created_at": data["created_at"].isoformat() if data["created_at"] else None,
-            "updated_at": data["updated_at"].isoformat() if data["updated_at"] else None,
-            "owner": "self-hosted",
-            "organization": "self-hosted",
-            "metadata": data["metadata"],
-        }
+        CompatEntity.from_bucket(
+            entity_type,
+            entity_id,
+            total_memories=data["total_memories"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            metadata={},
+        )
         for (entity_type, entity_id), data in sorted(buckets.items(), key=lambda item: (item[0][0], item[0][1]))
     ]

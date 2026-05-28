@@ -59,6 +59,52 @@ from server.routers.compat import (
 
 
 # ---------------------------------------------------------------------------
+# compat.entities.CompatEntity
+# ---------------------------------------------------------------------------
+
+
+class TestCompatEntity:
+    def test_from_bucket_serializes_timestamps(self):
+        from compat.entities import CompatEntity
+        from datetime import datetime, timezone
+
+        created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        updated = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        entity = CompatEntity.from_bucket(
+            "user",
+            "alice",
+            total_memories=3,
+            created_at=created,
+            updated_at=updated,
+        )
+        assert entity.type == "user"
+        assert entity.name == "alice"
+        assert entity.total_memories == 3
+        assert entity.created_at == created.isoformat()
+        assert entity.owner == "self-hosted"
+
+    def test_list_entities_payload_aggregates_by_user(self, monkeypatch):
+        import compat.entities as entities_mod
+        from compat.entities import list_entities_payload
+
+        row = MagicMock(
+            payload={
+                "user_id": "alice",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-02T00:00:00+00:00",
+            }
+        )
+        mem = MagicMock()
+        mem.vector_store.list.return_value = [row]
+        monkeypatch.setattr(entities_mod, "get_memory_instance", lambda: mem)
+
+        entities = list_entities_payload()
+        assert len(entities) == 1
+        assert entities[0].id == "alice"
+        assert entities[0].total_memories == 1
+
+
+# ---------------------------------------------------------------------------
 # compat.scope
 # ---------------------------------------------------------------------------
 
@@ -315,6 +361,47 @@ class TestNormalizeResultsDict:
             "count": 1,
             "status": "ok",
         }
+
+
+class TestCompatEvent:
+    def test_pending_sets_timestamps_and_empty_results(self):
+        from compat.events import CompatEvent
+
+        event = CompatEvent.pending("evt-1", now_iso="2024-01-01T00:00:00+00:00")
+        assert event.status == "PENDING"
+        assert event.results == []
+        assert event.completed_at is None
+        assert event.latency is None
+        assert event.created_at == "2024-01-01T00:00:00+00:00"
+
+    def test_create_add_succeeded_sets_completed_at(self):
+        from compat.events import CompatEvent
+
+        event = CompatEvent.create_add(
+            "evt-2",
+            [{"id": "m1"}],
+            now_iso="2024-01-01T00:00:00+00:00",
+            latency=12.5,
+        )
+        assert event.status == "SUCCEEDED"
+        assert event.completed_at == "2024-01-01T00:00:00+00:00"
+        assert event.latency == 12.5
+        assert len(event.results) == 1
+
+    def test_create_add_failed_keeps_completed_at_optional(self):
+        from compat.events import CompatEvent
+
+        event = CompatEvent.create_add(
+            "evt-3",
+            [],
+            status="FAILED",
+            now_iso="2024-01-01T00:00:00+00:00",
+            completed_at="2024-01-01T00:00:01+00:00",
+            metadata={"error": "boom"},
+        )
+        assert event.status == "FAILED"
+        assert event.completed_at == "2024-01-01T00:00:01+00:00"
+        assert event.metadata == {"error": "boom"}
 
 
 class TestEventCacheCopies:

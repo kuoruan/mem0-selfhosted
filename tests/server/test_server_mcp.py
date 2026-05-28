@@ -455,7 +455,7 @@ def test_list_entities_returns_payload(mcp_testbed):
     )
     mock_memory.vector_store.list.return_value = [row]
 
-    with patch("server.compat.entities.get_memory_instance", return_value=mock_memory):
+    with patch("compat.entities.get_memory_instance", return_value=mock_memory):
         structured = _structured(client, "list_entities")
     assert structured["count"] == 1
     assert structured["results"][0]["name"] == "alice"
@@ -549,26 +549,26 @@ def test_update_memory_non_dict_returns_fallback(mcp_testbed):
 
 
 def test_normalize_list_result_shapes():
-    """_normalize_list_result should handle all documented backend return shapes."""
-    from compat.entities import _normalize_list_result
+    """normalize_vector_store_list should handle all documented backend return shapes."""
+    from compat.entities import normalize_vector_store_list
 
     # Empty / falsy
-    assert _normalize_list_result(None) == []
-    assert _normalize_list_result([]) == []
+    assert normalize_vector_store_list(None) == []
+    assert normalize_vector_store_list([]) == []
 
     # PGVector / Chroma: nested list
     row = MagicMock(payload={"foo": "bar"})
-    assert _normalize_list_result([[row]]) == [row]
+    assert normalize_vector_store_list([[row]]) == [row]
 
     # Qdrant: tuple of (rows, offset)
-    assert _normalize_list_result(([row], "next_offset")) == [row]
+    assert normalize_vector_store_list(([row], "next_offset")) == [row]
 
     # Qdrant edge: tuple with non-list first element
-    assert _normalize_list_result((None, "offset")) == []
-    assert _normalize_list_result(("not-a-list", 0)) == []
+    assert normalize_vector_store_list((None, "offset")) == []
+    assert normalize_vector_store_list(("not-a-list", 0)) == []
 
     # Flat list
-    assert _normalize_list_result([row]) == [row]
+    assert normalize_vector_store_list([row]) == [row]
 
 
 def test_iter_payloads_skips_none_rows():
