@@ -2,6 +2,7 @@ import threading
 
 import pytest
 
+import server.memory_lock as memory_lock
 from server.memory_lock import (
     memory_id_lock,
     memory_id_lock_key,
@@ -103,6 +104,28 @@ def test_same_memory_id_serializes_via_run_memory_write_for_memory_id(monkeypatc
     t2.join(timeout=2)
 
     assert order == ["start", "end", "start", "end"]
+
+
+def test_lock_record_reserved_before_acquire_survives_gc():
+    """in_use must be bumped in _get_lock_record so GC cannot evict before acquire."""
+    key = scope_lock_key({"user_id": "gc-survivor"})
+    with memory_lock._registry_lock:
+        memory_lock._locks.clear()
+        memory_lock._lock_ttl.clear()
+
+    record = memory_lock._get_lock_record(key)
+    assert record.in_use >= 1
+
+    with memory_lock._registry_lock:
+        memory_lock._lock_ttl.pop(key, None)
+        memory_lock._gc_locks()
+        assert memory_lock._locks.get(key) is record
+
+    with memory_lock._hold_record(record, key):
+        pass
+
+    with memory_lock._registry_lock:
+        assert record.in_use == 0
 
 
 def test_same_scope_serializes_writes(monkeypatch):
