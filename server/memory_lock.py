@@ -26,6 +26,49 @@ _SCOPE_KEY_ORDER = ("agent_id", "app_id", "run_id", "user_id")
 ScopeLockKey = Tuple[Tuple[str, str], ...]
 _GLOBAL_LOCK_KEY: ScopeLockKey = ()
 
+
+class _RWGate:
+    """A simple reader/writer gate.
+
+    - Scoped and memory-id writes acquire a *read* slot, allowing concurrency.
+    - Global operations acquire a *write* slot, blocking all other operations.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._readers = 0
+        self._writer = False
+
+    @contextmanager
+    def read(self) -> Iterator[None]:
+        with self._cond:
+            while self._writer:
+                self._cond.wait()
+            self._readers += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._readers = max(self._readers - 1, 0)
+                if self._readers == 0:
+                    self._cond.notify_all()
+
+    @contextmanager
+    def write(self) -> Iterator[None]:
+        with self._cond:
+            while self._writer or self._readers > 0:
+                self._cond.wait()
+            self._writer = True
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._writer = False
+                self._cond.notify_all()
+
+
+_GLOBAL_GATE = _RWGate()
+
 _registry_lock = threading.Lock()
 _LOCK_REGISTRY_MAX = 10_000
 _LOCK_REGISTRY_TTL_SECONDS = 600  # 10 minutes
@@ -130,20 +173,34 @@ def memory_scope_lock(
     *,
     global_lock: bool = False,
 ) -> Iterator[None]:
-    """Hold the lock for *entity_scope*, or the process-wide lock when *global_lock* is True."""
-    key = _GLOBAL_LOCK_KEY if global_lock else scope_lock_key(entity_scope or {})
-    record = _get_lock_record(key)
-    with _hold_record(record, key):
-        yield
+    """Hold the lock for *entity_scope*.
+
+    When *global_lock* is True, blocks all other writes (scope + memory-id) for the
+    duration of the context.
+    """
+    if global_lock:
+        with _GLOBAL_GATE.write():
+            key = _GLOBAL_LOCK_KEY
+            record = _get_lock_record(key)
+            with _hold_record(record, key):
+                yield
+        return
+
+    with _GLOBAL_GATE.read():
+        key = scope_lock_key(entity_scope or {})
+        record = _get_lock_record(key)
+        with _hold_record(record, key):
+            yield
 
 
 @contextmanager
 def memory_id_lock(memory_id: str) -> Iterator[None]:
     """Hold the lock for a single ``memory_id`` (update/delete on one record)."""
-    key = memory_id_lock_key(memory_id)
-    record = _get_lock_record(key)
-    with _hold_record(record, key):
-        yield
+    with _GLOBAL_GATE.read():
+        key = memory_id_lock_key(memory_id)
+        record = _get_lock_record(key)
+        with _hold_record(record, key):
+            yield
 
 
 def run_memory_write(

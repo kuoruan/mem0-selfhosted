@@ -158,3 +158,64 @@ def test_same_scope_serializes_writes(monkeypatch):
     t2.join(timeout=2)
 
     assert order == ["start", "end", "start", "end"]
+
+
+def test_global_lock_blocks_scoped_and_memory_id_locks():
+    """Global operations should serialize against all other write locks."""
+    started_scoped = threading.Event()
+    allow_scoped_finish = threading.Event()
+    global_entered = threading.Event()
+    global_exited = threading.Event()
+
+    def scoped_worker():
+        with memory_scope_lock({"user_id": "alice"}):
+            started_scoped.set()
+            allow_scoped_finish.wait(timeout=2)
+
+    def global_worker():
+        with memory_scope_lock(global_lock=True):
+            global_entered.set()
+        global_exited.set()
+
+    t_scoped = threading.Thread(target=scoped_worker)
+    t_scoped.start()
+    assert started_scoped.wait(timeout=1)
+
+    t_global = threading.Thread(target=global_worker)
+    t_global.start()
+
+    # The global lock should not be able to enter while a scoped lock is held.
+    assert not global_entered.wait(timeout=0.2)
+
+    allow_scoped_finish.set()
+    t_scoped.join(timeout=2)
+
+    assert global_entered.wait(timeout=1)
+    t_global.join(timeout=2)
+    assert global_exited.is_set()
+
+    started_mem = threading.Event()
+    allow_mem_finish = threading.Event()
+    global2_entered = threading.Event()
+
+    def mem_worker():
+        with memory_id_lock("mem-1"):
+            started_mem.set()
+            allow_mem_finish.wait(timeout=2)
+
+    def global_worker2():
+        with memory_scope_lock(global_lock=True):
+            global2_entered.set()
+
+    t_mem = threading.Thread(target=mem_worker)
+    t_mem.start()
+    assert started_mem.wait(timeout=1)
+
+    t_global2 = threading.Thread(target=global_worker2)
+    t_global2.start()
+    assert not global2_entered.wait(timeout=0.2)
+
+    allow_mem_finish.set()
+    t_mem.join(timeout=2)
+    assert global2_entered.wait(timeout=1)
+    t_global2.join(timeout=2)
