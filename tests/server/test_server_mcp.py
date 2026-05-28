@@ -386,6 +386,33 @@ def test_get_memories_pagination(mcp_testbed):
     assert structured["results"][0]["id"] == "mem-2"
 
 
+def test_get_memories_page_without_page_size_uses_defaults(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+    mock_memory.get_all.return_value = [
+        {"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(25)
+    ]
+
+    structured = _structured(client, "get_memories", {"user_id": "alice", "page": 1})
+
+    assert structured["count"] == 25
+    assert len(structured["results"]) == 10
+
+
+def test_list_events_page_without_page_size_uses_defaults(mcp_testbed):
+    _, client, _ = mcp_testbed
+    now = "2026-01-01T00:00:00+00:00"
+    for i in range(3):
+        event_cache_put(f"e{i}", make_event_obj(f"e{i}", [], now_iso=now, status="SUCCEEDED"))
+
+    paged = _structured(client, "list_events", {"page": 2, "page_size": 2})
+    assert paged["count"] == 3
+    assert len(paged["results"]) == 1
+
+    page_only = _structured(client, "list_events", {"page": 1})
+    assert page_only["count"] == 3
+    assert len(page_only["results"]) == 3
+
+
 def test_delete_memory_invokes_sdk(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 

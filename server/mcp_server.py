@@ -17,7 +17,7 @@ from auth import verify_auth
 from compat.entities import list_entities_payload
 from compat.events import event_cache_all, event_cache_get, event_cache_put, make_event_obj
 from compat.requests import request_meta
-from compat.responses import normalize_results, normalize_results_dict
+from compat.responses import normalize_results, normalize_results_dict, resolve_optional_pagination
 from compat.scope import build_search_filters, collect_entity_params, require_entity_scope
 from compat.tasks import run_v3_add_memory_task
 from memory_lock import run_memory_write, run_memory_write_for_memory_id
@@ -179,7 +179,7 @@ def get_memories(
     ] = None,
     page: Annotated[Optional[int], Field(default=None, description="1-indexed page number when paginating.")] = None,
     page_size: Annotated[
-        Optional[int], Field(default=None, description="Number of memories per page (default 10).")
+        Optional[int], Field(default=None, description="Number of memories per page (default 10, max 100).")
     ] = None,
 ) -> dict[str, Any]:
     scoped_filters = build_search_filters(
@@ -193,11 +193,13 @@ def get_memories(
 
     raw = get_memory_instance().get_all(filters=scoped_filters)
     items = normalize_results(raw)
-    if page and page_size:
-        start = max(page - 1, 0) * page_size
+    pagination = resolve_optional_pagination(page, page_size, default_page_size=10)
+    if pagination:
+        effective_page, effective_page_size = pagination
+        start = (effective_page - 1) * effective_page_size
         return {
             "count": len(items),
-            "results": items[start : start + page_size],
+            "results": items[start : start + effective_page_size],
         }
     return {"count": len(items), "results": items}
 
@@ -289,9 +291,11 @@ def list_events(
     items = event_cache_all()
     if event_type:
         items = [item for item in items if item.get("event_type") == event_type]
-    if page and page_size:
-        start = max(page - 1, 0) * page_size
-        page_items = items[start : start + page_size]
+    pagination = resolve_optional_pagination(page, page_size)
+    if pagination:
+        effective_page, effective_page_size = pagination
+        start = (effective_page - 1) * effective_page_size
+        page_items = items[start : start + effective_page_size]
         return {"count": len(items), "results": page_items}
     return {"count": len(items), "results": items}
 
