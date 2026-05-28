@@ -64,6 +64,11 @@ class _ImmediateThread:
         if self._target:
             self._target(*self._args)
 
+class _ImmediateExecutor:
+    def submit(self, fn, *args, **kwargs):
+        fn(*args, **kwargs)
+        return MagicMock()
+
 
 @pytest.fixture(autouse=True)
 def _clear_event_cache():
@@ -89,7 +94,7 @@ def mcp_testbed(monkeypatch):
     get_memory = lambda: mock_memory
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
     monkeypatch.setattr("server.server_state.get_memory_instance", get_memory)
-    monkeypatch.setattr(module.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
 
     app = FastAPI()
     app.include_router(module.mcp_router)
@@ -206,7 +211,7 @@ def mcp_testbed_authed(monkeypatch):
     get_memory = lambda: mock_memory
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
     monkeypatch.setattr("server.server_state.get_memory_instance", get_memory)
-    monkeypatch.setattr(module.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
 
     auth_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
     mock_user = MagicMock()

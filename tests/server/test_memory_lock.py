@@ -77,13 +77,16 @@ def test_different_memory_ids_run_concurrently(monkeypatch):
 
 def test_same_memory_id_serializes_via_run_memory_write_for_memory_id(monkeypatch):
     order: list[str] = []
-    barrier = threading.Barrier(2)
+    first_started = threading.Event()
+    allow_first_finish = threading.Event()
     sentinel = object()
     monkeypatch.setattr("server.server_state.get_memory_instance", lambda: sentinel)
 
     def slow(_memory):
         order.append("start")
-        barrier.wait(timeout=1)
+        if not first_started.is_set():
+            first_started.set()
+            allow_first_finish.wait(timeout=1)
         order.append("end")
         return None
 
@@ -94,6 +97,8 @@ def test_same_memory_id_serializes_via_run_memory_write_for_memory_id(monkeypatc
     t2 = threading.Thread(target=worker)
     t1.start()
     t2.start()
+    assert first_started.wait(timeout=1)
+    allow_first_finish.set()
     t1.join(timeout=2)
     t2.join(timeout=2)
 
@@ -102,13 +107,16 @@ def test_same_memory_id_serializes_via_run_memory_write_for_memory_id(monkeypatc
 
 def test_same_scope_serializes_writes(monkeypatch):
     order: list[str] = []
-    barrier = threading.Barrier(2)
+    first_started = threading.Event()
+    allow_first_finish = threading.Event()
     sentinel = object()
     monkeypatch.setattr("server.server_state.get_memory_instance", lambda: sentinel)
 
     def slow_write(_memory):
         order.append("start")
-        barrier.wait(timeout=1)
+        if not first_started.is_set():
+            first_started.set()
+            allow_first_finish.wait(timeout=1)
         order.append("end")
         return {"results": []}
 
@@ -121,6 +129,8 @@ def test_same_scope_serializes_writes(monkeypatch):
     t2 = threading.Thread(target=worker)
     t1.start()
     t2.start()
+    assert first_started.wait(timeout=1)
+    allow_first_finish.set()
     t1.join(timeout=2)
     t2.join(timeout=2)
 

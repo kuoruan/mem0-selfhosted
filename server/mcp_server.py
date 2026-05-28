@@ -1,7 +1,7 @@
 import contextvars
 import logging
-import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
@@ -28,6 +28,9 @@ logger = logging.getLogger("mem0.server.mcp")
 auth_user_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("mcp_user_id", default=None)
 platform_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("mcp_platform", default=None)
 mem0_source_var: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_mem0_source", default="MCP")
+
+# Avoid unbounded thread spawning on MCP writes.
+_ADD_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mcp-add-memory")
 
 mcp = FastMCP("mem0")
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP Endpoints"])
@@ -100,12 +103,7 @@ def add_memory(
             latency=None,
         ),
     )
-    threading.Thread(
-        target=run_v3_add_memory_task,
-        args=(event_id, conversation, add_kwargs),
-        daemon=True,
-        name=f"mcp-add-memory-{event_id}",
-    ).start()
+    _ADD_EXECUTOR.submit(run_v3_add_memory_task, event_id, conversation, add_kwargs)
 
     return {
         "message": "Memory processing has been queued for background execution.",
