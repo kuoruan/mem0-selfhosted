@@ -155,6 +155,62 @@ def build_search_filters(
     return merged
 
 
+def filter_tree_has_key(filters: Any, needle: str) -> bool:
+    """Return True if *needle* appears as a key anywhere in a filter tree."""
+    if isinstance(filters, dict):
+        if needle in filters:
+            return True
+        for op in ("AND", "OR", "NOT"):
+            if filter_tree_has_key(filters.get(op), needle):
+                return True
+    elif isinstance(filters, list):
+        return any(filter_tree_has_key(item, needle) for item in filters)
+    return False
+
+
+def merge_extra_clauses_into_filters(
+    filters: dict[str, Any],
+    extra_clauses: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Merge convenience filter clauses into flat or logical filter trees.
+
+    For flat dicts, uses ``setdefault`` so explicit filter keys win. For AND/OR/NOT
+    trees, appends to a top-level ``AND`` list or wraps the tree in an outer ``AND``.
+    """
+    if not extra_clauses:
+        return filters
+
+    merged = dict(filters)
+    has_logical = any(key in merged for key in ("AND", "OR", "NOT"))
+    if not has_logical:
+        for clause in extra_clauses:
+            for key, value in clause.items():
+                merged.setdefault(key, value)
+        return merged
+
+    if "AND" in merged and isinstance(merged["AND"], list):
+        merged["AND"] = [*merged["AND"], *extra_clauses]
+        return merged
+    return {"AND": [merged, *extra_clauses]}
+
+
+def append_search_convenience_filters(
+    filters: dict[str, Any],
+    *,
+    categories: Optional[list[str]] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Merge top-level search body ``categories`` / ``metadata`` into SDK filters."""
+    extra_clauses: list[dict[str, Any]] = []
+    if categories and not filter_tree_has_key(filters, "categories"):
+        extra_clauses.append({"categories": build_categories_filter(categories)})
+    if metadata:
+        for key, value in metadata.items():
+            if not filter_tree_has_key(filters, key):
+                extra_clauses.append({key: value})
+    return merge_extra_clauses_into_filters(filters, extra_clauses)
+
+
 def get_entity_field(entity_type: str) -> str:
     """Map entity type name (``"user"``) to payload field name (``"user_id"``).
 
@@ -169,14 +225,16 @@ def get_entity_field(entity_type: str) -> str:
 def build_list_filters(body: Any, entity_params: dict[str, str]) -> dict[str, Any]:
     """Build SDK filter dict for get_all from request body and entity params."""
     sdk_filters: dict[str, Any] = dict(body.filters) if body.filters else dict(entity_params)
-    if "AND" not in sdk_filters and "OR" not in sdk_filters and "NOT" not in sdk_filters:
-        date_filter: dict[str, str] = {}
-        if body.start_date:
-            date_filter["gte"] = body.start_date
-        if body.end_date:
-            date_filter["lte"] = body.end_date
-        if date_filter:
-            sdk_filters.setdefault("created_at", date_filter)
-        if body.categories:
-            sdk_filters.setdefault("categories", build_categories_filter(body.categories))
-    return sdk_filters
+
+    extra_clauses: list[dict[str, Any]] = []
+    date_filter: dict[str, str] = {}
+    if body.start_date:
+        date_filter["gte"] = body.start_date
+    if body.end_date:
+        date_filter["lte"] = body.end_date
+    if date_filter and not filter_tree_has_key(sdk_filters, "created_at"):
+        extra_clauses.append({"created_at": date_filter})
+    if body.categories and not filter_tree_has_key(sdk_filters, "categories"):
+        extra_clauses.append({"categories": build_categories_filter(body.categories)})
+
+    return merge_extra_clauses_into_filters(sdk_filters, extra_clauses)

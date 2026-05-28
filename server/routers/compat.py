@@ -79,7 +79,7 @@ from compat.responses import (
 from compat.events import event_cache_all, event_cache_get, event_cache_put, make_event_obj
 from compat.scope import (
     VALID_ENTITY_TYPES,
-    build_categories_filter,
+    append_search_convenience_filters,
     build_list_filters,
     build_search_filters,
     collect_entity_params,
@@ -457,25 +457,17 @@ def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verif
 @upstream_guard
 def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     warn_unsupported_fields(body.fields, "v1_search_memories")
-    entity_params = collect_entity_params(
+    effective_filters = build_search_filters(
         user_id=body.user_id,
         agent_id=body.agent_id,
         app_id=body.app_id,
         run_id=body.run_id,
+        detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
-    if not entity_params:
-        raise HTTPException(
-            status_code=400,
-            detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
-        )
-    search_filters: Dict[str, Any] = {**entity_params}
-    if body.metadata:
-        # Merge client-supplied metadata filters; entity params take precedence.
-        for k, v in body.metadata.items():
-            search_filters.setdefault(k, v)
+    effective_filters = append_search_convenience_filters(effective_filters, metadata=body.metadata)
 
     raw = get_memory_instance().search(
-        query=body.query, **build_search_kwargs(search_filters, body.top_k, body.threshold, body.rerank)
+        query=body.query, **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )
     return normalize_results(raw)
 
@@ -795,14 +787,11 @@ def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
         filters=body.filters,
         detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
-    # Merge convenience fields for flat (non-AND/OR/NOT) dicts.
-    if "AND" not in effective_filters and "OR" not in effective_filters and "NOT" not in effective_filters:
-        if body.categories and "categories" not in effective_filters:
-            effective_filters["categories"] = build_categories_filter(body.categories)
-        if body.metadata:
-            # Merge metadata filters; entity params and explicit filters take precedence.
-            for k, v in body.metadata.items():
-                effective_filters.setdefault(k, v)
+    effective_filters = append_search_convenience_filters(
+        effective_filters,
+        categories=body.categories,
+        metadata=body.metadata,
+    )
     raw = get_memory_instance().search(
         query=body.query, **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )
