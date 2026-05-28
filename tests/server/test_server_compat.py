@@ -484,16 +484,16 @@ class TestBuildListFilters:
         assert result["categories"] == {"in": ["personal"]}
 
     def test_and_format_skips_date_categories_merge(self):
-        """AND/OR format: convenience fields must not be injected at top level."""
+        """Logical format: convenience fields are AND-ed at top level."""
         body = self._body(
             filters={"AND": [{"user_id": "u1"}]},
             start_date="2024-01-01",
             categories=["finance"],
         )
         result = build_list_filters(body, {"user_id": "u1"})
-        assert "created_at" not in result
-        assert "categories" not in result
         assert "AND" in result
+        assert {"created_at": {"gte": "2024-01-01"}} in result["AND"]
+        assert {"categories": {"contains": "finance"}} in result["AND"]
 
     def test_and_filters_do_not_mix_top_level_entity_keys(self):
         body = self._body(filters={"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]})
@@ -653,6 +653,37 @@ class TestBuildSearchKwargs:
         assert "top_k" in result
         assert result["top_k"] == 0
 
+
+# ---------------------------------------------------------------------------
+# v3_search_memories convenience fields
+# ---------------------------------------------------------------------------
+
+
+class TestV3SearchMemoriesConvenienceFields:
+    def test_categories_and_metadata_applied_with_logical_filters(self, monkeypatch):
+        from server.routers.compat import MemorySearchInputV3, v3_search_memories
+
+        mem = MagicMock()
+        mem.search.return_value = {"results": []}
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        body = MemorySearchInputV3(
+            query="hello",
+            user_id="u1",
+            filters={"OR": [{"kind": "a"}, {"kind": "b"}]},
+            categories=["finance"],
+            metadata={"foo": "bar"},
+        )
+
+        v3_search_memories(body, _auth=None)
+
+        called = mem.search.call_args.kwargs
+        assert called["query"] == "hello"
+        filters = called["filters"]
+        # build_search_filters wraps OR with outer AND for explicit user_id
+        assert "AND" in filters
+        assert {"categories": {"contains": "finance"}} in filters["AND"]
+        assert {"foo": "bar"} in filters["AND"]
 
 # ---------------------------------------------------------------------------
 # resolve_existing
@@ -828,7 +859,7 @@ class TestV1ListMemories:
         mem = MagicMock()
         mem.get_all.return_value = [{"id": "m1"}]
 
-        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
 
         result = v1_list_memories(request=MagicMock(), user_id="u1", auth=None)
 
@@ -857,7 +888,9 @@ class TestSyntheticEvents:
     def test_v3_add_returns_event_id_and_event_is_fetchable(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
+        get_mem = lambda: mem
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -884,7 +917,9 @@ class TestSyntheticEvents:
     def test_v1_events_paginates_cached_events(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
+        get_mem = lambda: mem
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -921,7 +956,9 @@ class TestSyntheticEvents:
     def test_v1_get_event_visible_to_other_user_in_same_server_context(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
+        get_mem = lambda: mem
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -943,7 +980,9 @@ class TestSyntheticEvents:
     def test_v1_list_events_returns_project_visible_events(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
+        get_mem = lambda: mem
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -978,7 +1017,9 @@ class TestSyntheticEvents:
     def test_v3_add_event_latency_is_recorded_in_milliseconds(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
+        get_mem = lambda: mem
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
         monkeypatch.setattr("server.compat.tasks.time.perf_counter", MagicMock(side_effect=[10.0, 10.25]))
 
         tasks = BackgroundTasks()
@@ -997,7 +1038,9 @@ class TestSyntheticEvents:
     def test_v3_add_marks_event_failed_when_add_raises(self, monkeypatch):
         mem = MagicMock()
         mem.add.side_effect = RuntimeError("boom")
-        monkeypatch.setattr("server.server_state.get_memory_instance", lambda: mem)
+        get_mem = lambda: mem
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
