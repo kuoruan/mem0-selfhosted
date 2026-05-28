@@ -6,7 +6,6 @@ list or dict formats expected by client SDKs and the MCP protocol.
 
 import logging
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
 
 from fastapi import HTTPException
 from fastapi import Request
@@ -76,10 +75,7 @@ def resolve_optional_pagination(
 
 
 def build_page_url(request: Request, *, page: int, page_size: int) -> str:
-    params = dict(request.query_params)
-    params["page"] = str(page)
-    params["page_size"] = str(page_size)
-    return f"{request.url.path}?{urlencode(params)}"
+    return str(request.url.include_query_params(page=page, page_size=page_size))
 
 
 def paginate_response(
