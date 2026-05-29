@@ -98,9 +98,6 @@ def _load_spacy_model(model_name: str, *, disable: Optional[tuple[str, ...]], au
             logger.warning("Failed to load spaCy model %s: %s", model_name, e)
             _load_failed.add(key)
             return None
-            logger.warning("Failed to load spaCy model %s: %s", model_name, e)
-            _load_failed.add(key)
-            return None
 
 
 def get_nlp_full(nlp_config: Optional[NlpConfig] = None):

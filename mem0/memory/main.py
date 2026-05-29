@@ -811,7 +811,7 @@ class Memory(MemoryBase):
                 continue
             seen_hashes.add(mem_hash)
 
-            text_lemmatized = self._lemmatize_for_bm25(text)
+            text_lemmatized = await asyncio.to_thread(self._lemmatize_for_bm25, text)
 
             memory_id = str(uuid.uuid4())
             mem_metadata = deepcopy(metadata)
@@ -1605,7 +1605,7 @@ class Memory(MemoryBase):
         if "created_at" not in new_metadata:
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
-        new_metadata["text_lemmatized"] = self._lemmatize_for_bm25(data)
+        new_metadata["text_lemmatized"] = await asyncio.to_thread(self._lemmatize_for_bm25, data)
 
         self.vector_store.insert(
             vectors=[embeddings],
@@ -2234,7 +2234,7 @@ class AsyncMemory(MemoryBase):
                 continue
             seen_hashes.add(mem_hash)
 
-            text_lemmatized = self._lemmatize_for_bm25(text)
+            text_lemmatized = await asyncio.to_thread(self._lemmatize_for_bm25, text)
 
             memory_id = str(uuid.uuid4())
             mem_metadata = deepcopy(metadata)
