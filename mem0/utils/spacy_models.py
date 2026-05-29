@@ -78,11 +78,7 @@ def _load_spacy_model(model_name: str, *, disable: Optional[tuple[str, ...]], au
 
         try:
             _ensure_model_available(model_name, auto_download=auto_download)
-        except Exception as e:
-            logger.warning("Failed to ensure spaCy model %s is available: %s", model_name, e)
-            return None
 
-        try:
             import spacy
 
             if disable:
@@ -99,6 +95,9 @@ def _load_spacy_model(model_name: str, *, disable: Optional[tuple[str, ...]], au
             logger.info("spaCy model loaded: %s (disable=%s)", model_name, disable)
             return nlp
         except Exception as e:
+            logger.warning("Failed to load spaCy model %s: %s", model_name, e)
+            _load_failed.add(key)
+            return None
             logger.warning("Failed to load spaCy model %s: %s", model_name, e)
             _load_failed.add(key)
             return None

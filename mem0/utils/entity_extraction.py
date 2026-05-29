@@ -417,5 +417,8 @@ def _finalize_entities(entities: List[Tuple[str, str]], language_code: str = "en
     deduped = list(best.values())
 
     # Remove entities that are substrings of longer entities
-    all_lower = [e[1].lower() for e in deduped]
-    return [(t, e) for t, e in deduped if not any(e.lower() != o and e.lower() in o for o in all_lower)]
+    # Skip for CJK languages where short entities are frequently valid substrings of longer ones
+    if language_code not in CJK_LANGUAGES:
+        all_lower = [e[1].lower() for e in deduped]
+        deduped = [(t, e) for t, e in deduped if not any(e.lower() != o and e.lower() in o for o in all_lower)]
+    return deduped
