@@ -10,7 +10,7 @@ pytest.importorskip("mcp", reason="mcp not installed")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import server.mcp_server as mcp_server
+import mcp_server
 from compat.events import event_cache_clear, event_cache_put, make_event_obj
 
 # MCP_HEADERS with a User-Agent prefixed with "Mozilla" so it's skipped as generic,
@@ -93,7 +93,7 @@ def mcp_testbed(monkeypatch):
 
     get_memory = lambda: mock_memory
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
-    monkeypatch.setattr("server.server_state.get_memory_instance", get_memory)
+    monkeypatch.setattr("server_state.get_memory_instance", get_memory)
     monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
 
     app = FastAPI()
@@ -170,6 +170,7 @@ def test_add_memory_tool_uses_explicit_user_id(mcp_testbed):
         messages=[{"role": "user", "content": "remember this"}],
         user_id="alice",
         metadata={"source": "MCP"},
+        infer=True,
     )
 
 
@@ -242,7 +243,7 @@ def mcp_testbed_authed(monkeypatch):
     mock_memory.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "saved"}]}
     get_memory = lambda: mock_memory
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
-    monkeypatch.setattr("server.server_state.get_memory_instance", get_memory)
+    monkeypatch.setattr("server_state.get_memory_instance", get_memory)
     monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
 
     auth_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -291,6 +292,7 @@ def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):
         messages=[{"role": "user", "content": "remember this"}],
         user_id=auth_uid,
         metadata={"source": "MCP"},
+        infer=True,
     )
 
 
@@ -332,6 +334,7 @@ def test_add_memory_with_custom_source(mcp_testbed):
         messages=[{"role": "user", "content": "tagged"}],
         user_id="alice",
         metadata={"source": "cursor"},
+        infer=True,
     )
 
 
@@ -355,6 +358,7 @@ def test_add_memory_with_metadata(mcp_testbed):
         messages=[{"role": "user", "content": "decision made"}],
         user_id="alice",
         metadata={"source": "MCP", "type": "decision"},
+        infer=True,
     )
 
 
@@ -530,6 +534,7 @@ def test_source_from_x_mem0_source_header(mcp_testbed):
         messages=[{"role": "user", "content": "hdr"}],
         user_id="alice",
         metadata={"source": "CURSOR"},
+        infer=True,
     )
 
 

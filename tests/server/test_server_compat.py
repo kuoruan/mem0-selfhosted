@@ -12,7 +12,6 @@ Covers:
 """
 
 import logging
-import sys
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -24,26 +23,27 @@ from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
 from starlette.datastructures import URL
 from mem0.exceptions import ValidationError as Mem0ValidationError
-from server.compat.events import event_cache_all, event_cache_clear, event_cache_get, event_cache_put, event_cache_update
-from server.compat.requests import RequestMeta
-from server.compat.decorators import upstream_guard
-from server.compat.helpers import (
+import compat.tasks as compat_tasks
+from compat.events import event_cache_all, event_cache_clear, event_cache_get, event_cache_put, event_cache_update
+from compat.requests import RequestMeta
+from compat.decorators import upstream_guard
+from compat.helpers import (
     normalize_results,
     normalize_results_dict,
 )
-from server.compat.utils import drop_none
-from server.compat.responses import (
+from compat.utils import drop_none
+from compat.responses import (
     resolve_optional_pagination,
 )
-from server.errors import UpstreamError
-from server.compat.scope import (
+from errors import UpstreamError
+from compat.scope import (
     build_categories_filter,
     build_search_filters,
     collect_entity_params,
     get_entity_field,
     require_entity_scope,
 )
-from server.routers.compat import (
+from routers.compat import (
     MemoryBatchDeleteInput,
     MemoryBatchDeleteLegacyInput,
     MemoryAddInputV3,
@@ -827,11 +827,11 @@ class TestBuildSearchKwargs:
 
 class TestV3SearchMemoriesConvenienceFields:
     def test_categories_and_metadata_applied_with_logical_filters(self, monkeypatch):
-        from server.routers.compat import MemorySearchInputV3, v3_search_memories
+        from routers.compat import MemorySearchInputV3, v3_search_memories
 
         mem = MagicMock()
         mem.search.return_value = {"results": []}
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("routers.compat.get_memory_instance", lambda: mem)
 
         body = MemorySearchInputV3(
             query="hello",
@@ -1025,7 +1025,7 @@ class TestV1ListMemories:
         mem = MagicMock()
         mem.get_all.return_value = [{"id": "m1"}]
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("routers.compat.get_memory_instance", lambda: mem)
 
         result = v1_list_memories(request=MagicMock(), user_id="u1", auth=None)
 
@@ -1037,14 +1037,8 @@ class TestSyntheticEvents:
     @pytest.fixture(autouse=True)
     def _clear_events(self):
         event_cache_clear()
-        compat_events = sys.modules.get("compat.events")
-        if compat_events is not None and hasattr(compat_events, "event_cache_clear"):
-            compat_events.event_cache_clear()
         yield
         event_cache_clear()
-        compat_events = sys.modules.get("compat.events")
-        if compat_events is not None and hasattr(compat_events, "event_cache_clear"):
-            compat_events.event_cache_clear()
 
     @staticmethod
     def _run_background_tasks(tasks: BackgroundTasks) -> None:
@@ -1055,8 +1049,8 @@ class TestSyntheticEvents:
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
         get_mem = lambda: mem
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1084,8 +1078,8 @@ class TestSyntheticEvents:
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
         get_mem = lambda: mem
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1123,8 +1117,8 @@ class TestSyntheticEvents:
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
         get_mem = lambda: mem
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1148,8 +1142,8 @@ class TestSyntheticEvents:
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
         get_mem = lambda: mem
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1185,8 +1179,8 @@ class TestSyntheticEvents:
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "verbatim"}]}
         get_mem = lambda: mem
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
@@ -1202,6 +1196,7 @@ class TestSyntheticEvents:
 
         assert result == {
             "results": [{"id": "m1", "memory": "verbatim"}],
+            "message": "Memory added successfully.",
             "event_id": None,
             "status": "SUCCEEDED",
         }
@@ -1214,8 +1209,8 @@ class TestSyntheticEvents:
         mem = MagicMock()
         mem.add.side_effect = RuntimeError("boom")
         get_mem = lambda: mem
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server_state.get_memory_instance", get_mem)
 
         with pytest.raises(UpstreamError):
             v3_add_memory(
@@ -1233,9 +1228,9 @@ class TestSyntheticEvents:
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
         get_mem = lambda: mem
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.compat.tasks.time.perf_counter", MagicMock(side_effect=[10.0, 10.25]))
+        monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr(compat_tasks.time, "perf_counter", MagicMock(side_effect=[10.0, 10.25]))
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
@@ -1254,8 +1249,8 @@ class TestSyntheticEvents:
         mem = MagicMock()
         mem.add.side_effect = RuntimeError("boom")
         get_mem = lambda: mem
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server_state.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
         result = v3_add_memory(

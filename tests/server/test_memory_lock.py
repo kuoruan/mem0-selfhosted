@@ -2,8 +2,8 @@ import threading
 
 import pytest
 
-import server.memory_lock as memory_lock
-from server.memory_lock import (
+import memory_lock
+from memory_lock import (
     memory_id_lock,
     memory_id_lock_key,
     memory_scope_lock,
@@ -56,7 +56,7 @@ def test_different_memory_ids_run_concurrently(monkeypatch):
     order: list[str] = []
     barrier = threading.Barrier(2)
     sentinel = object()
-    monkeypatch.setattr("server.server_state.get_memory_instance", lambda: sentinel)
+    monkeypatch.setattr("server_state.get_memory_instance", lambda: sentinel)
 
     def work(mid: str, label: str) -> None:
         with memory_id_lock(mid):
@@ -81,7 +81,7 @@ def test_same_memory_id_serializes_via_run_memory_write_for_memory_id(monkeypatc
     first_started = threading.Event()
     allow_first_finish = threading.Event()
     sentinel = object()
-    monkeypatch.setattr("server.server_state.get_memory_instance", lambda: sentinel)
+    monkeypatch.setattr("server_state.get_memory_instance", lambda: sentinel)
 
     def slow(_memory):
         order.append("start")
@@ -133,7 +133,7 @@ def test_same_scope_serializes_writes(monkeypatch):
     first_started = threading.Event()
     allow_first_finish = threading.Event()
     sentinel = object()
-    monkeypatch.setattr("server.server_state.get_memory_instance", lambda: sentinel)
+    monkeypatch.setattr("server_state.get_memory_instance", lambda: sentinel)
 
     def slow_write(_memory):
         order.append("start")
