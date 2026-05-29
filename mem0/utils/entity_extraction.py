@@ -287,7 +287,7 @@ def _extract_entities_from_doc(
 
     try:
         noun_chunks = list(doc.noun_chunks)
-    except NotImplementedError:
+    except (NotImplementedError, ValueError):
         noun_chunks = []
 
     for chunk in noun_chunks:
