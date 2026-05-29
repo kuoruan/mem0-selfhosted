@@ -52,7 +52,7 @@ def _ensure_model_available(model_name: str, *, auto_download: bool) -> None:
 
         download(model_name)
         logger.info("spaCy model %s downloaded successfully", model_name)
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         raise RuntimeError(
             f"Failed to download spaCy model {model_name}: {e}. "
             f"Please install manually: python -m spacy download {model_name}"

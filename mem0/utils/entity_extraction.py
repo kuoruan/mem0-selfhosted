@@ -285,7 +285,12 @@ def _extract_entities_from_doc(
     if not run_heuristics:
         return _finalize_entities(entities, language_code=language_code)
 
-    for chunk in doc.noun_chunks:
+    try:
+        noun_chunks = list(doc.noun_chunks)
+    except NotImplementedError:
+        noun_chunks = []
+
+    for chunk in noun_chunks:
         chunk_tokens = list(chunk)
         split_indices: list = []
         poss_splits: list = []
