@@ -12,14 +12,15 @@ where spaCy's context-dependent lemmatization produces inconsistent
 results (e.g., "meeting" as noun vs verb -> different lemmas).
 """
 
-from __future__ import annotations
-
 import logging
+from typing import Optional
+
+from mem0.configs.nlp.config import NlpConfig
 
 logger = logging.getLogger(__name__)
 
 
-def lemmatize_for_bm25(text: str) -> str:
+def lemmatize_for_bm25(text: str, *, nlp_config: Optional[NlpConfig] = None) -> str:
     """Lemmatize text for BM25 matching.
 
     Returns space-joined lemmas for full-text search. Falls back to
@@ -27,7 +28,7 @@ def lemmatize_for_bm25(text: str) -> str:
     """
     from mem0.utils.spacy_models import get_nlp_lemma
 
-    nlp = get_nlp_lemma()
+    nlp = get_nlp_lemma(nlp_config)
     if nlp is None:
         return text
 
