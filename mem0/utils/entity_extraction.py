@@ -23,7 +23,7 @@ from mem0.configs.nlp.config import CJK_LANGUAGES, EntityExtractionMode, NlpConf
 logger = logging.getLogger(__name__)
 
 _NER_LABELS_AS_PROPER = frozenset(
-    {"PERSON", "ORG", "GPE", "LOC", "PRODUCT", "EVENT", "WORK_OF_ART", "FAC", "LANGUAGE"}
+    {"PERSON", "ORG", "GPE", "LOC", "PRODUCT", "EVENT", "WORK_OF_ART", "FAC", "LANGUAGE", "NORP", "LAW"}
 )
 
 # Words that are too generic to be useful as entity heads
