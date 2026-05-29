@@ -63,7 +63,7 @@ def _resolve_nlp_config(nlp_config: Optional[NlpConfig]) -> NlpConfig:
     return nlp_config if nlp_config is not None else _DEFAULT_NLP_CONFIG
 
 
-def _load_spacy_model(model_name: str, *, disable: tuple[str, ...] | None, auto_download: bool):
+def _load_spacy_model(model_name: str, *, disable: Optional[tuple[str, ...]], auto_download: bool):
     key = _cache_key(model_name, disable)
     if key in _load_failed:
         return None
@@ -78,6 +78,11 @@ def _load_spacy_model(model_name: str, *, disable: tuple[str, ...] | None, auto_
 
         try:
             _ensure_model_available(model_name, auto_download=auto_download)
+        except Exception as e:
+            logger.warning("Failed to ensure spaCy model %s is available: %s", model_name, e)
+            return None
+
+        try:
             import spacy
 
             if disable:
