@@ -89,8 +89,8 @@ class NlpConfig(BaseModel):
 
     @property
     def language_code(self) -> str:
-        """Primary language subtag (e.g. zh from zh-cn)."""
-        return self.language.split("-")[0]
+        """Primary language subtag (e.g. zh from zh-cn or zh_cn)."""
+        return self.language.replace("_", "-").split("-")[0]
 
     @property
     def uses_ner_extraction(self) -> bool:

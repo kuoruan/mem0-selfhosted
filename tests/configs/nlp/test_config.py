@@ -45,6 +45,8 @@ class TestNlpConfig:
     def test_unsupported_language_when_disabled_ok(self):
         config = NlpConfig(enabled=False, language="invalid")
         assert config.enabled is False
+        assert config.language_code == "invalid"
+        assert config.resolve_model() is None
 
     def test_unsupported_language_with_explicit_model_ok(self):
         config = NlpConfig(language="invalid", model="en_core_web_sm")
