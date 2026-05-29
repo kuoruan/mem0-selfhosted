@@ -21,10 +21,9 @@ from compat.events import (
     events_visible_to_caller,
     resolve_event_owner_id,
 )
+from compat.helpers import normalize_results, normalize_results_dict
 from compat.requests import request_meta
 from compat.responses import (
-    normalize_results,
-    normalize_results_dict,
     pending_add_response,
     resolve_optional_pagination,
     sync_add_response,

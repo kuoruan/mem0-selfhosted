@@ -30,8 +30,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from cachetools import TTLCache
 from pydantic import BaseModel, ConfigDict, Field
 
-from compat.responses import normalize_results
-from compat.utils import now_iso as utc_now_iso
+from compat.helpers import normalize_results
+from compat.utils import iso_timestamp_or_now
 
 _EVENT_CACHE_TTL_SECONDS = 600  # 10 minutes
 _EVENT_CACHE_MAXSIZE = 10_000
@@ -76,7 +76,7 @@ class CompatEvent(BaseModel):
         cls, event_id: str, *, now_iso: Optional[str] = None, owner_user_id: Optional[str] = None
     ) -> "CompatEvent":
         """Build a queued ADD event returned immediately to the client."""
-        ts = utc_now_iso(now_iso)
+        ts = iso_timestamp_or_now(now_iso)
         return cls(
             id=event_id,
             event_type="ADD",
@@ -105,7 +105,7 @@ class CompatEvent(BaseModel):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> "CompatEvent":
         """Build a synthetic ADD event (default ``SUCCEEDED`` after background work)."""
-        ts = utc_now_iso(now_iso)
+        ts = iso_timestamp_or_now(now_iso)
         if completed_at is None and status == "SUCCEEDED":
             completed_at = ts
         return cls(
@@ -126,7 +126,7 @@ class CompatEvent(BaseModel):
 def create_pending_add_event(owner_user_id: Optional[str]) -> str:
     """Create a queued ADD event and return its id for client polling."""
     event_id = str(uuid.uuid4())
-    now_iso = utc_now_iso()
+    now_iso = iso_timestamp_or_now()
     event_cache_put(
         event_id,
         CompatEvent.pending(event_id, now_iso=now_iso, owner_user_id=owner_user_id),

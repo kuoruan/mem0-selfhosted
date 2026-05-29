@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
-from compat.responses import drop_none
+from compat.utils import drop_none
 
 
 def merge_v1_add_metadata(

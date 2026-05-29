@@ -1,7 +1,7 @@
-"""Response-shaping helpers for REST and MCP handlers.
+"""HTTP/MCP response envelopes for the client-compatible API.
 
-Normalises the varied return shapes from the ``Memory`` SDK into consistent
-list or dict formats expected by client SDKs and the MCP protocol.
+Pagination wrappers, add-route status bodies, and other response shapes built
+after SDK values are normalised (see ``helpers``).
 """
 
 import logging
@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from fastapi import Request
+
+from compat.helpers import normalize_results_dict
 
 API_UNSUPPORTED_DETAIL = "This API is not supported by the self-hosted server."
 logger = logging.getLogger("mem0.server.compat.responses")
@@ -19,42 +21,11 @@ def unsupported_api_error() -> HTTPException:
     return HTTPException(status_code=501, detail=API_UNSUPPORTED_DETAIL)
 
 
-def drop_none(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a copy of *d* with all ``None`` values removed."""
-    return {k: v for k, v in d.items() if v is not None}
-
-
-def normalize_results(raw: Any) -> List[Any]:
-    """Normalise SDK output to a plain ``list``.
-
-    Accepts ``{"results": [...]}``, a bare ``list``, or anything else
-    (returned as an empty list).
-    """
-    if isinstance(raw, dict) and "results" in raw and isinstance(raw["results"], list):
-        return raw["results"]
-    if isinstance(raw, list):
-        return raw
-    return []
-
-
-def normalize_results_dict(raw: Any, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Normalise SDK output to ``{"results": [...]}`` and merge *extra* into the result.
-
-    If *raw* is already a dict, its existing fields are preserved and only
-    ``results`` is normalised; *extra* is applied last and may override any key.
-    """
-    if isinstance(raw, dict):
-        base: Dict[str, Any] = {**raw, "results": normalize_results(raw)}
-    else:
-        base = {"results": normalize_results(raw)}
-    if extra:
-        base.update(extra)
-    return base
-
-
 def sync_add_response(raw: Any) -> Dict[str, Any]:
     """Envelope for synchronous v3/MCP add (``infer=False``)."""
-    return normalize_results_dict(raw, extra={"event_id": None, "status": "SUCCEEDED"})
+    return normalize_results_dict(
+        raw, extra={"message": "Memory added successfully.", "event_id": None, "status": "SUCCEEDED"}
+    )
 
 
 def pending_add_response(event_id: str) -> Dict[str, Any]:

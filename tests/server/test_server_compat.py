@@ -3,7 +3,8 @@
 Covers:
   - compat.scope: collect_entity_params, require_entity_scope,
                     build_search_filters, get_entity_field
-  - compat.responses: drop_none, normalize_results, normalize_results_dict
+  - compat.utils: drop_none
+  - compat.helpers: normalize_results, normalize_results_dict
   - compat.decorators: upstream_guard exception mapping
   - routers.compat helpers: build_list_filters, paginate_response,
                             warn_unsupported_fields, build_search_kwargs,
@@ -26,10 +27,12 @@ from mem0.exceptions import ValidationError as Mem0ValidationError
 from server.compat.events import event_cache_all, event_cache_clear, event_cache_get, event_cache_put, event_cache_update
 from server.compat.requests import RequestMeta
 from server.compat.decorators import upstream_guard
-from server.compat.responses import (
-    drop_none,
+from server.compat.helpers import (
     normalize_results,
     normalize_results_dict,
+)
+from server.compat.utils import drop_none
+from server.compat.responses import (
     resolve_optional_pagination,
 )
 from server.errors import UpstreamError

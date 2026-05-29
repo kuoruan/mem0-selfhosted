@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from compat.events import event_cache_update
-from compat.responses import normalize_results
+from compat.helpers import normalize_results
 from memory_lock import entity_scope_from_params, run_memory_write
 
 logger = logging.getLogger("mem0.server.compat.tasks")
