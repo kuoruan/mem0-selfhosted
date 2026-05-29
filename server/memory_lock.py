@@ -7,8 +7,10 @@
   serializes; different ids may run concurrently even under the same user scope.
 * **Global**: ``reset``, config reload, and cross-scope batch operations.
 
-``add`` for a scope and ``update`` on one memory in that scope are not held under
-one lock; clients that require strict ordering should serialize those calls.
+``add`` for a scope and ``update`` / ``delete`` on one memory in that scope use
+different per-key locks and may run concurrently under the same scope. Clients
+that require strict ordering (e.g. add then immediately update the same memory)
+must serialize those calls at the API layer.
 """
 
 import threading
@@ -24,7 +26,6 @@ from compat.scope import ENTITY_PARAMS
 _SCOPE_KEY_ORDER = ("agent_id", "app_id", "run_id", "user_id")
 
 ScopeLockKey = Tuple[Tuple[str, str], ...]
-_GLOBAL_LOCK_KEY: ScopeLockKey = ()
 
 
 class _RWGate:
@@ -38,11 +39,12 @@ class _RWGate:
         self._cond = threading.Condition()
         self._readers = 0
         self._writer = False
+        self._pending_writers = 0
 
     @contextmanager
     def read(self) -> Iterator[None]:
         with self._cond:
-            while self._writer:
+            while self._writer or self._pending_writers > 0:
                 self._cond.wait()
             self._readers += 1
         try:
@@ -56,15 +58,24 @@ class _RWGate:
     @contextmanager
     def write(self) -> Iterator[None]:
         with self._cond:
-            while self._writer or self._readers > 0:
-                self._cond.wait()
-            self._writer = True
+            self._pending_writers += 1
         try:
-            yield
+            with self._cond:
+                while self._writer or self._readers > 0:
+                    self._cond.wait()
+                self._pending_writers -= 1
+                self._writer = True
+            try:
+                yield
+            finally:
+                with self._cond:
+                    self._writer = False
+                    self._cond.notify_all()
         finally:
             with self._cond:
-                self._writer = False
-                self._cond.notify_all()
+                if self._pending_writers > 0 and not self._writer:
+                    self._pending_writers -= 1
+                    self._cond.notify_all()
 
 
 _GLOBAL_GATE = _RWGate()
@@ -196,10 +207,7 @@ def memory_scope_lock(
 
     if global_lock:
         with _GLOBAL_GATE.write():
-            key = _GLOBAL_LOCK_KEY
-            record = _get_lock_record(key)
-            with _hold_record(record, key):
-                yield
+            yield
         return
 
 
