@@ -96,7 +96,6 @@ from compat.scope import (
 from compat.tasks import run_v3_add_memory_task
 from memory_lock import (
     entity_scope_from_params,
-    memory_scope_lock,
     run_memory_write,
     run_memory_write_for_memory_id,
 )
@@ -576,14 +575,17 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
             detail=f"Too many updates ({len(body.memories)}). Maximum is 100 per request.",
         )
     updated_count = 0
-    with memory_scope_lock(global_lock=True):
-        mem = get_memory_instance()
-        for item in body.memories:
-            try:
-                merge_and_update(mem, item.memory_id, text=item.text, metadata=item.metadata)
-                updated_count += 1
-            except (HTTPException, ValueError):
-                continue
+    for item in body.memories:
+        try:
+            run_memory_write_for_memory_id(
+                lambda memory, it=item: merge_and_update(
+                    memory, it.memory_id, text=it.text, metadata=it.metadata
+                ),
+                item.memory_id,
+            )
+            updated_count += 1
+        except (HTTPException, ValueError):
+            continue
     return {"message": f"Memories updated successfully, count: {updated_count}."}
 
 
@@ -600,14 +602,15 @@ def v1_batch_delete(
     if len(memory_ids) > 1000:
         raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be deleted in a single request")
     deleted_count = 0
-    with memory_scope_lock(global_lock=True):
-        mem = get_memory_instance()
-        for memory_id in memory_ids:
-            try:
-                mem.delete(memory_id=memory_id)
-                deleted_count += 1
-            except ValueError:
-                continue
+    for memory_id in memory_ids:
+        try:
+            run_memory_write_for_memory_id(
+                lambda memory, mid=memory_id: memory.delete(memory_id=mid),
+                memory_id,
+            )
+            deleted_count += 1
+        except ValueError:
+            continue
     return {"message": f"Memories deleted successfully, count: {deleted_count}."}
 
 

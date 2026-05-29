@@ -25,6 +25,13 @@ def test_scope_lock_key_requires_at_least_one_field():
         scope_lock_key({})
 
 
+def test_scope_lock_key_includes_app_id():
+    assert scope_lock_key({"user_id": "u1", "app_id": "app-1"}) == (
+        ("app_id", "app-1"),
+        ("user_id", "u1"),
+    )
+
+
 def test_different_scopes_run_concurrently():
     order: list[str] = []
     barrier = threading.Barrier(2)
@@ -219,6 +226,63 @@ def test_global_lock_blocks_scoped_and_memory_id_locks():
     t_mem.join(timeout=2)
     assert global2_entered.wait(timeout=1)
     t_global2.join(timeout=2)
+
+
+def test_write_clears_pending_writers_when_wait_aborts():
+    """If write() aborts before acquiring, pending must not block readers forever."""
+    gate = memory_lock._RWGate()
+    gate._readers = 1
+
+    original_wait = gate._cond.wait
+
+    def abort_wait() -> None:
+        raise RuntimeError("abort wait")
+
+    gate._cond.wait = abort_wait  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="abort wait"):
+        with gate.write():
+            pass
+    gate._cond.wait = original_wait  # type: ignore[method-assign]
+
+    entered = threading.Event()
+
+    def reader() -> None:
+        with gate.read():
+            entered.set()
+
+    t = threading.Thread(target=reader)
+    t.start()
+    assert entered.wait(timeout=1)
+    t.join(timeout=1)
+
+
+def test_global_gate_writer_not_starved_by_continuous_readers():
+    """Pending global writes block new readers so write() eventually runs."""
+    gate = memory_lock._RWGate()
+    global_done = threading.Event()
+    stop_readers = threading.Event()
+
+    def reader() -> None:
+        while not stop_readers.is_set():
+            with gate.read():
+                pass
+
+    def global_write() -> None:
+        with gate.write():
+            global_done.set()
+
+    readers = [threading.Thread(target=reader, daemon=True) for _ in range(3)]
+    for thread in readers:
+        thread.start()
+
+    writer = threading.Thread(target=global_write)
+    writer.start()
+    assert global_done.wait(timeout=2)
+
+    stop_readers.set()
+    for thread in readers:
+        thread.join(timeout=1)
+    writer.join(timeout=1)
 
 
 def test_empty_scope_falls_back_to_global_lock():
