@@ -64,10 +64,11 @@ from compat.entities import list_entities_payload
 from compat.helpers import (
     build_search_kwargs,
     merge_and_update,
+    normalize_results,
+    normalize_results_dict,
     resolve_existing,
 )
 from compat.metadata import build_v3_add_extra_metadata, merge_v1_add_metadata, merge_v3_add_metadata
-from compat.helpers import normalize_results, normalize_results_dict
 from compat.utils import drop_none
 from compat.responses import (
     paginate_response,
