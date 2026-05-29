@@ -4,12 +4,15 @@ import pytest
 
 import memory_lock
 from memory_lock import (
+    LOCK_ACQUIRE_ORDER,
     memory_id_lock,
     memory_id_lock_key,
+    memory_id_lock_keys,
     memory_scope_lock,
     run_memory_write,
     run_memory_write_for_memory_id,
     scope_lock_key,
+    scope_lock_keys,
 )
 
 
@@ -23,6 +26,17 @@ def test_scope_lock_key_uses_sorted_field_order():
 def test_scope_lock_key_requires_at_least_one_field():
     with pytest.raises(ValueError, match="At least one entity scope"):
         scope_lock_key({})
+
+
+def test_lock_acquire_order_constant():
+    assert LOCK_ACQUIRE_ORDER == ("user_id", "agent_id", "app_id", "run_id", "memory_id")
+
+
+def test_scope_lock_keys_follow_acquire_order():
+    keys = scope_lock_keys(
+        {"user_id": "u", "agent_id": "a", "app_id": "p", "run_id": "r"},
+    )
+    assert [key[0][0] for key in keys] == ["user_id", "agent_id", "app_id", "run_id"]
 
 
 def test_scope_lock_key_includes_app_id():
@@ -59,11 +73,19 @@ def test_memory_id_lock_key():
     assert memory_id_lock_key("abc-123") == (("memory_id", "abc-123"),)
 
 
+def test_memory_id_lock_keys_follow_acquire_order():
+    keys = memory_id_lock_keys(
+        "mem-1",
+        {"user_id": "u", "agent_id": "a", "app_id": "p", "run_id": "r"},
+    )
+    assert [key[0][0] for key in keys] == ["user_id", "agent_id", "app_id", "run_id", "memory_id"]
+
+
 def test_different_memory_ids_run_concurrently(monkeypatch):
     order: list[str] = []
     barrier = threading.Barrier(2)
     sentinel = object()
-    monkeypatch.setattr("server_state.get_memory_instance", lambda: sentinel)
+    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: sentinel)
 
     def work(mid: str, label: str) -> None:
         with memory_id_lock(mid):
@@ -88,7 +110,7 @@ def test_same_memory_id_serializes_via_run_memory_write_for_memory_id(monkeypatc
     first_started = threading.Event()
     allow_first_finish = threading.Event()
     sentinel = object()
-    monkeypatch.setattr("server_state.get_memory_instance", lambda: sentinel)
+    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: sentinel)
 
     def slow(_memory):
         order.append("start")
@@ -140,7 +162,7 @@ def test_same_scope_serializes_writes(monkeypatch):
     first_started = threading.Event()
     allow_first_finish = threading.Event()
     sentinel = object()
-    monkeypatch.setattr("server_state.get_memory_instance", lambda: sentinel)
+    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: sentinel)
 
     def slow_write(_memory):
         order.append("start")
@@ -228,6 +250,22 @@ def test_global_lock_blocks_scoped_and_memory_id_locks():
     t_global2.join(timeout=2)
 
 
+def test_successful_write_does_not_double_decrement_pending_writers():
+    """Releasing one writer must not clear another writer's pending slot."""
+    gate = memory_lock._RWGate()
+    with gate._cond:
+        gate._pending_writers = 1  # simulate another writer already waiting
+
+    with gate.write():
+        with gate._cond:
+            assert gate._pending_writers == 1
+            assert gate._writer
+
+    with gate._cond:
+        assert gate._pending_writers == 1
+        assert not gate._writer
+
+
 def test_write_clears_pending_writers_when_wait_aborts():
     """If write() aborts before acquiring, pending must not block readers forever."""
     gate = memory_lock._RWGate()
@@ -285,8 +323,146 @@ def test_global_gate_writer_not_starved_by_continuous_readers():
     writer.join(timeout=1)
 
 
-def test_empty_scope_falls_back_to_global_lock():
-    """Unscoped write operations should not raise and should behave like global lock."""
+def test_memory_id_lock_with_entity_scope_blocks_delete_all(monkeypatch):
+    """Per-id write with user scope blocks concurrent delete_all for that user."""
+    order: list[str] = []
+    update_started = threading.Event()
+    allow_update_finish = threading.Event()
+    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: object())
+
+    def slow_update(_memory) -> None:
+        order.append("update-start")
+        update_started.set()
+        allow_update_finish.wait(timeout=1)
+        order.append("update-end")
+
+    def delete_all_worker() -> None:
+        run_memory_write(lambda _memory: order.append("delete-all"), {"user_id": "alice"})
+
+    t_update = threading.Thread(
+        target=lambda: run_memory_write_for_memory_id(
+            slow_update, "mem-1", entity_scope={"user_id": "alice"}, resolve_scope=False
+        )
+    )
+    t_delete = threading.Thread(target=delete_all_worker)
+    t_update.start()
+    t_delete.start()
+    assert update_started.wait(timeout=1)
+    assert "delete-all" not in order
+    allow_update_finish.set()
+    t_update.join(timeout=2)
+    t_delete.join(timeout=2)
+    assert order == ["update-start", "update-end", "delete-all"]
+
+
+def test_concurrent_add_user_and_user_agent_serialize(monkeypatch):
+    """run_memory_write on overlapping scopes must not overlap."""
+    order: list[str] = []
+    gate = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: object())
+
+    def slow_add(_memory) -> None:
+        order.append("add-start")
+        gate.set()
+        release.wait(timeout=1)
+        order.append("add-end")
+
+    def user_only() -> None:
+        run_memory_write(slow_add, {"user_id": "alice"})
+
+    def user_agent() -> None:
+        run_memory_write(slow_add, {"user_id": "alice", "agent_id": "bot"})
+
+    t1 = threading.Thread(target=user_only)
+    t2 = threading.Thread(target=user_agent)
+    t1.start()
+    t2.start()
+    assert gate.wait(timeout=1)
+    assert "add-start" in order and order.count("add-start") == 1
+    release.set()
+    t1.join(timeout=2)
+    t2.join(timeout=2)
+    assert order.count("add-start") == 2
+    assert order.count("add-end") == 2
+
+
+def test_lock_record_in_use_returns_to_zero_after_repeated_acquire():
+    key = (("user_id", "stress-user"),)
+    with memory_lock._registry_lock:
+        memory_lock._locks.clear()
+        memory_lock._lock_ttl.clear()
+
+    for _ in range(100):
+        record = memory_lock._get_lock_record(key)
+        with memory_lock._hold_record(record, key):
+            pass
+
+    with memory_lock._registry_lock:
+        assert memory_lock._locks[key].in_use == 0
+
+
+def test_resolve_scope_loads_memory_once(monkeypatch):
+    calls: list[str] = []
+    instance_ids: list[int] = []
+
+    class _Memory:
+        def get(self, memory_id: str):
+            calls.append(memory_id)
+            return {"id": memory_id, "user_id": "alice"}
+
+    mem = _Memory()
+
+    def _get_memory():
+        instance_ids.append(id(mem))
+        return mem
+
+    monkeypatch.setattr("memory_lock.get_memory_instance", _get_memory)
+
+    run_memory_write_for_memory_id(lambda _m: None, "mem-1", resolve_scope=True)
+    assert calls == ["mem-1"]
+    assert len(instance_ids) == 1
+
+
+def test_user_scope_blocks_user_plus_agent_scope():
+    """Ancestor user_id lock serializes user-only and user+agent writers."""
+    order: list[str] = []
+    first_started = threading.Event()
+    allow_first_finish = threading.Event()
+
+    def user_only() -> None:
+        with memory_scope_lock({"user_id": "alice"}):
+            order.append("user-start")
+            if not first_started.is_set():
+                first_started.set()
+                allow_first_finish.wait(timeout=1)
+            order.append("user-end")
+
+    def user_and_agent() -> None:
+        with memory_scope_lock({"user_id": "alice", "agent_id": "a1"}):
+            order.append("ua-start")
+            order.append("ua-end")
+
+    t1 = threading.Thread(target=user_only)
+    t2 = threading.Thread(target=user_and_agent)
+    t1.start()
+    t2.start()
+    assert first_started.wait(timeout=1)
+    allow_first_finish.set()
+    t1.join(timeout=2)
+    t2.join(timeout=2)
+
+    assert order == ["user-start", "user-end", "ua-start", "ua-end"]
+
+
+def test_empty_scope_requires_explicit_global_lock():
+    """Empty scope without global_lock must fail fast."""
+    with pytest.raises(ValueError, match="At least one entity scope"):
+        with memory_scope_lock({}):
+            pass
+
+
+def test_empty_scope_with_global_lock_blocks_scoped_writes():
     started_scoped = threading.Event()
     allow_scoped_finish = threading.Event()
     empty_entered = threading.Event()
@@ -297,7 +473,7 @@ def test_empty_scope_falls_back_to_global_lock():
             allow_scoped_finish.wait(timeout=2)
 
     def empty_scope_worker():
-        with memory_scope_lock({}):
+        with memory_scope_lock({}, global_lock=True):
             empty_entered.set()
 
     t_scoped = threading.Thread(target=scoped_worker)

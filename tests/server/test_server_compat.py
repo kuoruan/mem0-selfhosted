@@ -1051,6 +1051,7 @@ class TestSyntheticEvents:
         get_mem = lambda: mem
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1080,6 +1081,7 @@ class TestSyntheticEvents:
         get_mem = lambda: mem
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1119,6 +1121,7 @@ class TestSyntheticEvents:
         get_mem = lambda: mem
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1144,6 +1147,7 @@ class TestSyntheticEvents:
         get_mem = lambda: mem
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1181,6 +1185,7 @@ class TestSyntheticEvents:
         get_mem = lambda: mem
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
@@ -1211,6 +1216,7 @@ class TestSyntheticEvents:
         get_mem = lambda: mem
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
 
         with pytest.raises(UpstreamError):
             v3_add_memory(
@@ -1230,6 +1236,7 @@ class TestSyntheticEvents:
         get_mem = lambda: mem
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
         monkeypatch.setattr(compat_tasks.time, "perf_counter", MagicMock(side_effect=[10.0, 10.25]))
 
         tasks = BackgroundTasks()
@@ -1251,6 +1258,7 @@ class TestSyntheticEvents:
         get_mem = lambda: mem
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
