@@ -363,6 +363,31 @@ class TestNormalizeResultsDict:
         }
 
 
+class TestResolveEventOwnerId:
+    def test_extracts_from_user_object(self):
+        from compat.events import resolve_event_owner_id
+
+        auth = MagicMock()
+        auth.id = "user-1"
+        assert resolve_event_owner_id(auth) == "user-1"
+
+    def test_extracts_from_dict_id(self):
+        from compat.events import resolve_event_owner_id
+
+        assert resolve_event_owner_id({"id": "user-2"}) == "user-2"
+
+    def test_extracts_id_from_auth_list(self):
+        from compat.events import resolve_event_owner_id
+
+        assert resolve_event_owner_id([{"id": "user-3"}]) == "user-3"
+
+    def test_falls_back_to_entity_params_user_id(self):
+        from compat.events import resolve_event_owner_id
+
+        assert resolve_event_owner_id(None, {"user_id": "scoped-user"}) == "scoped-user"
+        assert resolve_event_owner_id([], {"user_id": "scoped-user"}) == "scoped-user"
+
+
 class TestCompatEvent:
     def test_pending_sets_timestamps_and_empty_results(self):
         from compat.events import CompatEvent
@@ -509,6 +534,29 @@ class TestEventCacheCopies:
         fresh = event_cache_get("evt-1")
         assert fresh is not None
         assert fresh["status"] == "SUCCEEDED"
+
+    def test_update_preserves_owner_user_id(self):
+        event_cache_put(
+            "evt-1",
+            {
+                "id": "evt-1",
+                "event_type": "ADD",
+                "status": "PENDING",
+                "payload": {},
+                "metadata": None,
+                "results": [],
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+                "started_at": "2024-01-01T00:00:00+00:00",
+                "completed_at": None,
+                "latency": None,
+                "owner_user_id": "user-1",
+            },
+        )
+
+        updated = event_cache_update("evt-1", status="SUCCEEDED", owner_user_id="user-2")
+        assert updated is not None
+        assert updated["owner_user_id"] == "user-1"
 
 
 # ---------------------------------------------------------------------------
@@ -1009,7 +1057,7 @@ class TestSyntheticEvents:
         tasks = BackgroundTasks()
 
         result = v3_add_memory(
-            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1"),
+            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
             auth=None,
@@ -1038,13 +1086,13 @@ class TestSyntheticEvents:
         tasks = BackgroundTasks()
 
         v3_add_memory(
-            MemoryAddInputV3(messages=[{"role": "user", "content": "first"}], app_id="app1"),
+            MemoryAddInputV3(messages=[{"role": "user", "content": "first"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
             auth=None,
         )
         v3_add_memory(
-            MemoryAddInputV3(messages=[{"role": "user", "content": "second"}], app_id="app1"),
+            MemoryAddInputV3(messages=[{"role": "user", "content": "second"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
             auth=None,
@@ -1067,7 +1115,7 @@ class TestSyntheticEvents:
         assert first_page["next"] is not None
         assert second_page["previous"] is not None
 
-    def test_v1_get_event_visible_to_other_user_in_same_server_context(self, monkeypatch):
+    def test_v1_get_event_denied_for_other_user(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
         get_mem = lambda: mem
@@ -1082,16 +1130,17 @@ class TestSyntheticEvents:
         other.id = "user-2"
 
         result = v3_add_memory(
-            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1"),
+            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
             auth=owner,
         )
 
-        visible = v1_get_event(result["event_id"], auth=other)
-        assert visible["id"] == result["event_id"]
+        with pytest.raises(HTTPException) as exc:
+            v1_get_event(result["event_id"], auth=other)
+        assert exc.value.status_code == 404
 
-    def test_v1_list_events_returns_project_visible_events(self, monkeypatch):
+    def test_v1_list_events_filters_by_owner(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
         get_mem = lambda: mem
@@ -1106,13 +1155,13 @@ class TestSyntheticEvents:
         user2.id = "user-2"
 
         v3_add_memory(
-            MemoryAddInputV3(messages=[{"role": "user", "content": "u1"}], app_id="app1"),
+            MemoryAddInputV3(messages=[{"role": "user", "content": "u1"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
             auth=user1,
         )
         v3_add_memory(
-            MemoryAddInputV3(messages=[{"role": "user", "content": "u2"}], app_id="app1"),
+            MemoryAddInputV3(messages=[{"role": "user", "content": "u2"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
             auth=user2,
@@ -1124,9 +1173,57 @@ class TestSyntheticEvents:
         req.query_params = {"page": "1", "page_size": "10"}
 
         listed = v1_list_events(request=req, page=1, page_size=10, auth=user1)
-        assert listed["count"] == 2
-        assert len(listed["results"]) == 2
-        assert {item["id"] for item in listed["results"]}
+        assert listed["count"] == 1
+        assert len(listed["results"]) == 1
+        assert listed["results"][0]["owner_user_id"] == "user-1"
+
+    def test_v3_add_infer_false_returns_results_immediately(self, monkeypatch):
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "verbatim"}]}
+        get_mem = lambda: mem
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+
+        tasks = BackgroundTasks()
+        result = v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "remember"}],
+                app_id="app1",
+                infer=False,
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=None,
+        )
+
+        assert result == {
+            "results": [{"id": "m1", "memory": "verbatim"}],
+            "event_id": None,
+            "status": "SUCCEEDED",
+        }
+        assert tasks.tasks == []
+        mem.add.assert_called_once()
+        call_kwargs = mem.add.call_args.kwargs
+        assert call_kwargs["infer"] is False
+
+    def test_v3_add_infer_false_failure_surfaces_from_add(self, monkeypatch):
+        mem = MagicMock()
+        mem.add.side_effect = RuntimeError("boom")
+        get_mem = lambda: mem
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+
+        with pytest.raises(UpstreamError):
+            v3_add_memory(
+                MemoryAddInputV3(
+                    messages=[{"role": "user", "content": "remember"}],
+                    app_id="app1",
+                    infer=False,
+                ),
+                background_tasks=BackgroundTasks(),
+                meta=RequestMeta(),
+                auth=None,
+            )
 
     def test_v3_add_event_latency_is_recorded_in_milliseconds(self, monkeypatch):
         mem = MagicMock()
@@ -1138,7 +1235,7 @@ class TestSyntheticEvents:
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
-            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1"),
+            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
             auth=None,
@@ -1158,7 +1255,7 @@ class TestSyntheticEvents:
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
-            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1"),
+            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
             auth=None,

@@ -51,7 +51,6 @@ Stub endpoints (501 Not Implemented)
 
 import json
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -74,9 +73,18 @@ from compat.responses import (
     drop_none,
     normalize_results,
     normalize_results_dict,
+    pending_add_response,
+    sync_add_response,
     unsupported_api_error,
 )
-from compat.events import CompatEvent, event_cache_all, event_cache_get, event_cache_put
+from compat.events import (
+    create_pending_add_event,
+    event_access_allowed,
+    event_cache_all,
+    event_cache_get,
+    events_visible_to_caller,
+    resolve_event_owner_id,
+)
 from compat.scope import (
     VALID_ENTITY_TYPES,
     append_search_convenience_filters,
@@ -276,7 +284,12 @@ class MemoryAddInputV3(BaseModel):
         default=None, description="Filters containing entity IDs (e.g. {'user_id': '...'})."
     )
     infer: Optional[bool] = Field(
-        default=None, description="When `false`, stores each message verbatim without running the extraction LLM."
+        default=None,
+        description=(
+            "When `false`, stores each message verbatim without the extraction LLM and returns "
+            "`results` synchronously. When `true` or omitted, runs extraction asynchronously and "
+            "returns `event_id` + `status: PENDING`."
+        ),
     )
     custom_categories: Optional[List[Dict[str, Any]]] = Field(
         default=None, description="A list of categories with category name and its description."
@@ -519,7 +532,9 @@ def v1_list_events(
 
     Returns events from the in-memory TTL cache populated by add operations.
     """
-    return paginate_response(request, event_cache_all(), page, page_size)
+    caller_id = resolve_event_owner_id(auth)
+    user_events = events_visible_to_caller(event_cache_all(), caller_id)
+    return paginate_response(request, user_events, page, page_size)
 
 
 @router.get("/v1/event/{event_id}/", include_in_schema=False)
@@ -530,7 +545,8 @@ def v1_get_event(event_id: str, auth=Depends(verify_auth)):
     Returns the SUCCEEDED event object from the in-memory TTL cache.
     """
     obj = event_cache_get(event_id)
-    if obj is None:
+    caller_id = resolve_event_owner_id(auth)
+    if obj is None or not event_access_allowed(obj, caller_id):
         raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found.")
     return obj
 
@@ -633,7 +649,7 @@ def v2_list_memories(
 ):
     entity_params = require_entity_scope(
         filters=body.filters,
-        detail="One of the filters: user_id, agent_id, app_id, or run_id is required!",
+        detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
     )
     raw = get_memory_instance().get_all(filters=build_list_filters(body, entity_params))
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
@@ -714,7 +730,6 @@ def v3_add_memory(
         {
             **entity_params,
             "metadata": body.metadata,
-            "infer": body.infer,
         }
     )
     extra_md = build_v3_add_extra_metadata(
@@ -733,19 +748,22 @@ def v3_add_memory(
         extra_metadata=extra_md,
     )
 
-    # Synthesize an event entry so GET /v1/event/{event_id} works for polling.
-    # Add is processed asynchronously in a background task, so we return PENDING.
-    event_id = str(uuid.uuid4())
-    now_iso = datetime.now(timezone.utc).isoformat()
+    # Hybrid write path (same semantics as MCP add_memory):
+    #   infer=False — fast path: no LLM, sync response with memory ids.
+    #   infer=True or omitted — slow path: extraction + dedup, async + event_id (hosted v3 default).
+    if body.infer is False:
+        params["infer"] = False
+        raw = run_memory_write(
+            lambda memory: memory.add(messages=body.messages, **params),
+            entity_params,
+        )
+        return sync_add_response(raw)
+    elif body.infer is True:
+        params["infer"] = True
 
-    event_cache_put(event_id, CompatEvent.pending(event_id, now_iso=now_iso))
+    event_id = create_pending_add_event(resolve_event_owner_id(auth, entity_params))
     background_tasks.add_task(run_v3_add_memory_task, event_id, body.messages, params)
-
-    return {
-        "message": "Memory processing has been queued for background execution.",
-        "event_id": event_id,
-        "status": "PENDING",
-    }
+    return pending_add_response(event_id)
 
 
 @router.post("/v3/memories/", include_in_schema=False)
