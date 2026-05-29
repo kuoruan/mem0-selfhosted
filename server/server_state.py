@@ -7,8 +7,6 @@ from typing import Any, Callable, Dict
 
 from mem0 import Memory
 
-from memory_lock import memory_scope_lock
-
 _state_lock = threading.RLock()
 _current_config: Dict[str, Any] = {}
 _memory_instance: Memory | None = None
@@ -130,6 +128,8 @@ def _config_effectively_changed(old: Dict[str, Any], new: Dict[str, Any]) -> boo
 
 
 def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:
+    from memory_lock import memory_scope_lock
+
     global _current_config, _memory_instance
     with memory_scope_lock(global_lock=True):
         with _state_lock:

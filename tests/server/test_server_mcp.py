@@ -94,6 +94,7 @@ def mcp_testbed(monkeypatch):
     get_memory = lambda: mock_memory
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
     monkeypatch.setattr("server_state.get_memory_instance", get_memory)
+    monkeypatch.setattr("memory_lock.get_memory_instance", get_memory)
     monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
 
     app = FastAPI()
@@ -244,6 +245,7 @@ def mcp_testbed_authed(monkeypatch):
     get_memory = lambda: mock_memory
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
     monkeypatch.setattr("server_state.get_memory_instance", get_memory)
+    monkeypatch.setattr("memory_lock.get_memory_instance", get_memory)
     monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
 
     auth_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
