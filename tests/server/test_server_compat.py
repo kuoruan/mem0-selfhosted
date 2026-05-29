@@ -379,16 +379,17 @@ class TestResolveEventOwnerId:
 
         assert resolve_event_owner_id({"id": "user-2"}) == "user-2"
 
-    def test_extracts_id_from_auth_list(self):
+    def test_list_auth_ignores_embedded_id(self):
         from compat.events import resolve_event_owner_id
 
-        assert resolve_event_owner_id([{"id": "user-3"}]) == "user-3"
+        assert resolve_event_owner_id([{"id": "user-3"}]) is None
 
     def test_falls_back_to_entity_params_user_id(self):
         from compat.events import resolve_event_owner_id
 
         assert resolve_event_owner_id(None, {"user_id": "scoped-user"}) == "scoped-user"
         assert resolve_event_owner_id([], {"user_id": "scoped-user"}) == "scoped-user"
+        assert resolve_event_owner_id([{"id": "user-3"}], {"user_id": "scoped-user"}) == "scoped-user"
 
 
 class TestCompatEvent:
