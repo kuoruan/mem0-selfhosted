@@ -280,7 +280,7 @@ def test_create_col(azure_ai_search_instance):
 
     # Check basic properties
     assert index.name == "test-index"
-    assert len(index.fields) == 6  # id, user_id, run_id, agent_id, vector, payload
+    assert len(index.fields) == 7  # id, user_id, run_id, agent_id, app_id, vector, payload
 
     # Check that required fields are present
     field_names = [f.name for f in index.fields]
@@ -290,6 +290,7 @@ def test_create_col(azure_ai_search_instance):
     assert "user_id" in field_names
     assert "run_id" in field_names
     assert "agent_id" in field_names
+    assert "app_id" in field_names
 
     # Check that id is the key field
     id_field = next(f for f in index.fields if f.name == "id")

@@ -140,7 +140,7 @@ class MilvusDB(VectorStoreBase):
         """Prepare filters for efficient query.
 
         Args:
-            filters (dict): filters [user_id, agent_id, run_id]
+            filters (dict): filters [user_id, agent_id, app_id, run_id]
 
         Returns:
             str: formated filter.
