@@ -811,7 +811,7 @@ class Memory(MemoryBase):
                 continue
             seen_hashes.add(mem_hash)
 
-            text_lemmatized = await asyncio.to_thread(self._lemmatize_for_bm25, text)
+            text_lemmatized = self._lemmatize_for_bm25(text)
 
             memory_id = str(uuid.uuid4())
             mem_metadata = deepcopy(metadata)
