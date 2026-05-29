@@ -81,7 +81,13 @@ def _load_spacy_model(model_name: str, *, disable: tuple[str, ...] | None, auto_
             import spacy
 
             if disable:
-                nlp = spacy.load(model_name, disable=disable)
+                try:
+                    meta = spacy.util.get_model_meta(model_name)
+                    pipeline = meta.get("pipeline", [])
+                    actual_disable = [c for c in disable if c in pipeline]
+                except Exception:
+                    actual_disable = disable
+                nlp = spacy.load(model_name, disable=actual_disable)
             else:
                 nlp = spacy.load(model_name)
             _nlp_cache[key] = nlp
@@ -108,7 +114,6 @@ def get_nlp_lemma(nlp_config: Optional[NlpConfig] = None):
     if not config.enabled:
         return None
     model_name = config.resolve_model(variant="lemma")
-    # xx_ent_wiki_sm has no parser; disabling missing components is safe in spaCy 3.x
     return _load_spacy_model(model_name, disable=("ner", "parser"), auto_download=config.auto_download)
 
 
