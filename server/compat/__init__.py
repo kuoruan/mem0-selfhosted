@@ -14,9 +14,13 @@ entities
     Discover and aggregate entities from vector-store payloads for list/detail
     APIs (compat router, ``routers/entities``, MCP).
 
+helpers
+    Cross-route ``Memory`` helpers — SDK result normalisation, search kwargs,
+    fetch-or-404, update merge.
+
 responses
-    Normalise ``Memory`` return values into shapes expected by hosted clients;
-    pagination envelopes; HTTP/MCP response bodies for memory writes.
+    Pagination wrappers and HTTP/MCP response bodies (status envelopes, 501
+    stubs, unsupported-field warnings).
 
 events
     Process-local synthetic event cache for deferred writes — models, TTL
@@ -24,10 +28,7 @@ events
 
 tasks
     Background workers that complete deferred operations and update the event
-    cache; small write-path utilities tied to those workers.
-
-helpers
-    Cross-route ``Memory`` helpers (fetch-or-404, search kwargs, update merge).
+    cache.
 
 metadata
     Rules for merging caller metadata with request headers and version-specific
@@ -40,8 +41,7 @@ decorators
     Shared guards and exception mapping (e.g. upstream provider errors).
 
 utils
-    Generic, domain-free helpers (timestamps). Keep Mem0-specific logic in the
-    modules above.
+    Generic, domain-free helpers (timestamps, ``drop_none`` for kwargs).
 
 When adding code, place it by *what it does*, not by which router called it
 first. Update this doc only when a new submodule appears or a module's role

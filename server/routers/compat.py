@@ -67,12 +67,11 @@ from compat.helpers import (
     resolve_existing,
 )
 from compat.metadata import build_v3_add_extra_metadata, merge_v1_add_metadata, merge_v3_add_metadata
+from compat.helpers import normalize_results, normalize_results_dict
+from compat.utils import drop_none
 from compat.responses import (
     paginate_response,
     warn_unsupported_fields,
-    drop_none,
-    normalize_results,
-    normalize_results_dict,
     pending_add_response,
     sync_add_response,
     unsupported_api_error,

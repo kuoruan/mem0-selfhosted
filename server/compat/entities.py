@@ -11,7 +11,7 @@ from typing import Any, Iterable, Literal, Mapping, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from compat.scope import COMPAT_TYPE_TO_FIELD
-from compat.utils import datetime_to_iso, parse_timestamp
+from compat.utils import format_iso_timestamp, parse_iso_timestamp
 from server_state import get_memory_instance
 
 CompatEntityType = Literal["user", "agent", "app", "run"]
@@ -50,8 +50,8 @@ class CompatEntity(BaseModel):
             name=entity_id,
             type=entity_type,
             total_memories=total_memories,
-            created_at=datetime_to_iso(created_at),
-            updated_at=datetime_to_iso(updated_at),
+            created_at=format_iso_timestamp(created_at),
+            updated_at=format_iso_timestamp(updated_at),
             metadata=metadata or {},
         )
 
@@ -91,8 +91,8 @@ def aggregate_entity_buckets(
     )
 
     for payload in payloads:
-        created = parse_timestamp(payload.get("created_at"))
-        updated = parse_timestamp(payload.get("updated_at")) or created
+        created = parse_iso_timestamp(payload.get("created_at"))
+        updated = parse_iso_timestamp(payload.get("updated_at")) or created
 
         for entity_type, field in type_to_field.items():
             value = payload.get(field)
