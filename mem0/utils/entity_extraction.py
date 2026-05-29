@@ -226,7 +226,8 @@ def _extract_entities_from_doc(
     if run_ner:
         for ent in doc.ents:
             ent_text = ent.text.strip()
-            if len(ent_text) <= 2:
+            min_len = 1 if language_code in CJK_LANGUAGES else 3
+            if len(ent_text) < min_len:
                 continue
             entity_type = "PROPER" if ent.label_ in _NER_LABELS_AS_PROPER else "COMPOUND"
             entities.append((entity_type, ent_text))
@@ -282,7 +283,7 @@ def _extract_entities_from_doc(
 
     # === NOUN-NOUN COMPOUNDS ===
     if not run_heuristics:
-        return _finalize_entities(entities)
+        return _finalize_entities(entities, language_code=language_code)
 
     for chunk in doc.noun_chunks:
         chunk_tokens = list(chunk)
@@ -376,16 +377,17 @@ def _extract_entities_from_doc(
                     entities.append(("COMPOUND", phrase))
                     processed.add(phrase.lower())
 
-    return _finalize_entities(entities)
+    return _finalize_entities(entities, language_code=language_code)
 
 
-def _finalize_entities(entities: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+def _finalize_entities(entities: List[Tuple[str, str]], language_code: str = "en") -> List[Tuple[str, str]]:
     # === DEDUPLICATION & CLEANUP ===
+    min_len = 1 if language_code in CJK_LANGUAGES else 3
     seen: set = set()
     deduped = []
     for t, e in entities:
         k = e.lower().strip()
-        if k not in seen and len(k) > 2:
+        if k not in seen and len(k) >= min_len:
             seen.add(k)
             deduped.append((t, e))
 
@@ -394,7 +396,7 @@ def _finalize_entities(entities: List[Tuple[str, str]]) -> List[Tuple[str, str]]
         txt = re.sub(r"^\*+\s*|\s*\*+$", "", etext.strip())
         txt = re.sub(r"\s*:+$", "", txt)
         txt = re.sub(r"^\d+\s*\.\s*", "", txt)
-        if not txt or len(txt) <= 2 or _has_artifacts(txt):
+        if not txt or len(txt) < min_len or _has_artifacts(txt):
             continue
         if etype == "PROPER" and " " not in txt and txt.lower() in _GENERIC_CAPS:
             continue

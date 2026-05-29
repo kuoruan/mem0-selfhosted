@@ -18,7 +18,7 @@ def _make_doc(text: str, *, ents=None, noun_chunks=None):
     doc.noun_chunks = noun_chunks
 
     # Empty token loop for PROPER heuristic path
-    doc.__iter__ = lambda self: iter([])
+    doc.__iter__.return_value = []
     return doc
 
 
@@ -29,7 +29,7 @@ class TestEntityExtractionModes:
         ent.label_ = "ORG"
 
         chunk = MagicMock()
-        chunk.__iter__ = lambda self: iter([MagicMock(text="machine", lemma_="machine", pos_="NOUN")])
+        chunk.__iter__.return_value = [MagicMock(text="machine", lemma_="machine", pos_="NOUN")]
 
         doc = _make_doc("OpenAI and machine learning", ents=[ent], noun_chunks=[chunk])
         result = _extract_entities_from_doc(doc, entity_extraction="ner", language_code="en")
