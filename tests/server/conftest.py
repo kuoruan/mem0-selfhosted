@@ -5,8 +5,11 @@ server/ modules use flat imports (``from auth import ...``,
 ``from compat.scope import ...``) because their runtime sys.path includes the
 ``server/`` directory.  Pytest runs from the repo root where only ``"."`` is in
 pythonpath, so we register short-name aliases here once, before any test module
-is imported.  Only ``auth`` is stubbed (MagicMock); all other modules are
-aliased from their real ``server.`` package paths.
+is imported.
+
+- ``auth`` (flat) is a MagicMock so routers load without a DB.
+- ``main`` is **not** imported here (module-level ``initialize_state``); load it
+  lazily inside fixtures via ``import main`` after patching ``Memory.from_config``.
 """
 
 import sys
@@ -38,7 +41,8 @@ try:
 
     sys.modules.setdefault("telemetry", _telemetry)
 
-    # -- auth: must stay a MagicMock — real module needs sqlalchemy/DB ----------
+    # -- auth: flat ``auth`` is a MagicMock for router imports. Bcrypt tests load
+    # the real module lazily via importlib (see TestBcryptHelpers).
     sys.modules.setdefault("auth", MagicMock())
 
     # -- Layer 1: compat sub-modules (depend on errors, server_state) ----------
@@ -57,6 +61,18 @@ try:
     import server.compat.decorators as _compat_decorators
 
     sys.modules.setdefault("compat.decorators", _compat_decorators)
+
+    import server.compat.events as _compat_events
+    import server.compat.helpers as _compat_helpers
+    import server.compat.requests as _compat_requests
+    import server.compat.tasks as _compat_tasks
+    import server.compat.utils as _compat_utils
+
+    sys.modules.setdefault("compat.events", _compat_events)
+    sys.modules.setdefault("compat.helpers", _compat_helpers)
+    sys.modules.setdefault("compat.requests", _compat_requests)
+    sys.modules.setdefault("compat.tasks", _compat_tasks)
+    sys.modules.setdefault("compat.utils", _compat_utils)
 
     # -- Layer 2: db / models (models imports db at module level) --------------
     import server.db as _db
@@ -77,8 +93,10 @@ try:
     sys.modules.setdefault("mcp_server", _mcp_server)
 
     import server.routers as _routers
+    import server.routers.compat as _routers_compat
 
     sys.modules.setdefault("routers", _routers)
+    sys.modules.setdefault("routers.compat", _routers_compat)
 
 except ImportError:
     # fastapi not installed — server tests will be skipped via importorskip

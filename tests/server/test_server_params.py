@@ -42,7 +42,7 @@ def _mock_memory():
 @pytest.fixture
 def client(_mock_memory):
     """Return a TestClient wired to the server app with mocked Memory."""
-    import server.main as server_main
+    import main as server_main
     with patch.dict(os.environ, {"ADMIN_API_KEY": ""}):
         importlib.reload(server_main)
     return TestClient(server_main.app)

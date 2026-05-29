@@ -48,7 +48,7 @@ def _mock_memory():
 
 def _load_app(env_overrides: dict):
     """Reload server/main.py with the given environment and return the FastAPI app."""
-    import server.main as server_main
+    import main as server_main
 
     with patch.dict(os.environ, env_overrides, clear=False):
         importlib.reload(server_main)
@@ -434,7 +434,7 @@ class TestAuthEdgeCases:
 
     def test_key_env_var_not_present_at_all(self):
         """When the env var is completely absent, auth should be disabled."""
-        import server.main as server_main
+        import main as server_main
         env = os.environ.copy()
         env.pop("ADMIN_API_KEY", None)
         with patch.dict(os.environ, env, clear=True):
@@ -512,8 +512,9 @@ class TestBcryptHelpers:
 
     @pytest.fixture(autouse=True)
     def _import_auth(self):
-        import server.auth as auth_mod
-        self.auth = auth_mod
+        import importlib
+
+        self.auth = importlib.import_module("server.auth")
 
     def test_hash_password_returns_valid_bcrypt_hash(self):
         h = self.auth.hash_password("secret")
