@@ -1,8 +1,6 @@
 import contextvars
 import logging
-import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
 import anyio
@@ -15,9 +13,22 @@ from pydantic import Field
 
 from auth import verify_auth
 from compat.entities import list_entities_payload
-from compat.events import CompatEvent, event_cache_all, event_cache_get, event_cache_put
+from compat.events import (
+    create_pending_add_event,
+    event_access_allowed,
+    event_cache_all,
+    event_cache_get,
+    events_visible_to_caller,
+    resolve_event_owner_id,
+)
 from compat.requests import request_meta
-from compat.responses import normalize_results, normalize_results_dict, resolve_optional_pagination
+from compat.responses import (
+    normalize_results,
+    normalize_results_dict,
+    pending_add_response,
+    resolve_optional_pagination,
+    sync_add_response,
+)
 from compat.scope import build_search_filters, collect_entity_params, require_entity_scope
 from compat.tasks import run_v3_add_memory_task
 from memory_lock import run_memory_write, run_memory_write_for_memory_id
@@ -29,14 +40,15 @@ auth_user_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("m
 platform_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("mcp_platform", default=None)
 mem0_source_var: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_mem0_source", default="MCP")
 
-# Avoid unbounded thread spawning on MCP writes.
+# Background pool for infer=True adds only (LLM extraction can take seconds).
 _ADD_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mcp-add-memory")
 
 mcp = FastMCP("mem0")
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP Endpoints"])
 
 
-def _fallback_uid() -> str | None:
+def _mcp_auth_user_id() -> str | None:
+    """Authenticated user id from the current MCP request context."""
     return auth_user_id_var.get()
 
 
@@ -44,7 +56,8 @@ def _fallback_uid() -> str | None:
     description=(
         "Store a new preference, fact, or conversation snippet. "
         "Requires at least one: user_id, agent_id, app_id or run_id. "
-        "Returns an event_id for async polling via get_event_status."
+        "When infer=False, returns memory results immediately. "
+        "When infer=True (default), returns event_id — poll get_event_status until SUCCEEDED."
     )
 )
 def add_memory(
@@ -63,7 +76,13 @@ def add_memory(
     app_id: Annotated[Optional[str], Field(default=None, description="Optional app identifier.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Optional run identifier.")] = None,
     infer: Annotated[
-        bool, Field(default=True, description="When False, store text verbatim without LLM fact extraction.")
+        bool,
+        Field(
+            description=(
+                "When False, store verbatim (sync results). When True (default), run LLM fact extraction "
+                "(async event_id)."
+            ),
+        ),
     ] = True,
     metadata: Annotated[
         Optional[dict[str, Any]], Field(default=None, description="Attach arbitrary metadata JSON to the memory.")
@@ -78,7 +97,7 @@ def add_memory(
         agent_id=agent_id,
         app_id=app_id,
         run_id=run_id,
-        fallback_user_id=_fallback_uid(),
+        fallback_user_id=_mcp_auth_user_id(),
     )
     conversation = messages if messages is not None else [{"role": "user", "content": text}]
     add_kwargs: dict[str, Any] = {**scope}
@@ -87,19 +106,23 @@ def add_memory(
     if platform := platform_var.get():
         base_md["platform"] = platform
     add_kwargs["metadata"] = {**base_md, **(metadata or {})}
-    if not infer:
+
+    # Hybrid write path (same semantics as REST POST /v3/memories/add/):
+    #   infer=False — fast path: no LLM, sync response with memory ids.
+    #   infer=True  — slow path: extraction + dedup, async + event_id.
+    if infer is False:
         add_kwargs["infer"] = False
+        raw = run_memory_write(
+            lambda memory: memory.add(messages=conversation, **add_kwargs),
+            scope,
+        )
+        return sync_add_response(raw)
+    elif infer is True:
+        add_kwargs["infer"] = True
 
-    event_id = str(uuid.uuid4())
-    now_iso = datetime.now(timezone.utc).isoformat()
-    event_cache_put(event_id, CompatEvent.pending(event_id, now_iso=now_iso))
+    event_id = create_pending_add_event(_mcp_auth_user_id() or resolve_event_owner_id(None, scope))
     _ADD_EXECUTOR.submit(run_v3_add_memory_task, event_id, conversation, add_kwargs)
-
-    return {
-        "message": "Memory processing has been queued for background execution.",
-        "event_id": event_id,
-        "status": "PENDING",
-    }
+    return pending_add_response(event_id)
 
 
 @mcp.tool(
@@ -137,7 +160,7 @@ def search_memories(
         app_id=app_id,
         run_id=run_id,
         filters=filters,
-        fallback_user_id=_fallback_uid(),
+        fallback_user_id=_mcp_auth_user_id(),
     )
     search_kwargs: dict[str, Any] = {"filters": scoped_filters}
     if top_k is not None:
@@ -178,7 +201,7 @@ def get_memories(
         app_id=app_id,
         run_id=run_id,
         filters=filters,
-        fallback_user_id=_fallback_uid(),
+        fallback_user_id=_mcp_auth_user_id(),
     )
 
     raw = get_memory_instance().get_all(filters=scoped_filters)
@@ -240,7 +263,7 @@ def delete_all_memories(
         agent_id=agent_id,
         app_id=app_id,
         run_id=run_id,
-        fallback_user_id=_fallback_uid(),
+        fallback_user_id=_mcp_auth_user_id(),
     )
 
     return run_memory_write(lambda memory: memory.delete_all(**scope), scope)
@@ -278,7 +301,7 @@ def list_events(
         Optional[int], Field(default=None, description="Events per page (default 50, max 100).")
     ] = None,
 ) -> dict[str, Any]:
-    items = event_cache_all()
+    items = events_visible_to_caller(event_cache_all(), _mcp_auth_user_id())
     if event_type:
         items = [item for item in items if item.get("event_type") == event_type]
     pagination = resolve_optional_pagination(page, page_size)
@@ -295,7 +318,7 @@ def get_event_status(
     event_id: Annotated[str, Field(description="UUID of the event to check.")],
 ) -> dict[str, Any]:
     obj = event_cache_get(event_id)
-    if obj is None:
+    if obj is None or not event_access_allowed(obj, _mcp_auth_user_id()):
         raise ValueError(f"Event '{event_id}' not found.")
     return obj
 
@@ -305,7 +328,7 @@ def memory_assistant() -> str:
     return """You are using the Mem0 MCP server for long-term memory management.
 
 Quick Start:
-1. Store memories: Use add_memory (returns event_id), then poll get_event_status until SUCCEEDED
+1. Store memories: add_memory with infer=False returns results immediately; infer=True returns event_id — poll get_event_status until SUCCEEDED
 2. Search memories: Use search_memories for semantic queries
 3. List memories: Use get_memories for filtered browsing
 4. Update/Delete: Use update_memory and delete_memory for modifications

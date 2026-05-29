@@ -52,6 +52,20 @@ def normalize_results_dict(raw: Any, extra: Optional[Dict[str, Any]] = None) -> 
     return base
 
 
+def sync_add_response(raw: Any) -> Dict[str, Any]:
+    """Envelope for synchronous v3/MCP add (``infer=False``)."""
+    return normalize_results_dict(raw, extra={"event_id": None, "status": "SUCCEEDED"})
+
+
+def pending_add_response(event_id: str) -> Dict[str, Any]:
+    """Envelope returned immediately when add is queued for background processing."""
+    return {
+        "message": "Memory processing has been queued for background execution.",
+        "event_id": event_id,
+        "status": "PENDING",
+    }
+
+
 def resolve_optional_pagination(
     page: Optional[int],
     page_size: Optional[int],

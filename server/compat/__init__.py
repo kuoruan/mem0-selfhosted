@@ -1,34 +1,49 @@
-"""Shared layer for the client-compatible API (``routers/compat``) and MCP server.
+"""Shared layer for the client-compatible REST router and MCP server.
 
-Consolidates logic previously duplicated across ``routers/compat.py`` and
-``mcp_server.py``. Import from submodules directly (this package does not
-re-export symbols).
+``routers/compat.py`` and ``mcp_server.py`` should delegate reusable logic here
+instead of duplicating it. Import from submodules directly — this package does
+not re-export symbols.
 
-Modules
--------
+Module map (by responsibility, not an API index)
+------------------------------------------------
 scope
-    Entity-parameter collection, scope resolution, and filter-tree merging.
-utils
-    Generic helpers only (ISO timestamps); no domain-specific logic.
-responses
-    Normalise SDK return values, pagination helpers, and list/dict envelopes.
-decorators
-    ``upstream_guard`` — map unhandled exceptions to HTTP errors.
+    Entity scoping (``user_id`` / ``agent_id`` / ``app_id`` / ``run_id``),
+    filter trees, and validation shared by read and write paths.
+
 entities
-    Entity-listing aggregation (vector-store scan, bucket roll-up,
-    ``CompatEntity``); shared by the compat router, ``routers/entities``, and
-    MCP ``list_entities``.
+    Discover and aggregate entities from vector-store payloads for list/detail
+    APIs (compat router, ``routers/entities``, MCP).
+
+responses
+    Normalise ``Memory`` return values into shapes expected by hosted clients;
+    pagination envelopes; HTTP/MCP response bodies for memory writes.
+
 events
-    In-process TTL cache and ``CompatEvent`` models for async v3 add polling
-    (``GET /v1/event/{id}``, ``GET /v1/events``).
+    Process-local synthetic event cache for deferred writes — models, TTL
+    storage, access control, and helpers to register pollable events.
+
 tasks
-    Background workers (e.g. ``run_v3_add_memory_task``) that update the event
-    cache after writes complete.
+    Background workers that complete deferred operations and update the event
+    cache; small write-path utilities tied to those workers.
+
 helpers
-    Router-oriented Memory helpers (search kwargs, fetch/update merge).
+    Cross-route ``Memory`` helpers (fetch-or-404, search kwargs, update merge).
+
 metadata
-    Metadata merge rules for v1/v2/v3 add and update routes.
+    Rules for merging caller metadata with request headers and version-specific
+    add/update fields.
+
 requests
-    ``RequestMeta`` / ``request_meta`` — per-request fields from Mem0 HTTP
-    headers (source, platform, categories).
+    Per-request context derived from Mem0 client HTTP headers.
+
+decorators
+    Shared guards and exception mapping (e.g. upstream provider errors).
+
+utils
+    Generic, domain-free helpers (timestamps). Keep Mem0-specific logic in the
+    modules above.
+
+When adding code, place it by *what it does*, not by which router called it
+first. Update this doc only when a new submodule appears or a module's role
+changes — not when individual functions move within the package.
 """

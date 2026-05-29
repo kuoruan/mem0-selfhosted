@@ -134,28 +134,43 @@ def test_tools_list_exposes_expected_toolset(mcp_testbed):
     }.issubset(tools)
     descriptions = {tool["name"]: tool["description"] for tool in tool_items}
     assert descriptions["add_memory"].startswith("Store a new preference")
+    assert "infer=False" in descriptions["add_memory"]
     assert "get_event_status" in descriptions["add_memory"]
     assert "user_id is automatically added to filters" in descriptions["search_memories"]
     assert "user_id is automatically added to filters" in descriptions["get_memories"]
+
+
+def test_add_memory_infer_false_returns_results_immediately(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    structured = _structured(
+        client,
+        "add_memory",
+        {"text": "verbatim fact", "user_id": "alice", "infer": False},
+    )
+    assert structured["results"][0]["id"] == "mem-1"
+    assert structured["event_id"] is None
+    assert structured["status"] == "SUCCEEDED"
+    mock_memory.add.assert_called_once()
 
 
 def test_add_memory_tool_uses_explicit_user_id(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
     structured = _structured(
-        client, "add_memory", {"text": "remember this", "user_id": "alice"},
+        client, "add_memory", {"text": "remember this", "user_id": "alice", "infer": True},
     )
     assert structured["status"] == "PENDING"
     assert structured["event_id"]
+
+    event = _structured(client, "get_event_status", {"event_id": structured["event_id"]}, req_id=3)
+    assert event["status"] == "SUCCEEDED"
+    assert event["results"][0]["id"] == "mem-1"
     mock_memory.add.assert_called_once_with(
         messages=[{"role": "user", "content": "remember this"}],
         user_id="alice",
         metadata={"source": "MCP"},
     )
-
-    event = _structured(client, "get_event_status", {"event_id": structured["event_id"]}, req_id=3)
-    assert event["status"] == "SUCCEEDED"
-    assert event["results"][0]["id"] == "mem-1"
 
 
 def test_add_memory_requires_scope(mcp_testbed):
@@ -183,11 +198,28 @@ def test_add_memory_uses_messages_when_provided(mcp_testbed):
     assert mock_memory.add.call_args.kwargs["messages"] == messages
 
 
-def test_add_memory_background_failure_updates_event(mcp_testbed):
+def test_add_memory_infer_false_failure_surfaces_as_tool_error(mcp_testbed):
     _, client, mock_memory = mcp_testbed
     mock_memory.add.side_effect = RuntimeError("add failed")
 
-    structured = _structured(client, "add_memory", {"text": "boom", "user_id": "alice"})
+    result = _call_tool(
+        client,
+        "add_memory",
+        {"text": "boom", "user_id": "alice", "infer": False},
+    )
+    assert result.get("isError") is True
+    assert "add failed" in result["content"][0]["text"]
+
+
+def test_add_memory_failure_updates_event_status(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+    mock_memory.add.side_effect = RuntimeError("add failed")
+
+    structured = _structured(
+        client,
+        "add_memory",
+        {"text": "boom", "user_id": "alice", "infer": True},
+    )
     event = _structured(client, "get_event_status", {"event_id": structured["event_id"]}, req_id=3)
 
     assert event["status"] == "FAILED"
@@ -226,6 +258,26 @@ def mcp_testbed_authed(monkeypatch):
     return module, client, mock_memory, str(auth_user_id)
 
 
+def test_list_events_filters_by_authenticated_user(mcp_testbed_authed):
+    _, client, _, auth_uid = mcp_testbed_authed
+    now = "2026-01-01T00:00:00+00:00"
+    event_cache_put(
+        "e1",
+        {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_user_id": auth_uid},
+    )
+    event_cache_put(
+        "e2",
+        {
+            **make_event_obj("e2", [], now_iso="2026-01-02T00:00:00+00:00", status="SUCCEEDED"),
+            "owner_user_id": "other-user",
+        },
+    )
+
+    listed = _structured(client, "list_events")
+    assert listed["count"] == 1
+    assert listed["results"][0]["id"] == "e1"
+
+
 def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):
     _, client, mock_memory, auth_uid = mcp_testbed_authed
 
@@ -245,16 +297,13 @@ def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):
 def test_add_memory_infer_false_passes_flag(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {"name": "add_memory", "arguments": {"text": "verbatim", "user_id": "alice", "infer": False}},
-            req_id=2,
-        ),
-        headers=MCP_HEADERS,
+    structured = _structured(
+        client,
+        "add_memory",
+        {"text": "verbatim", "user_id": "alice", "infer": False},
     )
 
+    assert structured["results"][0]["id"] == "mem-1"
     mock_memory.add.assert_called_once_with(
         messages=[{"role": "user", "content": "verbatim"}],
         user_id="alice",
@@ -312,14 +361,20 @@ def test_add_memory_with_metadata(mcp_testbed):
 def test_list_events_filter_and_pagination(mcp_testbed):
     _, client, _ = mcp_testbed
     now = "2026-01-01T00:00:00+00:00"
-    event_cache_put("e1", make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"))
+    event_cache_put("e1", {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_user_id": "alice"})
     event_cache_put(
         "e2",
-        make_event_obj("e2", [], now_iso="2026-01-02T00:00:00+00:00", status="SUCCEEDED"),
+        {
+            **make_event_obj("e2", [], now_iso="2026-01-02T00:00:00+00:00", status="SUCCEEDED"),
+            "owner_user_id": "bob",
+        },
     )
     event_cache_put(
         "e3",
-        make_event_obj("e3", [], now_iso="2026-01-03T00:00:00+00:00", status="PENDING"),
+        {
+            **make_event_obj("e3", [], now_iso="2026-01-03T00:00:00+00:00", status="PENDING"),
+            "owner_user_id": "alice",
+        },
     )
 
     listed = _structured(client, "list_events")
@@ -337,7 +392,7 @@ def test_prompts_get_memory_assistant(mcp_testbed):
     response = client.post("/mcp", json=_jsonrpc("prompts/get", {"name": "memory_assistant"}, req_id=2), headers=MCP_HEADERS)
     assert response.status_code == 200
     messages = response.json()["result"]["messages"]
-    assert any("get_event_status" in msg.get("content", {}).get("text", "") for msg in messages)
+    assert any("add_memory" in msg.get("content", {}).get("text", "") for msg in messages)
 
 
 def test_get_memory_success(mcp_testbed):

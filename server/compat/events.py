@@ -18,10 +18,13 @@ Limitations:
   only for a short TTL.
 - If the process exits before a background add completes, the event may remain
   ``PENDING`` or disappear after TTL expiry.
+- ``owner_user_id`` scopes list/get access to the authenticated user; admin API
+  key / auth-disabled mode may see all cached events.
 """
 
 import copy
 import threading
+import uuid
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from cachetools import TTLCache
@@ -63,9 +66,15 @@ class CompatEvent(BaseModel):
         description="Timestamp when event processing completed (ISO 8601).",
     )
     latency: Optional[float] = Field(default=None, description="Processing time in milliseconds.")
+    owner_user_id: Optional[str] = Field(
+        default=None,
+        description="Authenticated user who created the event (for access control).",
+    )
 
     @classmethod
-    def pending(cls, event_id: str, *, now_iso: Optional[str] = None) -> "CompatEvent":
+    def pending(
+        cls, event_id: str, *, now_iso: Optional[str] = None, owner_user_id: Optional[str] = None
+    ) -> "CompatEvent":
         """Build a queued ADD event returned immediately to the client."""
         ts = utc_now_iso(now_iso)
         return cls(
@@ -80,6 +89,7 @@ class CompatEvent(BaseModel):
             started_at=ts,
             completed_at=None,
             latency=None,
+            owner_user_id=owner_user_id,
         )
 
     @classmethod
@@ -113,6 +123,17 @@ class CompatEvent(BaseModel):
         )
 
 
+def create_pending_add_event(owner_user_id: Optional[str]) -> str:
+    """Create a queued ADD event and return its id for client polling."""
+    event_id = str(uuid.uuid4())
+    now_iso = utc_now_iso()
+    event_cache_put(
+        event_id,
+        CompatEvent.pending(event_id, now_iso=now_iso, owner_user_id=owner_user_id),
+    )
+    return event_id
+
+
 def event_cache_put(event_id: str, event: Union[CompatEvent, Dict[str, Any]]) -> None:
     """Store an event object in the TTL cache."""
     validated = event.model_dump() if isinstance(event, CompatEvent) else CompatEvent.model_validate(event).model_dump()
@@ -134,6 +155,8 @@ def event_cache_update(event_id: str, **fields: Any) -> Optional[Dict[str, Any]]
 
     Returns ``None`` when the event does not exist (missing or expired).
     """
+    # Owner is set at creation time and must not be reassigned via updates.
+    fields = {key: value for key, value in fields.items() if key != "owner_user_id"}
     with _lock:
         event_obj = _event_cache.get(event_id)
         if event_obj is None:
@@ -156,6 +179,39 @@ def event_cache_clear() -> None:
     """Remove all cached synthetic events."""
     with _lock:
         _event_cache.clear()
+
+
+def resolve_event_owner_id(auth: Any, entity_params: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Resolve the authenticated owner id to store on synthetic events."""
+    if auth is not None:
+        owner_id = auth.get("id", None) if isinstance(auth, dict) else getattr(auth, "id", None)
+        if owner_id is not None:
+            return str(owner_id).strip()
+    if entity_params:
+        scoped_user = entity_params.get("user_id")
+        if scoped_user is not None and str(scoped_user).strip():
+            return str(scoped_user).strip()
+    return None
+
+
+def events_visible_to_caller(events: List[Dict[str, Any]], caller_id: Optional[str]) -> List[Dict[str, Any]]:
+    """Filter events to those owned by *caller_id*.
+
+    When *caller_id* is ``None`` (admin API key / auth disabled), all events are visible.
+    """
+    if caller_id is None:
+        return events
+    return [event for event in events if event.get("owner_user_id") == caller_id]
+
+
+def event_access_allowed(event: Dict[str, Any], caller_id: Optional[str]) -> bool:
+    """Return whether *caller_id* may read *event*."""
+    if caller_id is None:
+        return True
+    owner = event.get("owner_user_id")
+    if owner is None:
+        return False
+    return owner == caller_id
 
 
 def make_event_obj(
