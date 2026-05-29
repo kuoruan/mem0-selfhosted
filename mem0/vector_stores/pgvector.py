@@ -336,8 +336,6 @@ class PGVector(VectorStoreBase):
             results = cur.fetchall()
         output = []
         for r in results:
-            # <=> returns cosine distance (1 - similarity). Clamp to 0.0 for d > 1.0
-            # to avoid a discontinuity where d=1.01 gets a higher score than d=0.99.
             d = max(0.0, float(r[1]))
             score = max(0.0, 1.0 - d)
             output.append(OutputData(id=str(r[0]), score=score, payload=r[2]))
