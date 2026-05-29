@@ -111,15 +111,19 @@ def _lemmatize_compound(toks: list) -> str:
     return " ".join(t.lemma_ if t.pos_ == "NOUN" else t.text for t in toks)
 
 
+_ARTIFACT_STAR_RE = re.compile(r"\s\*\s|\s\*$|^\*\s")
+_ARTIFACT_PREFIXES = ("\u2022", "-", "+", "\u2013", "\u2014")
+
+
 def _has_artifacts(txt: str) -> bool:
     """Check for formatting artifacts that indicate non-entity text."""
     return any(
         [
             "**" in txt or "__" in txt or ":*" in txt,
-            re.search(r"\s\*\s|\s\*$|^\*\s", txt),
+            _ARTIFACT_STAR_RE.search(txt),
             "  " in txt or "\n" in txt or "\t" in txt,
             len(txt) > 100,
-            txt.startswith(("\u2022", "-", "+", "\u2013", "\u2014")),
+            txt.startswith(_ARTIFACT_PREFIXES),
         ]
     )
 
@@ -369,12 +373,9 @@ def _extract_entities_from_doc(
     processed = {e[1].lower() for e in entities if e[0] == "COMPOUND"}
     generic_verb_heads = _GENERIC_HEADS | {"find", "buy", "purchase", "sale", "deal", "trip", "visit"}
 
-    def collect_compounds(head):
-        return [t for t in doc if t.head == head and t.dep_ == "compound"]
-
     for tok in doc:
         if tok.pos_ == "VERB" and tok.dep_ in {"pobj", "dobj", "nsubj"}:
-            comps = sorted(collect_compounds(tok), key=lambda t: t.i)
+            comps = sorted([t for t in doc if t.head == tok and t.dep_ == "compound"], key=lambda t: t.i)
             if comps:
                 phrase_toks = comps if tok.lemma_.lower() in generic_verb_heads else comps + [tok]
                 phrase = " ".join(t.text for t in phrase_toks)

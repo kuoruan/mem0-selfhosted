@@ -7,6 +7,7 @@ instead of each loading their own copy from disk.
 """
 
 import logging
+import os
 import threading
 from typing import Any, Optional
 
@@ -36,7 +37,6 @@ def _ensure_model_available(model_name: str, *, auto_download: bool) -> None:
             "spaCy is not installed. Install it with: pip install mem0ai[nlp]"
         ) from e
 
-    import os
     if os.path.exists(model_name) or spacy.util.is_package(model_name):
         return
 
