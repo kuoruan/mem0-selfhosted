@@ -36,7 +36,7 @@ class MemoryResult(BaseModel):
     payload: Optional[dict] = None
 
 
-excluded_keys = {"user_id", "agent_id", "run_id", "hash", "data", "created_at", "updated_at"}
+excluded_keys = {"user_id", "agent_id", "app_id", "run_id", "hash", "data", "created_at", "updated_at"}
 
 # Pattern for valid SQL identifiers to prevent column name injection
 _VALID_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -149,12 +149,20 @@ class Databricks(VectorStoreBase):
                 position=4,
             ),
             ColumnInfo(
+                name="app_id",
+                type_name=ColumnTypeName.STRING,
+                type_text="string",
+                type_json='{"type":"string"}',
+                comment="ID of the app / project",
+                position=5,
+            ),
+            ColumnInfo(
                 name="memory",
                 type_name=ColumnTypeName.STRING,
                 type_text="string",
                 type_json='{"type":"string"}',
                 comment="Memory content",
-                position=5,
+                position=6,
             ),
             ColumnInfo(
                 name="metadata",
@@ -162,7 +170,7 @@ class Databricks(VectorStoreBase):
                 type_text="string",
                 type_json='{"type":"string"}',
                 comment="Additional metadata",
-                position=6,
+                position=7,
             ),
             ColumnInfo(
                 name="created_at",
@@ -170,7 +178,7 @@ class Databricks(VectorStoreBase):
                 type_text="timestamp",
                 type_json='{"type":"timestamp"}',
                 comment="Creation timestamp",
-                position=7,
+                position=8,
             ),
             ColumnInfo(
                 name="updated_at",
@@ -178,7 +186,7 @@ class Databricks(VectorStoreBase):
                 type_text="timestamp",
                 type_json='{"type":"timestamp"}',
                 comment="Last update timestamp",
-                position=8,
+                position=9,
             ),
         ]
         if self.index_type == VectorIndexType.DIRECT_ACCESS:
@@ -190,7 +198,7 @@ class Databricks(VectorStoreBase):
                     type_json='{"type":"array","element":"float","element_nullable":false}',
                     nullable=True,
                     comment="Embedding vector",
-                    position=9,
+                    position=10,
                 )
             )
         self.column_names = [col.name for col in self.columns]
@@ -709,7 +717,7 @@ class Databricks(VectorStoreBase):
                 payload["updated_at"] = row_data.get("updated_at")
 
             # Add optional fields
-            for field in ["agent_id", "run_id", "user_id"]:
+            for field in ["agent_id", "run_id", "user_id", "app_id"]:
                 if field in row_data:
                     payload[field] = row_data[field]
 

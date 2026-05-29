@@ -149,6 +149,7 @@ def test_insert_generates_sql(db_instance_direct, mock_workspace_client):
             "user_id": "u1",
             "agent_id": "a1",
             "run_id": "r1",
+            "app_id": "app-1",
             "metadata": '{"topic":"greeting"}',
             "hash": "h1",
         }
@@ -167,8 +168,11 @@ def test_insert_generates_sql(db_instance_direct, mock_workspace_client):
     params = kwargs["parameters"]
     param_names = {p.name for p in params}
     assert "memory_id_0" in param_names
+    assert "app_id_0" in param_names
     id_param = next(p for p in params if p.name == "memory_id_0")
     assert id_param.value == "id1"
+    app_param = next(p for p in params if p.name == "app_id_0")
+    assert app_param.value == "app-1"
 
 
 # ---------------------- Search Tests ---------------------- #
@@ -182,6 +186,7 @@ def test_search_delta_sync_text(db_instance_delta, mock_workspace_client):
         "agent1",
         "run1",
         "user1",
+        None,
         "memory text",
         '{"topic":"greeting"}',
         "2024-01-01T00:00:00",
@@ -206,6 +211,7 @@ def test_search_direct_access_vector(db_instance_direct, mock_workspace_client):
         "agent2",
         "run2",
         "user2",
+        None,
         "memory two",
         '{"topic":"info"}',
         "2024-01-02T00:00:00",
@@ -275,7 +281,7 @@ def test_update_vector(db_instance_direct, mock_workspace_client):
     db_instance_direct.update(
         vector_id="id-upd",
         vector=[0.4, 0.5, 0.6, 0.7],
-        payload={"custom": "val", "user_id": "skip"},  # user_id should be excluded
+        payload={"custom": "val", "user_id": "skip", "app_id": "skip-app"},  # scope fields excluded
     )
     args, kwargs = mock_workspace_client.statement_execution.execute_statement.call_args
     sql = kwargs.get("statement") or args[0]
@@ -286,6 +292,7 @@ def test_update_vector(db_instance_direct, mock_workspace_client):
     assert "id-upd" not in sql  # value should be in params, not in SQL
     assert "'val'" not in sql  # value should be in params, not in SQL
     assert "user_id" not in sql  # excluded
+    assert "app_id" not in sql  # excluded
     params = kwargs["parameters"]
     param_map = {p.name: p.value for p in params}
     assert param_map["payload_custom"] == "val"
@@ -303,6 +310,7 @@ def test_get_vector(db_instance_delta, mock_workspace_client):
             ColumnInfo(name="agent_id"),
             ColumnInfo(name="run_id"),
             ColumnInfo(name="user_id"),
+            ColumnInfo(name="app_id"),
             ColumnInfo(name="memory"),
             ColumnInfo(name="metadata"),
             ColumnInfo(name="created_at"),
@@ -317,6 +325,7 @@ def test_get_vector(db_instance_delta, mock_workspace_client):
                     "a",
                     "r",
                     "u",
+                    "app-1",
                     "some memory",
                     '{"tag":"x"}',
                     "2024-01-01T00:00:00",
@@ -330,6 +339,7 @@ def test_get_vector(db_instance_delta, mock_workspace_client):
     assert res.id == "id-get"
     assert res.payload["data"] == "some memory"
     assert res.payload["tag"] == "x"
+    assert res.payload["app_id"] == "app-1"
     # DELTA_SYNC should use query_text, not query_vector
     call_kwargs = mock_workspace_client.vector_search_indexes.query_index.call_args.kwargs
     assert "query_text" in call_kwargs
@@ -345,6 +355,7 @@ def test_get_vector_direct_access(db_instance_direct, mock_workspace_client):
             ColumnInfo(name="agent_id"),
             ColumnInfo(name="run_id"),
             ColumnInfo(name="user_id"),
+            ColumnInfo(name="app_id"),
             ColumnInfo(name="memory"),
             ColumnInfo(name="metadata"),
             ColumnInfo(name="created_at"),
@@ -360,6 +371,7 @@ def test_get_vector_direct_access(db_instance_direct, mock_workspace_client):
                     "a",
                     "r",
                     "u",
+                    None,
                     "direct access memory",
                     '{"tag":"da"}',
                     "2024-01-01T00:00:00",
@@ -396,6 +408,7 @@ def test_col_info(db_instance_delta):
     info = db_instance_delta.col_info()
     assert info["name"] == "mem0"
     assert any(col.name == "memory_id" for col in info["fields"])
+    assert any(col.name == "app_id" for col in info["fields"])
 
 
 def test_list_memories(db_instance_delta, mock_workspace_client):
@@ -406,6 +419,7 @@ def test_list_memories(db_instance_delta, mock_workspace_client):
             ColumnInfo(name="agent_id"),
             ColumnInfo(name="run_id"),
             ColumnInfo(name="user_id"),
+            ColumnInfo(name="app_id"),
             ColumnInfo(name="memory"),
             ColumnInfo(name="metadata"),
             ColumnInfo(name="created_at"),
@@ -420,6 +434,7 @@ def test_list_memories(db_instance_delta, mock_workspace_client):
                     "a",
                     "r",
                     "u",
+                    None,
                     "some memory",
                     '{"tag":"x"}',
                     "2024-01-01T00:00:00",
@@ -450,6 +465,7 @@ def test_list_memories_direct_access(db_instance_direct, mock_workspace_client):
                     "a",
                     "r",
                     "u",
+                    None,
                     "direct memory",
                     None,
                     "2024-01-01T00:00:00",
@@ -490,11 +506,11 @@ def test_get_vector_delta_sync_self_managed(mock_workspace_client):
         manifest=ResultManifest(columns=[
             ColumnInfo(name="memory_id"), ColumnInfo(name="hash"),
             ColumnInfo(name="agent_id"), ColumnInfo(name="run_id"),
-            ColumnInfo(name="user_id"), ColumnInfo(name="memory"),
+            ColumnInfo(name="user_id"), ColumnInfo(name="app_id"), ColumnInfo(name="memory"),
             ColumnInfo(name="metadata"), ColumnInfo(name="created_at"),
             ColumnInfo(name="updated_at"),
         ]),
-        result=ResultData(data_array=[["id-sm", "h", None, None, None, "self-managed mem", None, None, None]]),
+        result=ResultData(data_array=[["id-sm", "h", None, None, None, None, "self-managed mem", None, None, None]]),
     )
     res = inst.get("id-sm")
     assert res.id == "id-sm"
@@ -739,7 +755,7 @@ def test_e2e_crud_lifecycle_delta_sync(mock_workspace_client):
     # SEARCH
     mock_workspace_client.vector_search_indexes.query_index.return_value = SimpleNamespace(
         result=SimpleNamespace(
-            data_array=[["mem-001", "h1", None, None, "u1", "test memory", None, None, None, 0.95]]
+            data_array=[["mem-001", "h1", None, None, "u1", None, "test memory", None, None, None, 0.95]]
         )
     )
     results = db.search(query="test", vectors=None, top_k=5)
@@ -754,11 +770,11 @@ def test_e2e_crud_lifecycle_delta_sync(mock_workspace_client):
         manifest=ResultManifest(columns=[
             ColumnInfo(name="memory_id"), ColumnInfo(name="hash"),
             ColumnInfo(name="agent_id"), ColumnInfo(name="run_id"),
-            ColumnInfo(name="user_id"), ColumnInfo(name="memory"),
+            ColumnInfo(name="user_id"), ColumnInfo(name="app_id"), ColumnInfo(name="memory"),
             ColumnInfo(name="metadata"), ColumnInfo(name="created_at"),
             ColumnInfo(name="updated_at"),
         ]),
-        result=ResultData(data_array=[["mem-001", "h1", None, None, "u1", "test memory", None, None, None]]),
+        result=ResultData(data_array=[["mem-001", "h1", None, None, "u1", None, "test memory", None, None, None]]),
     )
     got = db.get("mem-001")
     assert got.id == "mem-001"
@@ -770,7 +786,7 @@ def test_e2e_crud_lifecycle_delta_sync(mock_workspace_client):
     # LIST
     mock_workspace_client.vector_search_indexes.query_index.return_value = SimpleNamespace(
         result=SimpleNamespace(
-            data_array=[["mem-001", "h1", None, None, "u1", "test memory", None, None, None]]
+            data_array=[["mem-001", "h1", None, None, "u1", None, "test memory", None, None, None]]
         )
     )
     listed = db.list(filters={"user_id": "u1"}, top_k=10)
@@ -841,7 +857,7 @@ def test_e2e_crud_lifecycle_direct_access(mock_workspace_client):
     # SEARCH with vector
     mock_workspace_client.vector_search_indexes.query_index.return_value = SimpleNamespace(
         result=SimpleNamespace(
-            data_array=[["mem-da-001", "h1", None, None, "u1", "direct memory", None, None, None, [0.1, 0.2, 0.3, 0.4], 0.9]]
+            data_array=[["mem-da-001", "h1", None, None, "u1", None, "direct memory", None, None, None, [0.1, 0.2, 0.3, 0.4], 0.9]]
         )
     )
     results = db.search(query="", vectors=[0.1, 0.2, 0.3, 0.4], top_k=5)
@@ -855,11 +871,11 @@ def test_e2e_crud_lifecycle_direct_access(mock_workspace_client):
         manifest=ResultManifest(columns=[
             ColumnInfo(name="memory_id"), ColumnInfo(name="hash"),
             ColumnInfo(name="agent_id"), ColumnInfo(name="run_id"),
-            ColumnInfo(name="user_id"), ColumnInfo(name="memory"),
+            ColumnInfo(name="user_id"), ColumnInfo(name="app_id"), ColumnInfo(name="memory"),
             ColumnInfo(name="metadata"), ColumnInfo(name="created_at"),
             ColumnInfo(name="updated_at"), ColumnInfo(name="embedding"),
         ]),
-        result=ResultData(data_array=[["mem-da-001", "h1", None, None, "u1", "direct memory", None, None, None, [0.1, 0.2, 0.3, 0.4]]]),
+        result=ResultData(data_array=[["mem-da-001", "h1", None, None, "u1", None, "direct memory", None, None, None, [0.1, 0.2, 0.3, 0.4]]]),
     )
     got = db.get("mem-da-001")
     assert got.id == "mem-da-001"
@@ -870,7 +886,7 @@ def test_e2e_crud_lifecycle_direct_access(mock_workspace_client):
     # LIST — must use query_vector for DIRECT_ACCESS
     mock_workspace_client.vector_search_indexes.query_index.return_value = SimpleNamespace(
         result=SimpleNamespace(
-            data_array=[["mem-da-001", "h1", None, None, "u1", "direct memory", None, None, None, [0.1, 0.2, 0.3, 0.4]]]
+            data_array=[["mem-da-001", "h1", None, None, "u1", None, "direct memory", None, None, None, [0.1, 0.2, 0.3, 0.4]]]
         )
     )
     db.list(top_k=5)
