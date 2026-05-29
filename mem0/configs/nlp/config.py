@@ -101,8 +101,10 @@ class NlpConfig(BaseModel):
             return False
         return self.language_code in CJK_LANGUAGES
 
-    def resolve_model(self, variant: Literal["full", "lemma"] = "full") -> str:
+    def resolve_model(self, variant: Literal["full", "lemma"] = "full") -> Optional[str]:
         """Resolve the spaCy package name for entity extraction (full) or BM25 (lemma)."""
+        if not self.enabled:
+            return None
         if variant == "lemma" and self.lemma_model:
             return self.lemma_model
         if self.model:
