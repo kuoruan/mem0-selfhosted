@@ -334,7 +334,14 @@ class PGVector(VectorStoreBase):
             )
 
             results = cur.fetchall()
-        return [OutputData(id=str(r[0]), score=max(0.0, min(1.0, 1.0 - float(r[1]))), payload=r[2]) for r in results]
+        output = []
+        for r in results:
+            # <=> returns cosine distance (1 - similarity). For d <= 1 use 1 - d;
+            # for larger d use 1/(1+d) so weak matches stay rankable instead of all clamping to 0.
+            d = max(0.0, float(r[1]))
+            score = 1.0 - d if d <= 1.0 else 1.0 / (1.0 + d)
+            output.append(OutputData(id=str(r[0]), score=score, payload=r[2]))
+        return output
 
     def keyword_search(self, query, top_k=5, filters=None):
         """
