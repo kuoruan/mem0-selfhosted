@@ -24,7 +24,14 @@ from pydantic import ValidationError
 from starlette.datastructures import URL
 from mem0.exceptions import ValidationError as Mem0ValidationError
 import compat.tasks as compat_tasks
-from compat.events import event_cache_all, event_cache_clear, event_cache_get, event_cache_put, event_cache_update
+from compat.events import (
+    CompatEvent,
+    event_cache_all,
+    event_cache_clear,
+    event_cache_get,
+    event_cache_put,
+    event_cache_update,
+)
 from compat.requests import RequestMeta
 from compat.decorators import upstream_guard
 from compat.helpers import (
@@ -561,6 +568,11 @@ class TestEventCacheCopies:
         updated = event_cache_update("evt-1", status="SUCCEEDED", owner_user_id="user-2")
         assert updated is not None
         assert updated["owner_user_id"] == "user-1"
+
+    def test_update_rejects_invalid_status(self):
+        event_cache_put("evt-1", CompatEvent.pending("evt-1", owner_user_id="user-1"))
+        with pytest.raises(ValidationError):
+            event_cache_update("evt-1", status="NOT_A_STATUS")
 
 
 # ---------------------------------------------------------------------------

@@ -161,8 +161,7 @@ def event_cache_update(event_id: str, **fields: Any) -> Optional[Dict[str, Any]]
         event_obj = _event_cache.get(event_id)
         if event_obj is None:
             return None
-        updated = CompatEvent.model_validate(event_obj).model_copy(update=fields)
-        validated = updated.model_dump()
+        validated = CompatEvent.model_validate({**event_obj, **fields}).model_dump()
         _event_cache[event_id] = validated
     return copy.deepcopy(validated)
 
