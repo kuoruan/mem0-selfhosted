@@ -36,7 +36,8 @@ def _ensure_model_available(model_name: str, *, auto_download: bool) -> None:
             "spaCy is not installed. Install it with: pip install mem0ai[nlp]"
         ) from e
 
-    if spacy.util.is_package(model_name):
+    import os
+    if os.path.exists(model_name) or spacy.util.is_package(model_name):
         return
 
     if not auto_download:

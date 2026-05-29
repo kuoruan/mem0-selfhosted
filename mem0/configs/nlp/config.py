@@ -77,6 +77,8 @@ class NlpConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_language_when_no_model(self) -> "NlpConfig":
+        if not self.enabled:
+            return self
         if not self.model and self.language_code not in SUPPORTED_LANGUAGES:
             supported = ", ".join(sorted(SUPPORTED_LANGUAGES))
             raise ValueError(

@@ -42,6 +42,10 @@ class TestNlpConfig:
         with pytest.raises(ValueError, match="Unsupported NLP language"):
             NlpConfig(language="invalid")
 
+    def test_unsupported_language_when_disabled_ok(self):
+        config = NlpConfig(enabled=False, language="invalid")
+        assert config.enabled is False
+
     def test_unsupported_language_with_explicit_model_ok(self):
         config = NlpConfig(language="invalid", model="en_core_web_sm")
         assert config.resolve_model() == "en_core_web_sm"
