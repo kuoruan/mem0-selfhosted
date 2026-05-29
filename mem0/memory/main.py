@@ -3027,7 +3027,7 @@ class AsyncMemory(MemoryBase):
         if "created_at" not in new_metadata:
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
-        new_metadata["text_lemmatized"] = self._lemmatize_for_bm25(data)
+        new_metadata["text_lemmatized"] = await asyncio.to_thread(self._lemmatize_for_bm25, data)
 
         await asyncio.to_thread(
             self.vector_store.insert,
@@ -3121,7 +3121,7 @@ class AsyncMemory(MemoryBase):
 
         new_metadata["data"] = data
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        new_metadata["text_lemmatized"] = self._lemmatize_for_bm25(data)
+        new_metadata["text_lemmatized"] = await asyncio.to_thread(self._lemmatize_for_bm25, data)
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
         new_metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
 
