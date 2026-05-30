@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from mem0.utils.entity_extraction import _extract_entities_from_doc
 
 

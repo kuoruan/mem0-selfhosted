@@ -1,5 +1,4 @@
 """Tests for spacy_models edge cases (no spaCy installation required)."""
-import os
 import tempfile
 from unittest.mock import MagicMock, patch
 

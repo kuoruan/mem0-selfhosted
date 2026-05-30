@@ -1,7 +1,5 @@
 """Tests for CJK entity extraction behavior (no spaCy model required)."""
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from mem0.utils.entity_extraction import _extract_entities_from_doc, _finalize_entities
 
