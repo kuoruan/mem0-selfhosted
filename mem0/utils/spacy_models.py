@@ -86,7 +86,17 @@ def _load_spacy_model(model_name: str, *, disable: Optional[tuple[str, ...]], au
             _ensure_model_available(model_name, auto_download=auto_download)
 
             import spacy
+        except ImportError as e:
+            logger.warning(
+                "NLP is enabled but spaCy is not installed. "
+                "Install it with: pip install mem0ai[nlp]. "
+                "BM25 lemmatization and entity extraction will be disabled. (%s)",
+                e,
+            )
+            _load_failed.add(key)
+            return None
 
+        try:
             if disable:
                 try:
                     meta = spacy.util.get_model_meta(model_name)
