@@ -377,6 +377,8 @@ def _extract_entities_from_doc(
     processed = {e[1].lower() for e in entities if e[0] == "COMPOUND"}
     generic_verb_heads = _GENERIC_HEADS | {"find", "buy", "purchase", "sale", "deal", "trip", "visit"}
 
+    min_entity_len = 1 if language_code in CJK_LANGUAGES else 3
+
     for tok in doc:
         if tok.pos_ == "VERB" and tok.dep_ in {"pobj", "dobj", "nsubj"}:
             comps = sorted([t for t in tok.children if t.dep_ == "compound"], key=lambda t: t.i)
@@ -384,7 +386,8 @@ def _extract_entities_from_doc(
                 phrase_toks = comps if tok.lemma_.lower() in generic_verb_heads else comps + [tok]
                 join_char = "" if language_code in CJK_LANGUAGES else " "
                 phrase = join_char.join(t.text for t in phrase_toks)
-                if phrase.lower() not in processed and len(phrase) > 3 and (language_code in CJK_LANGUAGES or " " in phrase):
+                is_cjk = language_code in CJK_LANGUAGES
+                if phrase.lower() not in processed and len(phrase) >= min_entity_len and (is_cjk or " " in phrase):
                     entities.append(("COMPOUND", phrase))
                     processed.add(phrase.lower())
 

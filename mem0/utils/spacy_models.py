@@ -92,7 +92,9 @@ def _load_spacy_model(model_name: str, *, disable: Optional[tuple[str, ...]], au
                     nlp = spacy.load(model_name, disable=actual_disable)
                 except ValueError:
                     nlp = spacy.load(model_name)
-                    nlp.select_pipes(disable=[c for c in disable if c in nlp.pipe_names])
+                    for c in disable:
+                        if c in nlp.pipe_names:
+                            nlp.disable_pipe(c)
             else:
                 nlp = spacy.load(model_name)
             _nlp_cache[key] = nlp
