@@ -117,14 +117,12 @@ _ARTIFACT_PREFIXES = ("\u2022", "-", "+", "\u2013", "\u2014")
 
 def _has_artifacts(txt: str) -> bool:
     """Check for formatting artifacts that indicate non-entity text."""
-    return any(
-        [
-            "**" in txt or "__" in txt or ":*" in txt,
-            _ARTIFACT_STAR_RE.search(txt),
-            "  " in txt or "\n" in txt or "\t" in txt,
-            len(txt) > 100,
-            txt.startswith(_ARTIFACT_PREFIXES),
-        ]
+    return (
+        "**" in txt or "__" in txt or ":*" in txt
+        or _ARTIFACT_STAR_RE.search(txt) is not None
+        or "  " in txt or "\n" in txt or "\t" in txt
+        or len(txt) > 100
+        or txt.startswith(_ARTIFACT_PREFIXES)
     )
 
 
@@ -384,8 +382,9 @@ def _extract_entities_from_doc(
             comps = sorted([t for t in tok.children if t.dep_ == "compound"], key=lambda t: t.i)
             if comps:
                 phrase_toks = comps if tok.lemma_.lower() in generic_verb_heads else comps + [tok]
-                phrase = " ".join(t.text for t in phrase_toks)
-                if phrase.lower() not in processed and len(phrase) > 3 and " " in phrase:
+                join_char = "" if language_code in CJK_LANGUAGES else " "
+                phrase = join_char.join(t.text for t in phrase_toks)
+                if phrase.lower() not in processed and len(phrase) > 3 and (language_code in CJK_LANGUAGES or " " in phrase):
                     entities.append(("COMPOUND", phrase))
                     processed.add(phrase.lower())
 
