@@ -375,7 +375,7 @@ def _extract_entities_from_doc(
 
     for tok in doc:
         if tok.pos_ == "VERB" and tok.dep_ in {"pobj", "dobj", "nsubj"}:
-            comps = sorted([t for t in doc if t.head == tok and t.dep_ == "compound"], key=lambda t: t.i)
+            comps = sorted([t for t in tok.children if t.dep_ == "compound"], key=lambda t: t.i)
             if comps:
                 phrase_toks = comps if tok.lemma_.lower() in generic_verb_heads else comps + [tok]
                 phrase = " ".join(t.text for t in phrase_toks)
