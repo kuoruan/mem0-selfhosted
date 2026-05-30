@@ -227,8 +227,14 @@ def _extract_entities_from_doc(
     tokens = list(doc)
 
     # === spaCy NER ===
+    _NOISY_NER_LABELS = frozenset({
+        "DATE", "TIME", "PERCENT", "MONEY", "QUANTITY", "ORDINAL", "CARDINAL"
+    })
+
     if run_ner:
         for ent in doc.ents:
+            if ent.label_ in _NOISY_NER_LABELS:
+                continue
             ent_text = ent.text.strip()
             min_len = 1 if language_code in CJK_LANGUAGES else 3
             if len(ent_text) < min_len:

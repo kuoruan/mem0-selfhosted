@@ -88,7 +88,11 @@ def _load_spacy_model(model_name: str, *, disable: Optional[tuple[str, ...]], au
                     actual_disable = [c for c in disable if c in pipeline]
                 except Exception:
                     actual_disable = disable
-                nlp = spacy.load(model_name, disable=actual_disable)
+                try:
+                    nlp = spacy.load(model_name, disable=actual_disable)
+                except ValueError:
+                    nlp = spacy.load(model_name)
+                    nlp.select_pipes(disable=[c for c in disable if c in nlp.pipe_names])
             else:
                 nlp = spacy.load(model_name)
             _nlp_cache[key] = nlp
