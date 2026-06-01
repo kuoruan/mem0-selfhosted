@@ -106,6 +106,7 @@ class TestCompatEntity:
         )
         mem = MagicMock()
         mem.vector_store.list.return_value = [row]
+
         def _get_mem():
             return mem
 

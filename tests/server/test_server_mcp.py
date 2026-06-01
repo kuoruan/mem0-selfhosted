@@ -248,6 +248,7 @@ def mcp_testbed_authed(monkeypatch):
 
     mock_memory = MagicMock()
     mock_memory.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "saved"}]}
+
     def get_memory():
         return mock_memory
 
