@@ -62,12 +62,11 @@ def _download_model(model_name: str, model_dir: str, download_url: Optional[str]
         saved = spacy.about.__download_url__
         spacy.about.__download_url__ = download_url
         try:
-            download(model_name, False, False, download_url, *pip_args)
+            download(model_name, *pip_args)
         finally:
             spacy.about.__download_url__ = saved
     else:
-        # None fills the custom_url slot so pip_args land in *pip_args.
-        download(model_name, False, False, None, *pip_args)
+        download(model_name, *pip_args)
     logger.info("spaCy model %s downloaded successfully", model_name)
 
 

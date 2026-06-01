@@ -216,8 +216,7 @@ class TestEnsureModelAvailableCacheDir:
             pass  # May fail if no network, but download should have been called
         if mock_download.called:
             mock_download.assert_called_once_with(
-                "en_core_web_sm", False, False, None,
-                "--target", "/tmp/spacy_models",
+                "en_core_web_sm", "--target", "/tmp/spacy_models",
             )
 
 
@@ -261,8 +260,7 @@ class TestGetNlpWithCacheDir:
 
     @patch("spacy.cli.download")
     def test_download_url_passed_to_download(self, mock_download):
-        """custom_url should be passed to spacy.cli.download."""
-        # Use a model name that isn't installed, so download is triggered.
+        """When download_url is set, it patches __download_url__ and calls download()."""
         try:
             spacy_models._ensure_model_available(
                 "xx_nonexistent_model_nlp", model_dir="",
@@ -272,7 +270,6 @@ class TestGetNlpWithCacheDir:
         except Exception:
             pass  # download may fail due to network
         if mock_download.called:
-            mock_download.assert_called_once_with(
-                "xx_nonexistent_model_nlp", False, False,
-                "https://mirror.example.com/models",
-            )
+            # The monkey-patch on __download_url__ handles the mirror URL;
+            # download() receives only the model name.
+            mock_download.assert_called_once_with("xx_nonexistent_model_nlp")
