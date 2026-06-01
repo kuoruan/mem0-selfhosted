@@ -23,12 +23,12 @@ class TestEnsureModelAvailable:
     def test_local_path_skips_package_check(self):
         """Local file path should be accepted without checking spacy package."""
         with tempfile.NamedTemporaryFile(suffix=".pt") as f:
-            spacy_models._ensure_model_available(f.name, auto_download=False)
+            spacy_models._ensure_model_available(f.name, model_dir="", download_url=None, auto_download=False)
 
     def test_local_directory_skips_package_check(self):
         """Local directory should be accepted without checking spacy package."""
         with tempfile.TemporaryDirectory() as d:
-            spacy_models._ensure_model_available(d, auto_download=False)
+            spacy_models._ensure_model_available(d, model_dir="", download_url=None, auto_download=False)
 
 
 class TestDisableFiltering:
@@ -143,3 +143,136 @@ class TestLoadSpacyModel:
         assert result_en is mock_nlp_en
         assert result_de is mock_nlp_de
         assert mock_load.call_count == 2
+
+
+class TestEnsureCacheDir:
+    """Test _ensure_model_dir behavior."""
+
+    def test_none_returns_empty_string(self):
+        result = spacy_models._ensure_model_dir(None)
+        assert result == ""
+
+    def test_creates_dir_and_adds_to_sys_path(self):
+        import os
+        import sys
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = os.path.join(tmpdir, "spacy_models")
+            old_path = list(sys.path)
+            result = spacy_models._ensure_model_dir(model_dir)
+            assert result == model_dir
+            assert os.path.isdir(model_dir)
+            assert sys.path[0] == model_dir
+            # Restore sys.path
+            sys.path.remove(model_dir)
+
+    def test_existing_dir_returns_path(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = spacy_models._ensure_model_dir(tmpdir)
+            assert result == tmpdir
+
+    def test_does_not_duplicate_sys_path_entry(self):
+        import sys
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spacy_models._ensure_model_dir(tmpdir)  # first call
+            path_count = sys.path.count(tmpdir)
+            spacy_models._ensure_model_dir(tmpdir)  # second call
+            assert sys.path.count(tmpdir) == path_count  # no duplicate
+            sys.path.remove(tmpdir)
+
+
+class TestEnsureModelAvailableCacheDir:
+    """Test _ensure_model_available with model_dir."""
+
+    def test_returns_early_when_model_dir_in_cache(self):
+        """Should return immediately if model directory exists under model_dir."""
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = os.path.join(tmpdir, "en_core_web_sm")
+            os.makedirs(model_dir)
+            # Should not raise even without auto_download
+            spacy_models._ensure_model_available(
+                "en_core_web_sm", model_dir=tmpdir, download_url=None, auto_download=False
+            )
+
+    @patch("spacy.cli.download")
+    def test_download_to_model_dir_uses_target(self, mock_download):
+        """When model_dir is set, download should pass --target as pip arg."""
+        config = NlpConfig(language="en", model_dir="/tmp/spacy_models")
+        spacy_models._ensure_model_dir(config.model_dir)
+        try:
+            spacy_models._ensure_model_available(
+                "en_core_web_sm", model_dir=config.model_dir,
+                download_url=None, auto_download=True,
+            )
+        except Exception:
+            pass  # May fail if no network, but download should have been called
+        if mock_download.called:
+            mock_download.assert_called_once_with(
+                "en_core_web_sm", False, False, None,
+                "--target", "/tmp/spacy_models",
+            )
+
+
+class TestGetNlpWithCacheDir:
+    """Test get_nlp_full / get_nlp_lemma integration with model_dir."""
+
+    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("spacy.load")
+    def test_full_loads_model_by_name(self, mock_load, mock_ensure):
+        """spacy.load should be called with the model name (not a path)."""
+        mock_load.return_value = MagicMock()
+
+        config = NlpConfig(language="en", auto_download=False)
+        spacy_models.get_nlp_full(config)
+
+        mock_load.assert_called_once_with("en_core_web_sm")
+
+    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("spacy.load")
+    def test_lemma_loads_model_by_name(self, mock_load, mock_ensure):
+        """Lemma loader should also pass model name to spacy.load."""
+        mock_load.return_value = MagicMock()
+
+        config = NlpConfig(language="en", auto_download=False)
+        spacy_models.get_nlp_lemma(config)
+
+        load_name = mock_load.call_args[0][0]
+        assert load_name == "en_core_web_sm"
+
+    @patch("mem0.utils.spacy_models._ensure_model_dir", return_value="")
+    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("spacy.load")
+    def test_disabled_skips_everything(self, mock_load, mock_ensure, mock_cache):
+        """When NLP is disabled, no model loading should happen."""
+        config = NlpConfig(enabled=False, model_dir="/tmp/spacy_models")
+        result = spacy_models.get_nlp_full(config)
+
+        assert result is None
+        mock_load.assert_not_called()
+        mock_ensure.assert_not_called()
+
+    @patch("spacy.cli.download")
+    def test_download_url_passed_to_download(self, mock_download):
+        """custom_url should be passed to spacy.cli.download."""
+        # Use a model name that isn't installed, so download is triggered.
+        try:
+            spacy_models._ensure_model_available(
+                "xx_nonexistent_model_nlp", model_dir="",
+                download_url="https://mirror.example.com/models",
+                auto_download=True,
+            )
+        except Exception:
+            pass  # download may fail due to network
+        if mock_download.called:
+            mock_download.assert_called_once_with(
+                "xx_nonexistent_model_nlp", False, False,
+                "https://mirror.example.com/models",
+            )

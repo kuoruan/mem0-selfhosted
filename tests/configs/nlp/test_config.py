@@ -51,3 +51,25 @@ class TestNlpConfig:
     def test_unsupported_language_with_explicit_model_ok(self):
         config = NlpConfig(language="invalid", model="en_core_web_sm")
         assert config.resolve_model() == "en_core_web_sm"
+
+    def test_model_dir_default_none(self):
+        config = NlpConfig()
+        assert config.model_dir is None
+
+    def test_model_dir_custom_path(self):
+        config = NlpConfig(model_dir="/custom/spacy/data")
+        assert config.model_dir == "/custom/spacy/data"
+
+    def test_model_dir_with_disabled_does_not_affect_resolve(self):
+        """model_dir has no effect on model resolution."""
+        config = NlpConfig(enabled=False, model_dir="/tmp/spacy")
+        assert config.model_dir == "/tmp/spacy"
+        assert config.resolve_model() is None
+
+    def test_download_url_default_none(self):
+        config = NlpConfig()
+        assert config.download_url is None
+
+    def test_download_url_custom(self):
+        config = NlpConfig(download_url="https://mirrors.example.com/spacy-models/releases/download")
+        assert config.download_url == "https://mirrors.example.com/spacy-models/releases/download"

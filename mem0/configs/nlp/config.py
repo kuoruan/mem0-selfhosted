@@ -65,6 +65,21 @@ class NlpConfig(BaseModel):
         default=True,
         description="Download missing spaCy models on first load.",
     )
+    model_dir: Optional[str] = Field(
+        default=None,
+        description=(
+            "Local directory where spaCy models are stored / downloaded to. "
+            "When set, models are installed via ``pip --target`` into this directory "
+            "and loaded via ``spacy.load(model_name)`` with the directory on ``sys.path``. "
+        ),
+    )
+    download_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Custom base URL for downloading spaCy models (overrides the default "
+            "GitHub releases URL). Useful for mirrors or offline registries."
+        ),
+    )
 
     model_config = {"extra": "forbid"}
 
