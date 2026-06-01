@@ -30,6 +30,9 @@ def _ensure_model_dir(model_dir: Optional[str]) -> str:
     if not model_dir:
         return ""
     abs_dir = os.path.abspath(model_dir)
+    # Fast path: already registered from a previous call.
+    if abs_dir in sys.path:
+        return abs_dir
     os.makedirs(abs_dir, exist_ok=True)
     with _lock:
         if abs_dir not in sys.path:
@@ -135,13 +138,13 @@ def _load_with_disable(model_name: str, disable: tuple[str, ...]):
 def _load_spacy_model(
     model_name: str,
     *,
-    model_dir: str,
+    model_dir: Optional[str],
     download_url: Optional[str],
     disable: Optional[tuple[str, ...]],
     auto_download: bool,
 ):
     """Load (and optionally download) a spaCy model, caching the result."""
-    key = _cache_key(model_name, model_dir, disable)
+    key = _cache_key(model_name, model_dir or "", disable)
     if _is_load_failed(key):
         return None
     if key in _nlp_cache:
@@ -153,9 +156,10 @@ def _load_spacy_model(
         if key in _nlp_cache:
             return _nlp_cache[key]
 
+        actual_dir = _ensure_model_dir(model_dir)
         try:
             _ensure_model_available(
-                model_name, model_dir=model_dir,
+                model_name, model_dir=actual_dir,
                 download_url=download_url, auto_download=auto_download,
             )
         except (ImportError, RuntimeError) as e:
@@ -187,7 +191,7 @@ def _load_nlp_model(
         return None
     return _load_spacy_model(
         config.resolve_model(variant=variant),
-        model_dir=_ensure_model_dir(config.model_dir),
+        model_dir=config.model_dir,
         download_url=config.download_url,
         disable=disable,
         auto_download=config.auto_download,
