@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from mem0.configs.nlp.config import NlpConfig
 from mem0.configs.rerankers.config import RerankerConfig
 from mem0.embeddings.configs import EmbedderConfig
 from mem0.llms.configs import LlmConfig
@@ -54,6 +55,10 @@ class MemoryConfig(BaseModel):
     custom_instructions: Optional[str] = Field(
         description="Custom instructions for fact extraction",
         default=None,
+    )
+    nlp: NlpConfig = Field(
+        description="spaCy NLP settings for BM25 lemmatization and entity extraction",
+        default_factory=NlpConfig,
     )
 
 
