@@ -14,11 +14,11 @@ Internal:
     _extract_entities_from_doc(doc) -> List[Tuple[str, str]]
 """
 
-from __future__ import annotations
-
 import logging
 import re
-from typing import List, Tuple
+from typing import List, Optional, Tuple
+
+from mem0.configs.nlp.config import CJK_LANGUAGES, EntityExtractionMode, NlpConfig
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,23 @@ _GENERIC_CAPS = {
 # Markdown/formatting markers to skip during extraction
 _FORMATTING_MARKERS = {"*", "-", "+", "\u2022", "\u2013", "\u2014", "#", "##", "###", "**", "__"}
 
+# spaCy NER labels mapped to PROPER (names, orgs, places, products, etc.)
+_NER_LABELS_AS_PROPER = frozenset(
+    {"PERSON", "ORG", "GPE", "LOC", "PRODUCT", "EVENT", "WORK_OF_ART", "FAC", "LANGUAGE", "NORP", "LAW"}
+)
+
+# spaCy NER labels to skip (dates, numbers, money — too generic for memory entities)
+_NOISY_NER_LABELS = frozenset({
+    "DATE", "TIME", "PERCENT", "MONEY", "QUANTITY", "ORDINAL", "CARDINAL"
+})
+
+# Quoted-text patterns: ASCII + CJK quotes.
+_RE_QUOTED_DQ = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」')
+_RE_QUOTED_SQ = re.compile(
+    r"(?:^|[\s\(\[{,;])'([^']+)'(?=[\s\.,;:!?\)\]]|$)"
+    r"|‘([^’]+)’"
+)
+
 
 def _is_sentence_start(tokens: list, idx: int) -> bool:
     """Check if a token is at the start of a sentence or after formatting."""
@@ -120,7 +137,7 @@ def _has_artifacts(txt: str) -> bool:
     )
 
 
-def extract_entities(text: str) -> List[Tuple[str, str]]:
+def extract_entities(text: str, *, nlp_config: Optional[NlpConfig] = None) -> List[Tuple[str, str]]:
     """Extract named entities, quoted text, and noun compounds from text.
 
     This is the public API that accepts a string. It loads the spaCy model
@@ -128,6 +145,7 @@ def extract_entities(text: str) -> List[Tuple[str, str]]:
 
     Args:
         text: Input text to extract entities from.
+        nlp_config: Optional NlpConfig to control language/model/extraction mode.
 
     Returns:
         Deduplicated list of (entity_type, entity_text) tuples.
@@ -136,15 +154,25 @@ def extract_entities(text: str) -> List[Tuple[str, str]]:
     """
     from mem0.utils.spacy_models import get_nlp_full
 
-    nlp = get_nlp_full()
+    config = nlp_config or NlpConfig()
+    nlp = get_nlp_full(config)
     if nlp is None:
         return []
 
     doc = nlp(text)
-    return _extract_entities_from_doc(doc)
+    return _extract_entities_from_doc(
+        doc,
+        entity_extraction=config.entity_extraction,
+        language_code=config.language_code,
+    )
 
 
-def extract_entities_batch(texts: List[str], batch_size: int = 32) -> List[List[Tuple[str, str]]]:
+def extract_entities_batch(
+    texts: List[str],
+    batch_size: int = 32,
+    *,
+    nlp_config: Optional[NlpConfig] = None,
+) -> List[List[Tuple[str, str]]]:
     """Extract entities from multiple texts using spaCy's nlp.pipe() for batched NER.
 
     Uses spaCy's efficient batch processing pipeline instead of calling
@@ -153,6 +181,7 @@ def extract_entities_batch(texts: List[str], batch_size: int = 32) -> List[List[
     Args:
         texts: List of input texts to extract entities from.
         batch_size: Number of texts to process in each spaCy batch.
+        nlp_config: Optional NlpConfig to control language/model/extraction mode.
 
     Returns:
         List of entity lists, one per input text. Each entity list contains
@@ -164,27 +193,70 @@ def extract_entities_batch(texts: List[str], batch_size: int = 32) -> List[List[
 
     from mem0.utils.spacy_models import get_nlp_full
 
-    nlp = get_nlp_full()
+    config = nlp_config or NlpConfig()
+    nlp = get_nlp_full(config)
     if nlp is None:
         return [[] for _ in texts]
 
     results = []
     for doc in nlp.pipe(texts, batch_size=batch_size):
-        results.append(_extract_entities_from_doc(doc))
+        results.append(
+            _extract_entities_from_doc(
+                doc,
+                entity_extraction=config.entity_extraction,
+                language_code=config.language_code,
+            )
+        )
     return results
 
 
-def _extract_entities_from_doc(doc) -> List[Tuple[str, str]]:
+def _extract_entities_from_doc(
+    doc,
+    *,
+    entity_extraction: EntityExtractionMode = "auto",
+    language_code: str = "en",
+) -> List[Tuple[str, str]]:
     """Extract entities from a spaCy Doc object.
 
     Ported from platform's shared.core.utils.entity_extraction.extract_entities().
     """
+    is_cjk = language_code in CJK_LANGUAGES
+
+    # Mode matrix:
+    # auto + non-CJK  → heuristic + QUOTED (no NER, original behavior)
+    # auto + CJK      → NER + QUOTED only (skip PROPER heuristic, noun_chunks, verb heads)
+    # ner             → NER + QUOTED only
+    # heuristic       → heuristic + QUOTED (no NER)
+    if entity_extraction == "ner":
+        run_ner, run_heuristics = True, False
+    elif entity_extraction == "heuristic":
+        run_ner, run_heuristics = False, True
+    else:
+        run_ner, run_heuristics = is_cjk, not is_cjk
+
+    min_entity_len = 1 if is_cjk else 3
+
     entities: List[Tuple[str, str]] = []
     text = doc.text
-    tokens = list(doc)
 
-    # === PROPER NOUN SEQUENCES ===
+    # Only materialize the token list when heuristics are needed (non-CJK auto or heuristic mode).
+    tokens = list(doc) if run_heuristics else []
+
+    # === spaCy NER ===
+    if run_ner:
+        for ent in doc.ents:
+            if ent.label_ in _NOISY_NER_LABELS:
+                continue
+            ent_text = ent.text.strip()
+            if len(ent_text) < min_entity_len:
+                continue
+            entity_type = "PROPER" if ent.label_ in _NER_LABELS_AS_PROPER else "COMPOUND"
+            entities.append((entity_type, ent_text))
+
+    # === PROPER NOUN SEQUENCES (Latin-script heuristics) ===
     i = 0
+    if not run_heuristics:
+        i = len(tokens)
     while i < len(tokens):
         tok = tokens[i]
         if tok.text in _FORMATTING_MARKERS:
@@ -223,15 +295,26 @@ def _extract_entities_from_doc(doc) -> List[Tuple[str, str]]:
             i += 1
 
     # === QUOTED TEXT ===
-    for m in re.finditer(r'"([^"]+)"', text):
-        if len(m.group(1).strip()) > 2:
-            entities.append(("QUOTED", m.group(1).strip()))
-    for m in re.finditer(r"(?:^|[\s\(\[{,;])'([^']+)'(?=[\s\.,;:!?\)\]]|$)", text):
-        if len(m.group(1).strip()) > 2:
-            entities.append(("QUOTED", m.group(1).strip()))
+    for m in _RE_QUOTED_DQ.finditer(text):
+        val = next((g for g in m.groups() if g is not None), "").strip()
+        if val and len(val) >= min_entity_len:
+            entities.append(("QUOTED", val))
+    for m in _RE_QUOTED_SQ.finditer(text):
+        val = next((g for g in m.groups() if g is not None), "").strip()
+        if val and len(val) >= min_entity_len:
+            entities.append(("QUOTED", val))
 
     # === NOUN-NOUN COMPOUNDS ===
-    for chunk in doc.noun_chunks:
+    # CJK noun_chunks heuristics are Latin-script specific; skip when NER is active.
+    if not run_heuristics:
+        return _finalize_entities(entities, language_code=language_code)
+
+    try:
+        noun_chunks = list(doc.noun_chunks)
+    except (NotImplementedError, ValueError, TypeError):
+        noun_chunks = []
+
+    for chunk in noun_chunks:
         chunk_tokens = list(chunk)
         split_indices: list = []
         poss_splits: list = []
@@ -287,7 +370,7 @@ def _extract_entities_from_doc(doc) -> List[Tuple[str, str]]:
                 is_circ = any(t.lemma_.lower() in _CIRCUMSTANTIAL_MODS for t in compound_toks)
                 if is_circ:
                     val = head.lemma_ if head.pos_ == "NOUN" else head.text
-                    if len(val) > 2:
+                    if len(val) >= min_entity_len:
                         entities.append(("NOUN", val))
                 else:
                     filtered = _strip_generic_ending(
@@ -295,7 +378,7 @@ def _extract_entities_from_doc(doc) -> List[Tuple[str, str]]:
                     )
                     if filtered:
                         phrase = _lemmatize_compound(filtered)
-                        if len(phrase) > 3 and " " in phrase:
+                        if len(phrase) > min_entity_len and (is_cjk or " " in phrase):
                             entities.append(("COMPOUND", phrase))
             elif len(content) > 1 and has_spec_adj:
                 filtered = _strip_generic_ending(
@@ -303,32 +386,35 @@ def _extract_entities_from_doc(doc) -> List[Tuple[str, str]]:
                 )
                 if filtered:
                     phrase = _lemmatize_compound(filtered)
-                    if len(phrase) > 3 and " " in phrase:
+                    if len(phrase) > min_entity_len and (is_cjk or " " in phrase):
                         entities.append(("COMPOUND", phrase))
 
     # === FALLBACK: Mis-tagged VERB heads ===
     processed = {e[1].lower() for e in entities if e[0] == "COMPOUND"}
     generic_verb_heads = _GENERIC_HEADS | {"find", "buy", "purchase", "sale", "deal", "trip", "visit"}
 
-    def collect_compounds(head):
-        return [t for t in doc if t.head == head and t.dep_ == "compound"]
-
     for tok in doc:
         if tok.pos_ == "VERB" and tok.dep_ in {"pobj", "dobj", "nsubj"}:
-            comps = sorted(collect_compounds(tok), key=lambda t: t.i)
+            comps = sorted([t for t in tok.children if t.dep_ == "compound"], key=lambda t: t.i)
             if comps:
                 phrase_toks = comps if tok.lemma_.lower() in generic_verb_heads else comps + [tok]
-                phrase = " ".join(t.text for t in phrase_toks)
-                if phrase.lower() not in processed and len(phrase) > 3 and " " in phrase:
+                join_char = "" if is_cjk else " "
+                phrase = join_char.join(t.text for t in phrase_toks)
+                if phrase.lower() not in processed and len(phrase) > min_entity_len and (is_cjk or " " in phrase):
                     entities.append(("COMPOUND", phrase))
                     processed.add(phrase.lower())
 
+    return _finalize_entities(entities, language_code=language_code)
+
+
+def _finalize_entities(entities: List[Tuple[str, str]], language_code: str = "en") -> List[Tuple[str, str]]:
     # === DEDUPLICATION & CLEANUP ===
+    min_len = 1 if language_code in CJK_LANGUAGES else 3
     seen: set = set()
     deduped = []
     for t, e in entities:
         k = e.lower().strip()
-        if k not in seen and len(k) > 2:
+        if k not in seen and len(k) >= min_len:
             seen.add(k)
             deduped.append((t, e))
 
@@ -337,7 +423,7 @@ def _extract_entities_from_doc(doc) -> List[Tuple[str, str]]:
         txt = re.sub(r"^\*+\s*|\s*\*+$", "", etext.strip())
         txt = re.sub(r"\s*:+$", "", txt)
         txt = re.sub(r"^\d+\s*\.\s*", "", txt)
-        if not txt or len(txt) <= 2 or _has_artifacts(txt):
+        if not txt or len(txt) < min_len or _has_artifacts(txt):
             continue
         if etype == "PROPER" and " " not in txt and txt.lower() in _GENERIC_CAPS:
             continue
@@ -353,5 +439,8 @@ def _extract_entities_from_doc(doc) -> List[Tuple[str, str]]:
     deduped = list(best.values())
 
     # Remove entities that are substrings of longer entities
-    all_lower = [e[1].lower() for e in deduped]
-    return [(t, e) for t, e in deduped if not any(e.lower() != o and e.lower() in o for o in all_lower)]
+    # Skip for CJK languages where short entities are frequently valid substrings of longer ones
+    if language_code not in CJK_LANGUAGES:
+        all_lower = [e[1].lower() for e in deduped]
+        deduped = [(t, e) for t, e in deduped if not any(e.lower() != o and e.lower() in o for o in all_lower)]
+    return deduped
