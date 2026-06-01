@@ -2,6 +2,8 @@ import threading
 
 import pytest
 
+pytest.importorskip("server.memory_lock", reason="server modules not installed")
+
 import memory_lock
 from memory_lock import (
     LOCK_ACQUIRE_ORDER,
