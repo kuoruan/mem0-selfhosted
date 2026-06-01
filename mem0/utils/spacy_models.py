@@ -31,8 +31,9 @@ def _ensure_model_dir(model_dir: Optional[str]) -> str:
         return ""
     abs_dir = os.path.abspath(model_dir)
     os.makedirs(abs_dir, exist_ok=True)
-    if abs_dir not in sys.path:
-        sys.path.insert(0, abs_dir)
+    with _lock:
+        if abs_dir not in sys.path:
+            sys.path.insert(0, abs_dir)
     return abs_dir
 
 
