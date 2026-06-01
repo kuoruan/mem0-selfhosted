@@ -45,14 +45,29 @@ def _cache_key(model_name: str, model_dir: str, disable: Optional[tuple[str, ...
 
 
 def _download_model(model_name: str, model_dir: str, download_url: Optional[str]) -> None:
-    """Call ``spacy.cli.download``, optionally targeting *model_dir*."""
+    """Call ``spacy.cli.download``, optionally via *download_url* mirror.
+
+    spaCy 3.8.x has two bugs in ``download_model()`` that make ``custom_url``
+    unusable for mirrors: it resets *base_url* to the GitHub default when the
+    URL lacks a trailing ``/``, and it validates the final URL against
+    ``about.__download_url__``.  We work around both by temporarily patching
+    ``about.__download_url__`` to the mirror URL.
+    """
+    import spacy.about
     from spacy.cli import download
 
     logger.info("Downloading spaCy model %s...", model_name)
-    if model_dir:
-        download(model_name, False, False, download_url, "--target", model_dir)
+    pip_args = ["--target", model_dir] if model_dir else []
+    if download_url:
+        saved = spacy.about.__download_url__
+        spacy.about.__download_url__ = download_url
+        try:
+            download(model_name, False, False, download_url, *pip_args)
+        finally:
+            spacy.about.__download_url__ = saved
     else:
-        download(model_name, False, False, download_url)
+        # None fills the custom_url slot so pip_args land in *pip_args.
+        download(model_name, False, False, None, *pip_args)
     logger.info("spaCy model %s downloaded successfully", model_name)
 
 

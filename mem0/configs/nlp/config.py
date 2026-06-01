@@ -76,8 +76,10 @@ class NlpConfig(BaseModel):
     download_url: Optional[str] = Field(
         default=None,
         description=(
-            "Custom base URL for downloading spaCy models (overrides the default "
-            "GitHub releases URL). Useful for mirrors or offline registries."
+            "Mirror base URL for spaCy model downloads (replaces the default "
+            "``https://github.com/explosion/spacy-models/releases/download``). "
+            "The mirror must serve spaCy model wheels at the same path structure "
+            "as the official GitHub releases."
         ),
     )
 
