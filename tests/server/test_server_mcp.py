@@ -91,7 +91,9 @@ def mcp_testbed(monkeypatch):
     mock_memory.delete.return_value = {"message": "Memory deleted successfully!"}
     mock_memory.delete_all.return_value = {"message": "deleted"}
 
-    get_memory = lambda: mock_memory
+    def get_memory():
+        return mock_memory
+
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
     monkeypatch.setattr("server_state.get_memory_instance", get_memory)
     monkeypatch.setattr("memory_lock.get_memory_instance", get_memory)
@@ -99,7 +101,11 @@ def mcp_testbed(monkeypatch):
 
     app = FastAPI()
     app.include_router(module.mcp_router)
-    app.dependency_overrides[module.verify_auth] = lambda: None
+
+    def _verify_auth_override():
+        return None
+
+    app.dependency_overrides[module.verify_auth] = _verify_auth_override
 
     client = TestClient(app)
     _initialize_client(client)
@@ -242,7 +248,10 @@ def mcp_testbed_authed(monkeypatch):
 
     mock_memory = MagicMock()
     mock_memory.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "saved"}]}
-    get_memory = lambda: mock_memory
+
+    def get_memory():
+        return mock_memory
+
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
     monkeypatch.setattr("server_state.get_memory_instance", get_memory)
     monkeypatch.setattr("memory_lock.get_memory_instance", get_memory)
@@ -254,7 +263,11 @@ def mcp_testbed_authed(monkeypatch):
 
     app = FastAPI()
     app.include_router(module.mcp_router)
-    app.dependency_overrides[module.verify_auth] = lambda: mock_user
+
+    def _verify_auth_override():
+        return mock_user
+
+    app.dependency_overrides[module.verify_auth] = _verify_auth_override
 
     client = TestClient(app)
     _initialize_client(client)

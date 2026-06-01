@@ -106,7 +106,11 @@ class TestCompatEntity:
         )
         mem = MagicMock()
         mem.vector_store.list.return_value = [row]
-        monkeypatch.setattr(entities_mod, "get_memory_instance", lambda: mem)
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr(entities_mod, "get_memory_instance", _get_mem)
 
         entities = list_entities_payload()
         assert len(entities) == 1
@@ -843,7 +847,11 @@ class TestV3SearchMemoriesConvenienceFields:
 
         mem = MagicMock()
         mem.search.return_value = {"results": []}
-        monkeypatch.setattr("routers.compat.get_memory_instance", lambda: mem)
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("routers.compat.get_memory_instance", _get_mem)
 
         body = MemorySearchInputV3(
             query="hello",
@@ -1037,7 +1045,10 @@ class TestV1ListMemories:
         mem = MagicMock()
         mem.get_all.return_value = [{"id": "m1"}]
 
-        monkeypatch.setattr("routers.compat.get_memory_instance", lambda: mem)
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("routers.compat.get_memory_instance", _get_mem)
 
         result = v1_list_memories(request=MagicMock(), user_id="u1", auth=None)
 
@@ -1060,7 +1071,10 @@ class TestSyntheticEvents:
     def test_v3_add_returns_event_id_and_event_is_fetchable(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        get_mem = lambda: mem
+
+        def get_mem():
+            return mem
+
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
         monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
@@ -1090,7 +1104,10 @@ class TestSyntheticEvents:
     def test_v1_events_paginates_cached_events(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        get_mem = lambda: mem
+
+        def get_mem():
+            return mem
+
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
         monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
@@ -1130,7 +1147,10 @@ class TestSyntheticEvents:
     def test_v1_get_event_denied_for_other_user(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        get_mem = lambda: mem
+
+        def get_mem():
+            return mem
+
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
         monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
@@ -1156,7 +1176,10 @@ class TestSyntheticEvents:
     def test_v1_list_events_filters_by_owner(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        get_mem = lambda: mem
+
+        def get_mem():
+            return mem
+
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
         monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
@@ -1194,7 +1217,10 @@ class TestSyntheticEvents:
     def test_v3_add_infer_false_returns_results_immediately(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "verbatim"}]}
-        get_mem = lambda: mem
+
+        def get_mem():
+            return mem
+
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
         monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
@@ -1225,7 +1251,10 @@ class TestSyntheticEvents:
     def test_v3_add_infer_false_failure_surfaces_from_add(self, monkeypatch):
         mem = MagicMock()
         mem.add.side_effect = RuntimeError("boom")
-        get_mem = lambda: mem
+
+        def get_mem():
+            return mem
+
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
         monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
@@ -1245,7 +1274,10 @@ class TestSyntheticEvents:
     def test_v3_add_event_latency_is_recorded_in_milliseconds(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
-        get_mem = lambda: mem
+
+        def get_mem():
+            return mem
+
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
         monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)
@@ -1267,7 +1299,10 @@ class TestSyntheticEvents:
     def test_v3_add_marks_event_failed_when_add_raises(self, monkeypatch):
         mem = MagicMock()
         mem.add.side_effect = RuntimeError("boom")
-        get_mem = lambda: mem
+
+        def get_mem():
+            return mem
+
         monkeypatch.setattr("routers.compat.get_memory_instance", get_mem)
         monkeypatch.setattr("server_state.get_memory_instance", get_mem)
         monkeypatch.setattr("memory_lock.get_memory_instance", get_mem)

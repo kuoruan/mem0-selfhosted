@@ -3,6 +3,8 @@ from unittest.mock import Mock
 
 import pytest
 
+pytest.importorskip("server.server_state", reason="server modules not installed")
+
 import server_state
 
 
