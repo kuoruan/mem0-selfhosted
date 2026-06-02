@@ -147,11 +147,7 @@ def memory_id_lock_key(memory_id: str) -> ScopeLockKey:
 
 def scope_lock_keys(entity_scope: Dict[str, str]) -> Tuple[ScopeLockKey, ...]:
     """Return per-field lock keys in coarse-to-fine acquisition order."""
-    keys = tuple(
-        ((field, trimmed),)
-        for field in _SCOPE_FIELDS
-        if (trimmed := _trimmed_str(entity_scope.get(field)))
-    )
+    keys = tuple(((field, trimmed),) for field in _SCOPE_FIELDS if (trimmed := _trimmed_str(entity_scope.get(field))))
     if not keys:
         raise ValueError(
             "At least one entity scope field (user_id, agent_id, app_id, run_id) is required for a scoped lock."
@@ -161,11 +157,7 @@ def scope_lock_keys(entity_scope: Dict[str, str]) -> Tuple[ScopeLockKey, ...]:
 
 def scope_lock_key(entity_scope: Dict[str, str]) -> ScopeLockKey:
     """Flat composite key (all present fields) for identity / tests."""
-    items = [
-        (field, trimmed)
-        for field in _SCOPE_FIELDS
-        if (trimmed := _trimmed_str(entity_scope.get(field)))
-    ]
+    items = [(field, trimmed) for field in _SCOPE_FIELDS if (trimmed := _trimmed_str(entity_scope.get(field)))]
     if not items:
         raise ValueError(
             "At least one entity scope field (user_id, agent_id, app_id, run_id) is required for a scoped lock."

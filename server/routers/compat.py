@@ -51,7 +51,6 @@ Stub endpoints (501 Not Implemented)
 
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
@@ -579,9 +578,7 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     for item in body.memories:
         try:
             run_memory_write_for_memory_id(
-                lambda memory, it=item: merge_and_update(
-                    memory, it.memory_id, text=it.text, metadata=it.metadata
-                ),
+                lambda memory, it=item: merge_and_update(memory, it.memory_id, text=it.text, metadata=it.metadata),
                 item.memory_id,
             )
             updated_count += 1
