@@ -53,27 +53,26 @@ def _cache_key(model_name: str, model_dir: str, disable: Optional[tuple[str, ...
 def _download_model(model_name: str, model_dir: str, download_url: Optional[str]) -> None:
     """Call ``spacy.cli.download``, optionally via *download_url* mirror.
 
-    spaCy 3.8.x ``download_model()`` validates the final URL against
-    ``about.__download_url__``, which rejects mirror URLs.  We work around
-    this by temporarily patching ``about.__download_url__``.
+    Temporarily patches ``about.__download_url__`` when a mirror is set so
+    spaCy's internal URL validation passes.  Default downloads are unaffected.
     """
     import spacy.about
     from spacy.cli import download
 
     logger.info("Downloading spaCy model %s...", model_name)
     pip_args = ["--target", model_dir, "--no-deps"] if model_dir else []
+    saved = None
 
-    saved = spacy.about.__download_url__
     if download_url:
-        normalized = download_url if download_url.endswith("/") else download_url + "/"
-        spacy.about.__download_url__ = normalized
-        custom_url = normalized
-    else:
-        custom_url = None
+        download_url = download_url.rstrip("/") + "/"
+        saved = spacy.about.__download_url__
+        spacy.about.__download_url__ = download_url
+
     try:
-        download(model_name, False, False, custom_url, *pip_args)
+        download(model_name, False, False, download_url, *pip_args)
     finally:
-        spacy.about.__download_url__ = saved
+        if saved is not None:
+            spacy.about.__download_url__ = saved
 
     logger.info("spaCy model %s downloaded successfully", model_name)
 
