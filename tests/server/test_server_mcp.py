@@ -10,8 +10,9 @@ pytest.importorskip("mcp", reason="mcp not installed")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import mcp_server
-from compat.events import event_cache_clear, event_cache_put, make_event_obj
+import server.mcp_server as mcp_server
+from server.compat.entities import iter_payloads, normalize_vector_store_list
+from server.compat.events import event_cache_clear, event_cache_put, make_event_obj
 
 # MCP_HEADERS with a User-Agent prefixed with "Mozilla" so it's skipped as generic,
 # avoiding platform injection in tests that don't explicitly test that feature.
@@ -64,6 +65,7 @@ class _ImmediateThread:
         if self._target:
             self._target(*self._args)
 
+
 class _ImmediateExecutor:
     def submit(self, fn, *args, **kwargs):
         fn(*args, **kwargs)
@@ -91,15 +93,21 @@ def mcp_testbed(monkeypatch):
     mock_memory.delete.return_value = {"message": "Memory deleted successfully!"}
     mock_memory.delete_all.return_value = {"message": "deleted"}
 
-    get_memory = lambda: mock_memory
+    def get_memory():
+        return mock_memory
+
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
-    monkeypatch.setattr("server_state.get_memory_instance", get_memory)
-    monkeypatch.setattr("memory_lock.get_memory_instance", get_memory)
+    monkeypatch.setattr("server.server_state.get_memory_instance", get_memory)
+    monkeypatch.setattr("server.memory_lock.get_memory_instance", get_memory)
     monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
 
     app = FastAPI()
     app.include_router(module.mcp_router)
-    app.dependency_overrides[module.verify_auth] = lambda: None
+
+    def _verify_auth_override():
+        return None
+
+    app.dependency_overrides[module.verify_auth] = _verify_auth_override
 
     client = TestClient(app)
     _initialize_client(client)
@@ -159,7 +167,9 @@ def test_add_memory_tool_uses_explicit_user_id(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
     structured = _structured(
-        client, "add_memory", {"text": "remember this", "user_id": "alice", "infer": True},
+        client,
+        "add_memory",
+        {"text": "remember this", "user_id": "alice", "infer": True},
     )
     assert structured["status"] == "PENDING"
     assert structured["event_id"]
@@ -242,10 +252,13 @@ def mcp_testbed_authed(monkeypatch):
 
     mock_memory = MagicMock()
     mock_memory.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "saved"}]}
-    get_memory = lambda: mock_memory
+
+    def get_memory():
+        return mock_memory
+
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
-    monkeypatch.setattr("server_state.get_memory_instance", get_memory)
-    monkeypatch.setattr("memory_lock.get_memory_instance", get_memory)
+    monkeypatch.setattr("server.server_state.get_memory_instance", get_memory)
+    monkeypatch.setattr("server.memory_lock.get_memory_instance", get_memory)
     monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
 
     auth_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -254,7 +267,11 @@ def mcp_testbed_authed(monkeypatch):
 
     app = FastAPI()
     app.include_router(module.mcp_router)
-    app.dependency_overrides[module.verify_auth] = lambda: mock_user
+
+    def _verify_auth_override():
+        return mock_user
+
+    app.dependency_overrides[module.verify_auth] = _verify_auth_override
 
     client = TestClient(app)
     _initialize_client(client)
@@ -395,7 +412,9 @@ def test_list_events_filter_and_pagination(mcp_testbed):
 def test_prompts_get_memory_assistant(mcp_testbed):
     _, client, _ = mcp_testbed
 
-    response = client.post("/mcp", json=_jsonrpc("prompts/get", {"name": "memory_assistant"}, req_id=2), headers=MCP_HEADERS)
+    response = client.post(
+        "/mcp", json=_jsonrpc("prompts/get", {"name": "memory_assistant"}, req_id=2), headers=MCP_HEADERS
+    )
     assert response.status_code == 200
     messages = response.json()["result"]["messages"]
     assert any("add_memory" in msg.get("content", {}).get("text", "") for msg in messages)
@@ -436,9 +455,7 @@ def test_search_memories_passes_top_k_and_threshold(mcp_testbed):
 
 def test_get_memories_pagination(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    mock_memory.get_all.return_value = [
-        {"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(5)
-    ]
+    mock_memory.get_all.return_value = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(5)]
 
     structured = _structured(client, "get_memories", {"user_id": "alice", "page": 2, "page_size": 2})
 
@@ -449,9 +466,7 @@ def test_get_memories_pagination(mcp_testbed):
 
 def test_get_memories_page_without_page_size_uses_defaults(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    mock_memory.get_all.return_value = [
-        {"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(25)
-    ]
+    mock_memory.get_all.return_value = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(25)]
 
     structured = _structured(client, "get_memories", {"user_id": "alice", "page": 1})
 
@@ -516,7 +531,7 @@ def test_list_entities_returns_payload(mcp_testbed):
     )
     mock_memory.vector_store.list.return_value = [row]
 
-    with patch("compat.entities.get_memory_instance", return_value=mock_memory):
+    with patch("server.compat.entities.get_memory_instance", return_value=mock_memory):
         structured = _structured(client, "list_entities")
     assert structured["count"] == 1
     assert structured["results"][0]["name"] == "alice"
@@ -612,8 +627,6 @@ def test_update_memory_non_dict_returns_fallback(mcp_testbed):
 
 def test_normalize_list_result_shapes():
     """normalize_vector_store_list should handle all documented backend return shapes."""
-    from compat.entities import normalize_vector_store_list
-
     # Empty / falsy
     assert normalize_vector_store_list(None) == []
     assert normalize_vector_store_list([]) == []
@@ -636,13 +649,12 @@ def test_normalize_list_result_shapes():
 def test_iter_payloads_skips_none_rows():
     """iter_payloads should skip None entries in the rows list."""
     from unittest.mock import patch
-    from compat.entities import iter_payloads
 
     row = MagicMock(payload={"data": 1})
     mock_memory = MagicMock()
     mock_memory.vector_store.list.return_value = [row, None, MagicMock(payload={"data": 2})]
 
-    with patch("compat.entities.get_memory_instance", return_value=mock_memory):
+    with patch("server.compat.entities.get_memory_instance", return_value=mock_memory):
         payloads = iter_payloads()
 
     assert payloads == [{"data": 1}, {"data": 2}]

@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import server_state
+import server.server_state as server_state
 
 
 def test_initialize_state_skips_missing_optional_config_file(monkeypatch):

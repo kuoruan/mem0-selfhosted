@@ -159,7 +159,6 @@ class TestEnsureCacheDir:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             model_dir = os.path.join(tmpdir, "spacy_models")
-            old_path = list(sys.path)
             result = spacy_models._ensure_model_dir(model_dir)
             assert result == model_dir
             assert os.path.isdir(model_dir)
