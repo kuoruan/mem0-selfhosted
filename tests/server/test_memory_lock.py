@@ -2,8 +2,10 @@ import threading
 
 import pytest
 
-import memory_lock
-from memory_lock import (
+pytest.importorskip("server.memory_lock", reason="server modules not installed")
+
+import server.memory_lock as memory_lock
+from server.memory_lock import (
     LOCK_ACQUIRE_ORDER,
     memory_id_lock,
     memory_id_lock_key,
@@ -85,7 +87,7 @@ def test_different_memory_ids_run_concurrently(monkeypatch):
     order: list[str] = []
     barrier = threading.Barrier(2)
     sentinel = object()
-    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: sentinel)
+    monkeypatch.setattr("server.memory_lock.get_memory_instance", lambda: sentinel)
 
     def work(mid: str, label: str) -> None:
         with memory_id_lock(mid):
@@ -110,7 +112,7 @@ def test_same_memory_id_serializes_via_run_memory_write_for_memory_id(monkeypatc
     first_started = threading.Event()
     allow_first_finish = threading.Event()
     sentinel = object()
-    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: sentinel)
+    monkeypatch.setattr("server.memory_lock.get_memory_instance", lambda: sentinel)
 
     def slow(_memory):
         order.append("start")
@@ -162,7 +164,7 @@ def test_same_scope_serializes_writes(monkeypatch):
     first_started = threading.Event()
     allow_first_finish = threading.Event()
     sentinel = object()
-    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: sentinel)
+    monkeypatch.setattr("server.memory_lock.get_memory_instance", lambda: sentinel)
 
     def slow_write(_memory):
         order.append("start")
@@ -328,7 +330,7 @@ def test_memory_id_lock_with_entity_scope_blocks_delete_all(monkeypatch):
     order: list[str] = []
     update_started = threading.Event()
     allow_update_finish = threading.Event()
-    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: object())
+    monkeypatch.setattr("server.memory_lock.get_memory_instance", lambda: object())
 
     def slow_update(_memory) -> None:
         order.append("update-start")
@@ -360,7 +362,7 @@ def test_concurrent_add_user_and_user_agent_serialize(monkeypatch):
     order: list[str] = []
     gate = threading.Event()
     release = threading.Event()
-    monkeypatch.setattr("memory_lock.get_memory_instance", lambda: object())
+    monkeypatch.setattr("server.memory_lock.get_memory_instance", lambda: object())
 
     def slow_add(_memory) -> None:
         order.append("add-start")
@@ -417,7 +419,7 @@ def test_resolve_scope_loads_memory_once(monkeypatch):
         instance_ids.append(id(mem))
         return mem
 
-    monkeypatch.setattr("memory_lock.get_memory_instance", _get_memory)
+    monkeypatch.setattr("server.memory_lock.get_memory_instance", _get_memory)
 
     run_memory_write_for_memory_id(lambda _m: None, "mem-1", resolve_scope=True)
     assert calls == ["mem-1"]
