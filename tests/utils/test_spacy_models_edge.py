@@ -1,5 +1,9 @@
 """Tests for spacy_models edge cases (spaCy required, model download not required)."""
+import os
+import sys
 import tempfile
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,25 +21,11 @@ def _reset_cache():
     spacy_models.reset_spacy_cache()
 
 
-class TestEnsureModelAvailable:
-    """Test _ensure_model_available edge cases."""
-
-    def test_local_path_skips_package_check(self):
-        """Local file path should be accepted without checking spacy package."""
-        with tempfile.NamedTemporaryFile(suffix=".pt") as f:
-            spacy_models._ensure_model_available(f.name, model_dir="", download_url=None, auto_download=False)
-
-    def test_local_directory_skips_package_check(self):
-        """Local directory should be accepted without checking spacy package."""
-        with tempfile.TemporaryDirectory() as d:
-            spacy_models._ensure_model_available(d, model_dir="", download_url=None, auto_download=False)
-
-
 class TestDisableFiltering:
     """Test that disable list is filtered to only existing pipeline components."""
 
     @patch("spacy.util.get_model_meta")
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load")
     def test_disable_filtered_to_existing_components(self, mock_load, mock_ensure, mock_get_meta):
         """Only existing pipeline components should be in disable list."""
@@ -55,7 +45,7 @@ class TestDisableFiltering:
         assert "parser" not in kwargs["disable"]
 
     @patch("spacy.util.get_model_meta")
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load")
     def test_disable_empty_when_no_components_exist(self, mock_load, mock_ensure, mock_get_meta):
         """Empty disable list when no pipeline components match."""
@@ -73,7 +63,7 @@ class TestDisableFiltering:
         assert len(kwargs["disable"]) == 0
 
     @patch("spacy.util.get_model_meta", side_effect=ValueError("meta failed"))
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load")
     def test_disable_falls_back_when_meta_fails(self, mock_load, mock_ensure, mock_get_meta):
         """If get_model_meta fails, use original disable list."""
@@ -93,24 +83,22 @@ class TestDisableFiltering:
 class TestLoadSpacyModel:
     """Test _load_spacy_model edge cases."""
 
-    @patch("mem0.utils.spacy_models._ensure_model_available", side_effect=RuntimeError("network error"))
-    def test_ensure_failure_cached_in_load_failed(self, mock_ensure):
-        """_ensure_model_available failure should be cached in _load_failed."""
-        config = NlpConfig(language="en", auto_download=True)
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=False)
+    def test_model_not_available_auto_download_false_cached(self, mock_available):
+        """When model is missing and auto_download=False, failure should be cached."""
+        config = NlpConfig(language="en", auto_download=False)
         first = spacy_models.get_nlp_full(config)
         second = spacy_models.get_nlp_full(config)
 
         assert first is None
         assert second is None
-        # _ensure should only be called once due to _load_failed cache
-        mock_ensure.assert_called_once()
+        # _is_model_available should only be called once due to _load_failed cache
+        mock_available.assert_called_once()
 
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load", side_effect=RuntimeError("load failed"))
-    def test_load_failure_cached(self, mock_load, mock_ensure):
+    def test_load_failure_cached(self, mock_load, mock_available):
         """Model load failure should be cached."""
-        mock_ensure.return_value = None
-
         config = NlpConfig(language="en", auto_download=False)
         first = spacy_models.get_nlp_full(config)
         second = spacy_models.get_nlp_full(config)
@@ -120,11 +108,10 @@ class TestLoadSpacyModel:
         # spacy.load should be called at most once (may be 0 if spacy not importable)
         assert mock_load.call_count <= 1
 
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load")
-    def test_caching_different_models(self, mock_load, mock_ensure):
+    def test_caching_different_models(self, mock_load, mock_available):
         """Different model configs should have separate cache entries."""
-        mock_ensure.return_value = None
         mock_nlp_en = MagicMock()
         mock_nlp_de = MagicMock()
 
@@ -153,9 +140,6 @@ class TestEnsureCacheDir:
         assert result == ""
 
     def test_creates_dir_and_adds_to_sys_path(self):
-        import os
-        import sys
-        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             model_dir = os.path.join(tmpdir, "spacy_models")
@@ -167,15 +151,12 @@ class TestEnsureCacheDir:
             sys.path.remove(model_dir)
 
     def test_existing_dir_returns_path(self):
-        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = spacy_models._ensure_model_dir(tmpdir)
             assert result == tmpdir
 
     def test_does_not_duplicate_sys_path_entry(self):
-        import sys
-        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             spacy_models._ensure_model_dir(tmpdir)  # first call
@@ -185,50 +166,10 @@ class TestEnsureCacheDir:
             sys.path.remove(tmpdir)
 
 
-class TestEnsureModelAvailableCacheDir:
-    """Test _ensure_model_available with model_dir."""
-
-    def test_returns_early_when_model_dir_in_cache(self):
-        """Should return immediately if model directory exists under model_dir."""
-        import os
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            model_dir = os.path.join(tmpdir, "en_core_web_sm")
-            os.makedirs(model_dir)
-            # Should not raise even without auto_download
-            spacy_models._ensure_model_available(
-                "en_core_web_sm", model_dir=tmpdir, download_url=None, auto_download=False
-            )
-
-    @patch("spacy.cli.download")
-    def test_download_to_model_dir_uses_target(self, mock_download):
-        """When model_dir is set, download should pass --target as pip arg."""
-        import sys
-
-        config = NlpConfig(language="en", model_dir="/tmp/spacy_models")
-        spacy_models._ensure_model_dir(config.model_dir)
-        try:
-            try:
-                spacy_models._ensure_model_available(
-                    "en_core_web_sm", model_dir=config.model_dir,
-                    download_url=None, auto_download=True,
-                )
-            except Exception:
-                pass  # May fail if no network, but download should have been called
-            if mock_download.called:
-                mock_download.assert_called_once_with(
-                    "en_core_web_sm", False, False, None, "--target", "/tmp/spacy_models", "--no-deps",
-                )
-        finally:
-            if "/tmp/spacy_models" in sys.path:
-                sys.path.remove("/tmp/spacy_models")
-
-
 class TestGetNlpWithCacheDir:
     """Test get_nlp_full / get_nlp_lemma integration with model_dir."""
 
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load")
     def test_full_loads_model_by_name(self, mock_load, mock_ensure):
         """spacy.load should be called with the model name (not a path)."""
@@ -239,7 +180,7 @@ class TestGetNlpWithCacheDir:
 
         mock_load.assert_called_once_with("en_core_web_sm")
 
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load")
     def test_lemma_loads_model_by_name(self, mock_load, mock_ensure):
         """Lemma loader should also pass model name to spacy.load."""
@@ -252,7 +193,7 @@ class TestGetNlpWithCacheDir:
         assert load_name == "en_core_web_sm"
 
     @patch("mem0.utils.spacy_models._ensure_model_dir", return_value="")
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load")
     def test_disabled_skips_everything(self, mock_load, mock_ensure, mock_cache):
         """When NLP is disabled, no model loading should happen."""
@@ -263,20 +204,98 @@ class TestGetNlpWithCacheDir:
         mock_load.assert_not_called()
         mock_ensure.assert_not_called()
 
-    @patch("spacy.cli.download")
-    def test_download_url_passed_to_download(self, mock_download):
-        """When download_url is set, it patches __download_url__ and calls download()."""
-        try:
-            spacy_models._ensure_model_available(
-                "xx_nonexistent_model_nlp", model_dir="",
-                download_url="https://mirror.example.com/models",
-                auto_download=True,
-            )
-        except Exception:
-            pass  # download may fail due to network
-        if mock_download.called:
-            # The monkey-patch on __download_url__ handles the mirror URL;
-            # download() receives only the model name.
-            mock_download.assert_called_once_with(
-                "xx_nonexistent_model_nlp", False, False, "https://mirror.example.com/models/",
-            )
+
+class TestBackgroundDownload:
+    """Test background download thread behaviour.
+
+    When ``auto_download=True`` and the model is not on disk, a daemon
+    thread is spawned to download and load it.  The calling thread
+    returns ``None`` immediately.
+    """
+
+    @patch("mem0.utils.spacy_models._download_model")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=False)
+    def test_returns_none_immediately(self, mock_available, mock_download):
+        """auto_download=True returns None without blocking."""
+        config = NlpConfig(language="en", auto_download=True)
+        assert spacy_models.get_nlp_full(config) is None
+
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=False)
+    def test_downloading_flag_set_during_download(self, mock_available):
+        """_downloading tracks in-progress downloads."""
+        started = threading.Event()
+
+        def block(*_a, **_kw):
+            started.set()
+            # Keep the thread inside _download_model long enough for
+            # the assertion below to run.
+            time.sleep(0.5)
+
+        with patch("mem0.utils.spacy_models._download_model", block):
+            spacy_models.get_nlp_full(NlpConfig(language="en", auto_download=True))
+            assert started.wait(timeout=2.0), "download thread did not start"
+            # _downloading uses download_key (model_dir:model_name), not cache_key.
+            assert ":en_core_web_sm" in spacy_models._downloading
+
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=False)
+    def test_no_duplicate_download_threads(self, mock_available):
+        """Second call while downloading returns None without extra thread."""
+        started = threading.Event()
+
+        def block(*_a, **_kw):
+            started.set()
+            time.sleep(0.5)
+
+        with patch("mem0.utils.spacy_models._download_model", block):
+            first = spacy_models.get_nlp_full(NlpConfig(language="en", auto_download=True))
+            second = spacy_models.get_nlp_full(NlpConfig(language="en", auto_download=True))
+
+        assert first is None
+        assert second is None
+        assert started.wait(timeout=2.0)
+
+    @patch("mem0.utils.spacy_models._download_model")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=False)
+    def test_model_cached_after_successful_download(self, mock_available, mock_download):
+        """Once the background download and load succeed, the model is cached."""
+        mock_nlp = MagicMock()
+        mock_spacy = MagicMock()
+        mock_spacy.load.return_value = mock_nlp
+
+        with patch("mem0.utils.spacy_models._get_spacy", return_value=mock_spacy):
+            config = NlpConfig(language="en", auto_download=True)
+            first = spacy_models.get_nlp_full(config)
+            assert first is None
+
+            # Wait for background thread to cache the model.
+            key = spacy_models._cache_key("en_core_web_sm", "", None)
+            for _ in range(50):
+                if key in spacy_models._nlp_cache:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail("Background download did not complete within 2.5 s")
+
+        second = spacy_models.get_nlp_full(config)
+        assert second is mock_nlp
+        mock_download.assert_called_once()
+
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=False)
+    def test_download_failure_cleans_up_downloading(self, mock_available):
+        """When download fails, _downloading is cleared and failure cached."""
+        def fail(*_a, **_kw):
+            raise RuntimeError("simulated download failure")
+
+        with patch("mem0.utils.spacy_models._download_model", fail):
+            spacy_models.get_nlp_full(NlpConfig(language="en", auto_download=True))
+
+        # Wait for the background thread to finish to avoid flakiness.
+        for thread in threading.enumerate():
+            if thread.name == "spacy-download-en_core_web_sm":
+                thread.join(timeout=5.0)
+        assert ":en_core_web_sm" not in spacy_models._downloading
+
+        # Failure should be cached.
+        second = spacy_models.get_nlp_full(NlpConfig(language="en", auto_download=True))
+        assert second is None
+        assert mock_available.call_count <= 1
