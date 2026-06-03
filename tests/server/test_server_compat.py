@@ -1305,3 +1305,33 @@ class TestSyntheticEvents:
         assert event["status"] == "FAILED"
         assert event["metadata"] is not None
         assert "boom" in event["metadata"]["error"]
+
+    def test_v3_add_accepts_expiration_date_without_error(self, monkeypatch):
+        """expiration_date is accepted for plugin compat but not forwarded to memory.add()."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+
+        def get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
+        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+
+        tasks = BackgroundTasks()
+        result = v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "remember"}],
+                app_id="app1",
+                infer=False,
+                expiration_date="2099-12-31",
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            auth=None,
+        )
+
+        assert result["status"] == "SUCCEEDED"
+        # expiration_date must NOT be forwarded to memory.add()
+        call_kwargs = mem.add.call_args.kwargs
+        assert "expiration_date" not in (call_kwargs.get("metadata") or {})

@@ -381,6 +381,23 @@ def test_add_memory_with_metadata(mcp_testbed):
     )
 
 
+def test_add_memory_accepts_expiration_date_without_forwarding(mcp_testbed):
+    """expiration_date is accepted for plugin compat but not forwarded to memory.add()."""
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "add_memory",
+        {"text": "session note", "user_id": "alice", "expiration_date": "2099-12-31"},
+    )
+
+    mock_memory.add.assert_called_once()
+    call_kwargs = mock_memory.add.call_args.kwargs
+    # expiration_date must NOT appear in the metadata forwarded to memory.add()
+    metadata = call_kwargs.get("metadata", {})
+    assert "expiration_date" not in metadata
+
+
 def test_list_events_filter_and_pagination(mcp_testbed):
     _, client, _ = mcp_testbed
     now = "2026-01-01T00:00:00+00:00"

@@ -306,6 +306,10 @@ class MemoryAddInputV3(BaseModel):
         default=None,
         description="Pre-extracted fact strings used by agentic harnesses when infer=False. Stored in metadata.",
     )
+    expiration_date: Optional[str] = Field(
+        default=None,
+        description="Accepted for compatibility; not processed by the self-hosted server.",
+    )
 
 
 class MemorySearchInputV3(BaseModel):

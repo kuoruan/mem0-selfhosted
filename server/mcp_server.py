@@ -90,6 +90,10 @@ def add_memory(
         Optional[str],
         Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
     ] = None,
+    expiration_date: Annotated[
+        Optional[str],
+        Field(default=None, description="Accepted for compatibility; not processed."),
+    ] = None,
 ) -> dict[str, Any]:
     scope = require_entity_scope(
         user_id=user_id,
