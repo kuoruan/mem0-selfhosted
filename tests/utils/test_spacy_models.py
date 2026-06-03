@@ -20,7 +20,7 @@ class TestSpacyModels:
         config = NlpConfig(language="de")
         assert config.resolve_model() == "de_core_news_sm"
 
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load")
     def test_loads_and_caches_per_model(self, mock_load, mock_ensure):
         mock_nlp = MagicMock()
@@ -34,7 +34,7 @@ class TestSpacyModels:
         assert second is mock_nlp
         mock_load.assert_called_once_with("en_core_web_sm")
 
-    @patch("mem0.utils.spacy_models._ensure_model_available")
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=True)
     @patch("spacy.load")
     def test_lemma_pipeline_disables_ner_and_parser(self, mock_load, mock_ensure):
         mock_load.return_value = MagicMock()
@@ -48,8 +48,8 @@ class TestSpacyModels:
         assert "disable" in kwargs
         assert set(kwargs["disable"]) == {"ner", "parser"}
 
-    @patch("mem0.utils.spacy_models._ensure_model_available", side_effect=RuntimeError("missing"))
-    def test_failed_load_returns_none(self, mock_ensure):
+    @patch("mem0.utils.spacy_models._is_model_available", return_value=False)
+    def test_failed_load_returns_none(self, mock_available):
         config = NlpConfig(language="en", auto_download=False)
         assert spacy_models.get_nlp_full(config) is None
         assert spacy_models.get_nlp_full(config) is None
