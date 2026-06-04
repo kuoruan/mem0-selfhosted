@@ -47,7 +47,11 @@ from sqlalchemy import func, select
 load_dotenv()
 
 install_request_id_logging()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - [%(request_id)s] %(message)s")
+
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
+_log_level = getattr(logging, LOG_LEVEL, logging.INFO)
+logging.basicConfig(level=_log_level, format="%(asctime)s - %(levelname)s - [%(request_id)s] %(message)s")
 
 MIN_KEY_LENGTH = 16
 SENSITIVE_CONFIG_KEYS = {
