@@ -115,6 +115,39 @@ class TestPromptOverridesCustomInstructions:
         assert "config-level instructions" in user_prompt
 
 
+class TestPreserveInputLanguage:
+    @pytest.fixture
+    def mock_memory(self, mocker):
+        _setup_mocks(mocker)
+        memory = Memory()
+        memory.custom_instructions = None
+        memory.preserve_input_language = False
+        return memory
+
+    def test_preserve_input_language_false(self, mock_memory):
+        """When preserve_input_language is False, the prompt should NOT contain language requirement."""
+        mock_memory.add(
+            messages=[{"role": "user", "content": "Hello"}],
+            user_id="test-user",
+        )
+
+        user_prompt = mock_memory.llm.generate_response.call_args[1]["messages"][1]["content"]
+        assert "Language Requirement" not in user_prompt
+
+    def test_preserve_input_language_true(self, mock_memory):
+        """When preserve_input_language is True, the prompt should contain language requirement."""
+        mock_memory.preserve_input_language = True
+
+        mock_memory.add(
+            messages=[{"role": "user", "content": "Hello"}],
+            user_id="test-user",
+        )
+
+        user_prompt = mock_memory.llm.generate_response.call_args[1]["messages"][1]["content"]
+        assert "Language Requirement" in user_prompt
+        assert "Respond in the SAME LANGUAGE" in user_prompt
+
+
 class TestAsyncUpdate:
     @pytest.fixture
     def mock_async_memory(self, mocker):

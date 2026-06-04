@@ -56,6 +56,13 @@ class MemoryConfig(BaseModel):
         description="Custom instructions for fact extraction",
         default=None,
     )
+    preserve_input_language: bool = Field(
+        description=(
+            "When True, instructs the extraction LLM to respond in the same language "
+            "and script as the input messages."
+        ),
+        default=False,
+    )
     nlp: NlpConfig = Field(
         description="spaCy NLP settings for BM25 lemmatization and entity extraction",
         default_factory=NlpConfig,

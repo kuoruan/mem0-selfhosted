@@ -1023,7 +1023,7 @@ def generate_additive_extraction_prompt(
     current_date=None,
     timestamp=None,
     custom_instructions=None,
-    use_input_language=False,
+    preserve_input_language=False,
 ):
     """Build the user prompt for additive (ADD-only) extraction with linking.
 
@@ -1044,7 +1044,7 @@ def generate_additive_extraction_prompt(
     if custom_instructions:
         sections.append(f"## Custom Instructions\n{custom_instructions}")
 
-    if use_input_language:
+    if preserve_input_language:
         sections.append(
             "## Language Requirement\n"
             "CRITICAL: Respond in the SAME LANGUAGE and SCRIPT as the input messages.\n"
