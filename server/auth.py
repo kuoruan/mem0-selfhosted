@@ -3,17 +3,14 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import bcrypt
-
+from db import get_db
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
-from fastapi.security.utils import get_authorization_scheme_param
 from jose import JWTError, jwt
+from models import APIKey, RefreshTokenJti, User
+from passlib.context import CryptContext
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
-
-from db import get_db
-from models import APIKey, RefreshTokenJti, User
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
@@ -22,24 +19,20 @@ REFRESH_TOKEN_EXPIRE_DAYS = 30
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
 AUTH_DISABLED = os.environ.get("AUTH_DISABLED", "").lower() in {"1", "true", "yes", "on"}
 
-# Pre-computed bcrypt hash of b"dummy" (rounds=12), used only for timing-safe dummy verification.
-DUMMY_HASH: bytes = b"$2b$12$k/g9O8usX37dgo75GqFaG.nC5QjJnh5e9NhW43zoWPjoaDl21gB1q"
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+    return pwd_context.hash(password)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    try:
-        return bcrypt.checkpw(plain.encode(), hashed.encode())
-    except ValueError:
-        return False
+    return pwd_context.verify(plain, hashed)
 
 
 def dummy_verify_password() -> None:
     """Burn the same bcrypt cycles as a real verify so login timing doesn't leak whether an email exists."""
-    bcrypt.checkpw(b"dummy", DUMMY_HASH)
+    pwd_context.dummy_verify()
 
 
 def generate_api_key() -> tuple[str, str, str]:
@@ -47,15 +40,12 @@ def generate_api_key() -> tuple[str, str, str]:
     raw = secrets.token_urlsafe(32)
     full_key = f"m0sk_{raw}"
     prefix = full_key[:12]
-    key_hash = bcrypt.hashpw(full_key.encode(), bcrypt.gensalt(rounds=12)).decode()
+    key_hash = pwd_context.hash(full_key)
     return full_key, prefix, key_hash
 
 
 def verify_api_key_hash(plain_key: str, hashed: str) -> bool:
-    try:
-        return bcrypt.checkpw(plain_key.encode(), hashed.encode())
-    except ValueError:
-        return False
+    return pwd_context.verify(plain_key, hashed)
 
 
 def _get_secret() -> str:
@@ -115,28 +105,6 @@ bearer_scheme = HTTPBearer(auto_error=False)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-async def _authorization_token(request: Request) -> str | None:
-    authorization = request.headers.get("Authorization")
-    scheme, credentials = get_authorization_scheme_param(authorization)
-    if scheme.lower() == "token" and credentials:
-        return credentials
-    return None
-
-
-async def _api_key_or_token(
-    x_api_key: str | None = Depends(api_key_header),
-    token: str | None = Depends(_authorization_token),
-) -> str | None:
-    if x_api_key is not None:
-        return x_api_key
-
-    return token
-
-
-def _is_jwt(token: str) -> bool:
-    return token.startswith("eyJ") and token.count(".") == 2
-
-
 def _mark_auth_type(request: Request, auth_type: str) -> None:
     request.state.auth_type = auth_type
 
@@ -176,17 +144,13 @@ def _resolve_user_from_api_key(key: str, db: Session) -> User:
 async def verify_auth(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    x_api_key: str | None = Depends(_api_key_or_token),
+    x_api_key: str | None = Depends(api_key_header),
     db: Session = Depends(get_db),
 ) -> User | None:
     """Authenticate via JWT, X-API-Key, or legacy ADMIN_API_KEY. Returns User or None."""
     if credentials is not None:
-        if _is_jwt(credentials.credentials):
-            _mark_auth_type(request, "bearer")
-            return _resolve_user_from_jwt(credentials.credentials, db)
-        # Not a JWT — try as API key below
-        if x_api_key is None:
-            x_api_key = credentials.credentials
+        _mark_auth_type(request, "bearer")
+        return _resolve_user_from_jwt(credentials.credentials, db)
 
     if x_api_key is not None:
         if ADMIN_API_KEY and secrets.compare_digest(x_api_key, ADMIN_API_KEY):
@@ -221,22 +185,31 @@ async def require_auth(
     return user
 
 
-def ensure_admin(request: Request, user: User | None) -> None:
-    """Guard that raises if the caller lacks admin privileges."""
-    if user is not None and user.role == "admin":
-        return
-    if getattr(request.state, "auth_type", "none") in {"admin_api_key", "disabled"}:
-        return
-    raise HTTPException(status_code=403, detail="Admin privileges required.")
+_BOOTSTRAP_ADMIN = User(
+    id=uuid.UUID(int=0), name="admin_api_key", email="", password_hash="", role="admin", created_at=datetime.min.replace(tzinfo=timezone.utc),
+)
 
 
-def require_admin(request: Request, user: User | None = Depends(verify_auth), db: Session = Depends(get_db)) -> User:
-    """Verify the user is an admin. Use for endpoints that require admin privileges."""
-    if user is not None and user.role == "admin":
-        return user
-    if getattr(request.state, "auth_type", "none") in {"admin_api_key", "disabled"}:
-        default_user = _get_default_user(db)
-        if default_user is not None:
-            return default_user
+async def require_admin(
+    request: Request,
+    user: User | None = Depends(verify_auth),
+    db: Session = Depends(get_db),
+) -> User:
+    """Like require_auth but also enforces admin role.
+
+    ADMIN_API_KEY and AUTH_DISABLED callers are treated as admin even when
+    the users table is empty (fresh-deploy bootstrap).
+    """
+    auth_type = getattr(request.state, "auth_type", "none")
+    if user is None:
+        if auth_type in {"admin_api_key", "disabled"}:
+            default_user = _get_default_user(db)
+            if default_user is not None:
+                if default_user.role != "admin":
+                    raise HTTPException(status_code=403, detail="Admin role required.")
+                return default_user
+            return _BOOTSTRAP_ADMIN
         raise HTTPException(status_code=401, detail="Authentication required.")
-    raise HTTPException(status_code=403, detail="Admin privileges required.")
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required.")
+    return user

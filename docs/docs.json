@@ -71,6 +71,7 @@
                         "pages": [
                           "platform/features/v2-memory-filters",
                           "platform/features/entity-scoped-memory",
+                          "platform/features/graph-memory",
                           "platform/features/async-client",
                           "platform/features/multimodal-support",
                           "platform/features/custom-categories",
@@ -122,8 +123,7 @@
                     "icon": "arrow-right",
                     "pages": [
                       "migration/platform-v2-to-v3",
-                      "migration/oss-to-platform",
-                      "migration/api-changes"
+                      "migration/oss-to-platform"
                     ]
                   },
                   {
@@ -131,19 +131,6 @@
                     "icon": "clipboard-list",
                     "pages": [
                       "platform/contribute"
-                    ]
-                  }
-                ]
-              },
-              {
-                "tab": "OpenClaw",
-                "groups": [
-                  {
-                    "group": "Agent Harness",
-                    "icon": "robot",
-                    "pages": [
-                      "integrations/openclaw",
-                      "integrations/hermes"
                     ]
                   }
                 ]
@@ -245,6 +232,7 @@
                               "components/vectordbs/dbs/cassandra",
                               "components/vectordbs/dbs/s3_vectors",
                               "components/vectordbs/dbs/databricks",
+                              "components/vectordbs/dbs/neon",
                               "components/vectordbs/dbs/neptune_analytics",
                               "components/vectordbs/dbs/turbopuffer"
                             ]
@@ -270,7 +258,8 @@
                               "components/embedders/models/lmstudio",
                               "components/embedders/models/together",
                               "components/embedders/models/langchain",
-                              "components/embedders/models/aws_bedrock"
+                              "components/embedders/models/aws_bedrock",
+                              "components/embedders/models/fastembed"
                             ]
                           }
                         ]
@@ -302,7 +291,8 @@
                     "group": "Migration",
                     "icon": "arrow-right",
                     "pages": [
-                      "migration/oss-v2-to-v3"
+                      "migration/oss-v2-to-v3",
+                      "migration/server-pgvector-upgrade"
                     ]
                   },
                   {
@@ -437,7 +427,7 @@
                       "integrations/flowise",
                       "integrations/langchain-tools",
                       "integrations/agentops",
-                      "integrations/keywords",
+                      "integrations/respan",
                       "integrations/raycast"
                     ]
                   }
@@ -462,7 +452,8 @@
                     "icon": "robot",
                     "pages": [
                       "integrations/openclaw",
-                      "integrations/hermes"
+                      "integrations/hermes",
+                      "integrations/pi-agent"
                     ]
                   }
                 ]
@@ -528,6 +519,8 @@
                       "api-reference/organization/get-org",
                       "api-reference/organization/get-org-members",
                       "api-reference/organization/add-org-member",
+                      "api-reference/organization/update-org-member",
+                      "api-reference/organization/remove-org-member",
                       "api-reference/organization/delete-org"
                     ]
                   },
@@ -540,6 +533,9 @@
                       "api-reference/project/get-project",
                       "api-reference/project/get-project-members",
                       "api-reference/project/add-project-member",
+                      "api-reference/project/update-project",
+                      "api-reference/project/update-project-member",
+                      "api-reference/project/remove-project-member",
                       "api-reference/project/delete-project"
                     ]
                   },
@@ -564,8 +560,7 @@
                     "pages": [
                       "changelog/highlights",
                       "changelog/sdk",
-                      "changelog/platform",
-                      "changelog/openclaw"
+                      "changelog/platform"
                     ]
                   }
                 ]
@@ -620,12 +615,24 @@
   },
   "redirects": [
     {
+      "source": "/changelog/openclaw",
+      "destination": "/changelog/sdk"
+    },
+    {
+      "source": "/components/rerankers/models/llm",
+      "destination": "/components/rerankers/models/llm_reranker"
+    },
+    {
       "source": "/migration/breaking-changes",
       "destination": "/"
     },
     {
       "source": "/migration/v0-to-v1",
       "destination": "/"
+    },
+    {
+      "source": "/migration/api-changes",
+      "destination": "/migration/oss-v2-to-v3"
     },
     {
       "source": "/platform/features/expiration-date",
@@ -642,10 +649,6 @@
     {
       "source": "/open-source/features/custom-fact-extraction-prompt",
       "destination": "/open-source/features/custom-instructions"
-    },
-    {
-      "source": "/platform/features/graph-memory",
-      "destination": "/migration/oss-v2-to-v3"
     },
     {
       "source": "/cookbooks/essentials/choosing-memory-architecture-vector-vs-graph",
@@ -1021,7 +1024,7 @@
     },
     {
       "source": "/features/graph-memory",
-      "destination": "/migration/oss-v2-to-v3"
+      "destination": "/platform/features/graph-memory"
     },
     {
       "source": "/features/:slug",
