@@ -1,12 +1,12 @@
 from datetime import datetime
 from typing import Literal, Optional
 
+from auth import require_admin, verify_auth
+from errors import upstream_error
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from auth import verify_auth
 from compat.entities import aggregate_entity_buckets, iter_payloads
-from errors import upstream_error
 from schemas import MessageResponse
 from memory_lock import run_memory_write
 
@@ -37,7 +37,7 @@ def list_entities(_auth=Depends(verify_auth)):
 
 
 @router.delete("/{entity_type}/{entity_id}", response_model=MessageResponse)
-def delete_entity(entity_type: EntityType, entity_id: str, _auth=Depends(verify_auth)):
+def delete_entity(entity_type: EntityType, entity_id: str, _auth=Depends(require_admin)):
     try:
         run_memory_write(
             lambda memory: memory.delete_all(**{TYPE_TO_FIELD[entity_type]: entity_id}),
