@@ -5,15 +5,14 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 
+from db import get_db
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 from jose import JWTError, jwt
+from models import APIKey, RefreshTokenJti, User
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
-
-from db import get_db
-from models import APIKey, RefreshTokenJti, User
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
@@ -230,13 +229,25 @@ def ensure_admin(request: Request, user: User | None) -> None:
     raise HTTPException(status_code=403, detail="Admin privileges required.")
 
 
+_BOOTSTRAP_ADMIN = User(
+    id=uuid.UUID(int=0), name="admin_api_key", email="", password_hash="", role="admin", created_at=datetime.min.replace(tzinfo=timezone.utc),
+)
+
+
 def require_admin(request: Request, user: User | None = Depends(verify_auth), db: Session = Depends(get_db)) -> User:
-    """Verify the user is an admin. Use for endpoints that require admin privileges."""
+    """Verify the user is an admin. Use for endpoints that require admin privileges.
+
+    ADMIN_API_KEY and AUTH_DISABLED callers are treated as admin even when
+    the users table is empty (fresh-deploy bootstrap).
+    """
+    auth_type = getattr(request.state, "auth_type", "none")
     if user is not None and user.role == "admin":
         return user
-    if getattr(request.state, "auth_type", "none") in {"admin_api_key", "disabled"}:
+    if auth_type in {"admin_api_key", "disabled"}:
         default_user = _get_default_user(db)
         if default_user is not None:
+            if default_user.role != "admin":
+                raise HTTPException(status_code=403, detail="Admin role required.")
             return default_user
-        raise HTTPException(status_code=401, detail="Authentication required.")
+        return _BOOTSTRAP_ADMIN
     raise HTTPException(status_code=403, detail="Admin privileges required.")
