@@ -22,7 +22,7 @@ DEFAULT_FIELDS = [
     {"name": "run_id", "type": "tag"},
     {"name": "user_id", "type": "tag"},
     {"name": "app_id", "type": "tag"},
-    {"name": "memory", "type": "tag"},  # Using TAG instead of TEXT for Valkey compatibility
+    {"name": "memory", "type": "text"},  # TEXT for full-text search over memory content (see #5006)
     {"name": "metadata", "type": "tag"},  # Using TAG instead of TEXT for Valkey compatibility
     {"name": "created_at", "type": "numeric"},
     {"name": "updated_at", "type": "numeric"},
@@ -42,7 +42,20 @@ class OutputData(BaseModel):
     payload: Dict
 
 
+_VALKEY_TAG_SPECIAL = set(r',.<>{}[]"\':;!@#$%^&*()-+=~| ')
+
+
 class ValkeyDB(VectorStoreBase):
+    @staticmethod
+    def _escape_tag_value(value):
+        """Escape special characters in a Valkey FT.SEARCH tag filter value.
+
+        Without escaping, characters like * (wildcard) or | (OR) alter query
+        semantics and can bypass tenant-isolation filters.
+        """
+        s = str(value)
+        return "".join(f"\\{c}" if c in _VALKEY_TAG_SPECIAL else c for c in s)
+
     def __init__(
         self,
         valkey_url: str,
@@ -172,7 +185,7 @@ class ValkeyDB(VectorStoreBase):
             "app_id",
             "TAG",
             "memory",
-            "TAG",
+            "TEXT",
             "metadata",
             "TAG",
             "created_at",
@@ -332,8 +345,8 @@ class ValkeyDB(VectorStoreBase):
             knn_part (str): The KNN part of the query.
             filters (dict, optional): Filters to apply to the search. Each key-value pair
                 becomes a tag filter (@key:{value}). None values are ignored.
-                Values are used as-is (no validation) - wildcards, lists, etc. are
-                passed through literally to Valkey search. Multiple filters are
+                Values are escaped via _escape_tag_value() before interpolation
+                to prevent wildcard/operator injection. Multiple filters are
                 combined with AND logic (space-separated).
 
         Returns:
@@ -348,8 +361,8 @@ class ValkeyDB(VectorStoreBase):
         filter_parts = []
         for key, value in filters.items():
             if value is not None:
-                # Use the correct filter syntax for Valkey
-                filter_parts.append(f"@{key}:{{{value}}}")
+                escaped = self._escape_tag_value(value)
+                filter_parts.append(f"@{key}:{{{escaped}}}")
 
         # No valid filter parts
         if not filter_parts:
@@ -391,8 +404,8 @@ class ValkeyDB(VectorStoreBase):
         """
         memory_results = []
         for doc in results.docs:
-            # Extract the score
-            score = float(doc.vector_score) if hasattr(doc, "vector_score") else None
+            raw_distance = float(doc.vector_score) if hasattr(doc, "vector_score") else None
+            score = max(0.0, 1.0 - raw_distance) if raw_distance is not None else None
 
             # Create the payload
             payload = {
@@ -753,34 +766,6 @@ class ValkeyDB(VectorStoreBase):
             logger.exception(f"Error resetting index {self.collection_name}: {e}")
             raise
 
-    def _build_list_query(self, filters=None):
-        """
-        Build a query for listing vectors.
-
-        Args:
-            filters (dict, optional): Filters to apply to the list. Each key-value pair
-                becomes a tag filter (@key:{value}). None values are ignored.
-                Values are used as-is (no validation) - wildcards, lists, etc. are
-                passed through literally to Valkey search.
-
-        Returns:
-            str: The query string. Returns "*" if no valid filters provided.
-        """
-        # Default query
-        q = "*"
-
-        # Add filters if provided
-        if filters and any(value is not None for key, value in filters.items()):
-            filter_conditions = []
-            for key, value in filters.items():
-                if value is not None:
-                    filter_conditions.append(f"@{key}:{{{value}}}")
-
-            if filter_conditions:
-                q = " ".join(filter_conditions)
-
-        return q
-
     def list(self, filters: dict = None, top_k: int = None) -> list:
         """
         List all recent created memories from the vector store.
@@ -788,8 +773,8 @@ class ValkeyDB(VectorStoreBase):
         Args:
             filters (dict, optional): Filters to apply to the list. Each key-value pair
                 becomes a tag filter (@key:{value}). None values are ignored.
-                Values are used as-is without validation - wildcards, special characters,
-                lists, etc. are passed through literally to Valkey search.
+                Values are escaped via _escape_tag_value() before interpolation
+                to prevent wildcard/operator injection.
                 Multiple filters are combined with AND logic.
             top_k (int, optional): Maximum number of results to return. Defaults to 1000
                 if not specified.
