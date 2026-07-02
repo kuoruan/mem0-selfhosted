@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +14,18 @@ from mem0.configs.vector_stores.opensearch import OpenSearchConfig
 from mem0.vector_stores.base import VectorStoreBase
 
 logger = logging.getLogger(__name__)
+
+_SAFE_FILTER_KEY = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
+
+
+def _validate_filter(key: str, value) -> None:
+    if not isinstance(key, str) or not _SAFE_FILTER_KEY.match(key):
+        raise ValueError(f"Invalid filter key: {key!r}")
+    if not isinstance(value, (str, int, float, bool)):
+        raise ValueError(
+            f"Filter value for {key!r} must be str, int, float, or bool, "
+            f"got {type(value).__name__}"
+        )
 
 
 class OutputData(BaseModel):
@@ -39,6 +52,8 @@ class OpenSearchDB(VectorStoreBase):
 
         self.collection_name = config.collection_name
         self.embedding_model_dims = config.embedding_model_dims
+        self.auto_refresh = config.auto_refresh
+
         self.create_col(self.collection_name, self.embedding_model_dims)
 
     def create_index(self) -> None:
@@ -149,8 +164,6 @@ class OpenSearchDB(VectorStoreBase):
             }
             try:
                 self.client.index(index=self.collection_name, body=body)
-                # Force refresh to make documents immediately searchable for tests
-                self.client.indices.refresh(index=self.collection_name)
 
                 results.append(
                     OutputData(
@@ -162,6 +175,14 @@ class OpenSearchDB(VectorStoreBase):
             except Exception as e:
                 logger.error(f"Error inserting vector {id_}: {e}", exc_info=True)
                 raise
+
+        # Refresh once after the full batch (not per document) if explicitly enabled.
+        # Disabled by default for Serverless compatibility: OpenSearch Serverless does not
+        # support the indices.refresh() API, and refreshing per document would cause a
+        # cluster-level I/O stall on every insert.
+        # See: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/serverless-genref.html
+        if self.auto_refresh:
+            self.client.indices.refresh(index=self.collection_name)
 
         return results
 
@@ -189,6 +210,7 @@ class OpenSearchDB(VectorStoreBase):
             for key in ["user_id", "agent_id", "app_id", "run_id"]:
                 value = filters.get(key)
                 if value:
+                    _validate_filter(key, value)
                     filter_clauses.append({"term": {f"payload.{key}.keyword": value}})
 
         # Combine knn with filters if needed
@@ -239,6 +261,7 @@ class OpenSearchDB(VectorStoreBase):
             for key in ["user_id", "agent_id", "app_id", "run_id"]:
                 value = filters.get(key)
                 if value:
+                    _validate_filter(key, value)
                     filter_clauses.append({"term": {f"payload.{key}.keyword": value}})
 
         if filter_clauses:
@@ -353,6 +376,7 @@ class OpenSearchDB(VectorStoreBase):
                 for key in ["user_id", "agent_id", "app_id", "run_id"]:
                     value = filters.get(key)
                     if value:
+                        _validate_filter(key, value)
                         filter_clauses.append({"term": {f"payload.{key}.keyword": value}})
 
             if filter_clauses:
@@ -372,7 +396,7 @@ class OpenSearchDB(VectorStoreBase):
             return [results]  # VectorStore expects tuple/list format
         except Exception as e:
             logger.error(f"Error listing vectors: {e}", exc_info=True)
-            return []
+            return [[]]
 
     def reset(self):
         """Reset the index by deleting and recreating it."""

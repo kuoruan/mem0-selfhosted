@@ -156,7 +156,7 @@ def get_memory_instance() -> Memory:
 
 
 ALL_MEMORIES_LIMIT = 1000
-_RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "hash", "created_at", "updated_at"}
+_RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "hash", "created_at", "updated_at", "expiration_date"}
 
 
 def serialize_memory(row: Any) -> Dict[str, Any]:
@@ -168,6 +168,7 @@ def serialize_memory(row: Any) -> Dict[str, Any]:
         "agent_id": payload.get("agent_id"),
         "run_id": payload.get("run_id"),
         "hash": payload.get("hash"),
+        "expiration_date": payload.get("expiration_date"),
         "metadata": {k: v for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS},
         "created_at": payload.get("created_at"),
         "updated_at": payload.get("updated_at"),
