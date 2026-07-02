@@ -281,6 +281,7 @@ def _build_filters_and_metadata(
     *,  # Enforce keyword-only arguments
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    app_id: Optional[str] = None,
     run_id: Optional[str] = None,
     actor_id: Optional[str] = None,  # For query-time filtering
     input_metadata: Optional[Dict[str, Any]] = None,
@@ -330,6 +331,7 @@ def _build_filters_and_metadata(
     # Validate and trim entity IDs
     user_id = _validate_and_trim_entity_id(user_id, "user_id")
     agent_id = _validate_and_trim_entity_id(agent_id, "agent_id")
+    app_id = _validate_and_trim_entity_id(app_id, "app_id")
     run_id = _validate_and_trim_entity_id(run_id, "run_id")
 
     if user_id:
@@ -347,11 +349,15 @@ def _build_filters_and_metadata(
         effective_query_filters["run_id"] = run_id
         session_ids_provided.append("run_id")
 
+    if app_id:
+        base_metadata_template["app_id"] = app_id
+        effective_query_filters["app_id"] = app_id
+
     if not session_ids_provided:
         raise Mem0ValidationError(
-            message="At least one of 'user_id', 'agent_id', or 'run_id' must be provided.",
+            message="At least one of 'user_id', 'agent_id', 'app_id', or 'run_id' must be provided.",
             error_code="VALIDATION_001",
-            details={"provided_ids": {"user_id": user_id, "agent_id": agent_id, "run_id": run_id}},
+            details={"provided_ids": {"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id}},
             suggestion="Please provide at least one identifier to scope the memory operation."
         )
 
@@ -719,6 +725,7 @@ class Memory(MemoryBase):
         *,
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        app_id: Optional[str] = None,
         run_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         timestamp: Optional[Any] = None,
@@ -773,6 +780,7 @@ class Memory(MemoryBase):
         processed_metadata, effective_filters = _build_filters_and_metadata(
             user_id=user_id,
             agent_id=agent_id,
+            app_id=app_id,
             run_id=run_id,
             input_metadata=metadata,
         )
@@ -2355,6 +2363,7 @@ class AsyncMemory(MemoryBase):
         *,
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        app_id: Optional[str] = None,
         run_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         timestamp: Optional[Any] = None,
@@ -2390,7 +2399,7 @@ class AsyncMemory(MemoryBase):
         normalized_expiration_date = _normalize_expiration_date(expiration_date)
         temporal_usage_notice = detect_temporal_usage_from_metadata(metadata)
         processed_metadata, effective_filters = _build_filters_and_metadata(
-            user_id=user_id, agent_id=agent_id, run_id=run_id, input_metadata=metadata
+            user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id, input_metadata=metadata
         )
         if normalized_expiration_date is not None:
             processed_metadata["expiration_date"] = normalized_expiration_date

@@ -115,6 +115,12 @@ def _build_filter_conditions(filters):
     return conditions, params
 
 
+class OutputData(BaseModel):
+    id: Optional[str]
+    score: Optional[float]
+    payload: Optional[dict]
+
+
 def _with_sslmode(connection_string: str, sslmode: str) -> str:
     """Add or replace sslmode in URI and keyword conninfo strings.
 
@@ -131,12 +137,6 @@ def _with_sslmode(connection_string: str, sslmode: str) -> str:
         return re.sub(r"(^|\s)sslmode=\S+", lambda match: f"{match.group(1)}sslmode={sslmode}", connection_string)
 
     return f"{connection_string} sslmode={sslmode}"
-
-
-class OutputData(BaseModel):
-    id: Optional[str]
-    score: Optional[float]
-    payload: Optional[dict]
 
 
 class PGVector(VectorStoreBase):
@@ -181,7 +181,6 @@ class PGVector(VectorStoreBase):
         self.use_hnsw = hnsw
         self.embedding_model_dims = embedding_model_dims
         self.connection_pool = None
-        self._collection_ensured = False
 
         # Connection setup with priority: connection_pool > connection_string > individual parameters
         if connection_pool is not None:
@@ -194,28 +193,18 @@ class PGVector(VectorStoreBase):
             connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
             if sslmode:
                 connection_string = _with_sslmode(connection_string, sslmode)
-        
+
         if self.connection_pool is None:
             if PSYCOPG_VERSION == 3:
-                # open=False avoids blocking when DB DNS is not yet resolvable (e.g. Docker startup)
-                self.connection_pool = ConnectionPool(
-                    conninfo=connection_string,
-                    min_size=minconn,
-                    max_size=maxconn,
-                    open=False,
-                )
-                self.connection_pool.open(wait=False)
+                # psycopg3 ConnectionPool
+                self.connection_pool = ConnectionPool(conninfo=connection_string, min_size=minconn, max_size=maxconn, open=True)
             else:
                 # psycopg2 ThreadedConnectionPool
                 self.connection_pool = ConnectionPool(minconn=minconn, maxconn=maxconn, dsn=connection_string)
 
-    def _ensure_collection(self):
-        if self._collection_ensured:
-            return
         collections = self.list_cols()
-        if self.collection_name not in collections:
+        if collection_name not in collections:
             self.create_col()
-        self._collection_ensured = True
 
     @contextmanager
     def _get_cursor(self, commit: bool = False):
@@ -305,7 +294,6 @@ class PGVector(VectorStoreBase):
             )
 
     def insert(self, vectors: list[list[float]], payloads=None, ids=None) -> None:
-        self._ensure_collection()
         logger.info(f"Inserting {len(vectors)} vectors into collection {self.collection_name}")
         json_payloads = [json.dumps(payload) for payload in payloads]
 
@@ -343,7 +331,6 @@ class PGVector(VectorStoreBase):
         Returns:
             list: Search results.
         """
-        self._ensure_collection()
         filter_conditions, filter_params = _build_filter_conditions(filters)
         filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
 
@@ -360,7 +347,7 @@ class PGVector(VectorStoreBase):
             )
 
             results = cur.fetchall()
-        return [OutputData(id=str(r[0]), score=max(0.0, 1.0 - float(r[1])), payload=r[2]) for r in results]
+        return [OutputData(id=str(r[0]), score=max(0.0, min(1.0, 1.0 - float(r[1]))), payload=r[2]) for r in results]
 
     def keyword_search(self, query, top_k=5, filters=None):
         """
@@ -374,7 +361,6 @@ class PGVector(VectorStoreBase):
         Returns:
             List[OutputData]: Search results ranked by text relevance.
         """
-        self._ensure_collection()
         filter_conditions, filter_params = _build_filter_conditions(filters)
         filter_clause = sql.SQL("AND " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
 
@@ -405,7 +391,6 @@ class PGVector(VectorStoreBase):
         Args:
             vector_id (str): ID of the vector to delete.
         """
-        self._ensure_collection()
         with self._get_cursor(commit=True) as cur:
             cur.execute(sql.SQL("DELETE FROM {} WHERE id = %s").format(self._col()), (vector_id,))
 
@@ -423,14 +408,13 @@ class PGVector(VectorStoreBase):
             vector (List[float], optional): Updated vector.
             payload (Dict, optional): Updated payload.
         """
-        self._ensure_collection()
         with self._get_cursor(commit=True) as cur:
-            if vector is not None:
+            if vector:
                cur.execute(
                     sql.SQL("UPDATE {} SET vector = %s WHERE id = %s").format(self._col()),
                     (vector, vector_id),
                 )
-            if payload is not None:
+            if payload:
                 # Handle JSON serialization based on psycopg version
                 if PSYCOPG_VERSION == 3:
                     # psycopg3 uses psycopg.types.json.Json
@@ -456,7 +440,6 @@ class PGVector(VectorStoreBase):
         Returns:
             OutputData: Retrieved vector.
         """
-        self._ensure_collection()
         with self._get_cursor() as cur:
             cur.execute(
                 sql.SQL("SELECT id, vector, payload FROM {} WHERE id = %s").format(self._col()),
@@ -490,7 +473,6 @@ class PGVector(VectorStoreBase):
         Returns:
             Dict[str, Any]: Collection information.
         """
-        self._ensure_collection()
         with self._get_cursor() as cur:
             cur.execute(
                 sql.SQL("""
@@ -521,7 +503,6 @@ class PGVector(VectorStoreBase):
         Returns:
             List[OutputData]: List of vectors.
         """
-        self._ensure_collection()
         filter_conditions, filter_params = _build_filter_conditions(filters)
         filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
 
@@ -553,7 +534,6 @@ class PGVector(VectorStoreBase):
 
     def reset(self) -> None:
         """Reset the index by deleting and recreating it."""
-        self._ensure_collection()
         logger.warning(f"Resetting index {self.collection_name}...")
         self.delete_col()
         self.create_col()
