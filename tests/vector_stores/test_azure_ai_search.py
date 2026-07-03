@@ -521,7 +521,7 @@ def test_update_allows_empty_payload(azure_ai_search_instance):
     instance.update("doc1", payload={})
 
     mock_search_client.merge_or_upload_documents.assert_called_once_with(
-        documents=[{"id": "doc1", "payload": "{}", "user_id": None, "run_id": None, "agent_id": None}]
+        documents=[{"id": "doc1", "payload": "{}", "user_id": None, "agent_id": None, "app_id": None, "run_id": None}]
     )
 
 
