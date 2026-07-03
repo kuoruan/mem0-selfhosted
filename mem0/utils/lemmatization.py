@@ -12,6 +12,8 @@ where spaCy's context-dependent lemmatization produces inconsistent
 results (e.g., "meeting" as noun vs verb -> different lemmas).
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Optional
 

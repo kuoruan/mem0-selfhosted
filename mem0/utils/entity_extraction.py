@@ -21,8 +21,8 @@ Returns:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
+import re
 
 from mem0.configs.nlp.config import CJK_LANGUAGES, NlpConfig
 
