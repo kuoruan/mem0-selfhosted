@@ -359,7 +359,12 @@ _GENERIC_CAPS = {
 _FORMATTING_MARKERS = {"*", "-", "+", "\u2022", "\u2013", "\u2014", "#", "##", "###", "**", "__"}
 
 # Quoted-text patterns: ASCII + CJK quotes (curly + corner brackets).
-_RE_QUOTED_DQ = re.compile(r'"([^"]+)"|\u201c([^\u201d]+)\u201d|\u300c([^\u300d]+)\u300d')
+_RE_QUOTED_DQ = re.compile(
+    r'"([^"]+)"'
+    r"|\u201c([^\u201d]+)\u201d"
+    r"|\u300c([^\u300d]+)\u300d"
+    r"|\u300e([^\u300f]+)\u300f"
+)
 _RE_QUOTED_SQ = re.compile(
     r"(?:^|[\s\(\[{,;])'([^']+)'(?=[\s\.,;:!?\)\]]|$)"
     r"|\u2018([^\u2019]+)\u2019"
@@ -383,11 +388,6 @@ def _strip_generic_ending(toks: list) -> list:
         return toks
     last = toks[-1].lemma_.lower() if hasattr(toks[-1], "lemma_") else toks[-1].lower()
     return toks[:-1] if last in _GENERIC_ENDINGS and len(toks) > 2 else toks
-
-
-def _lemmatize_compound(toks: list) -> str:
-    """Join compound tokens, lemmatizing nouns."""
-    return " ".join(t.lemma_ if t.pos_ == "NOUN" else t.text for t in toks)
 
 
 def _has_artifacts(txt: str) -> bool:
@@ -560,8 +560,11 @@ def _add_technical_identifier_candidates(
 
 
 def _add_proper_name_candidates(
-    tokens: list, candidates: list[_EntityCandidate], *, min_len: int = 3
+    tokens: list, candidates: list[_EntityCandidate], *, min_len: int = 3, is_cjk: bool = False
 ) -> None:
+    # Capitalization heuristics don't apply to CJK scripts — skip.
+    if is_cjk:
+        return
     allowed_inner_connectors = {"of", "the", "for", "at", "in"}
     i = 0
     while i < len(tokens):
@@ -762,33 +765,42 @@ def _resolve_candidates(candidates: list[_EntityCandidate]) -> list[tuple[str, s
 def _extract_entities_from_doc(
     doc,
     *,
-    use_ner: bool = False,
+    entity_extraction: str = "auto",
     language_code: str = "en",
 ) -> list[tuple[str, str]]:
     """Extract typed entity candidates from a spaCy Doc.
 
-    Extraction mode follows the NLP config:
+    Extraction mode (``entity_extraction``):
 
-    - NER mode (CJK auto, or ``entity_extraction='ner'``): spaCy NER + quoted text
-      only — capitalization heuristics do not apply to CJK scripts.
-    - Heuristic mode (Latin auto, or ``entity_extraction='heuristic'``): proper-name
-      spans + topic phrases + quoted text; NER is skipped (original Latin behavior).
+    - ``auto``: NER + heuristics for non-CJK languages; NER only for CJK (zh/ja/ko)
+      since capitalization heuristics don't apply to CJK scripts.
+    - ``ner``: spaCy NER + quoted text + technical identifiers only.
+    - ``heuristic``: proper-name spans + topic phrases + quoted text + identifiers;
+      NER is skipped. For CJK, topic phrases use lenient CJK-aware thresholds.
 
-    Technical identifiers are extracted in both modes (language-agnostic).
+    Technical identifiers are extracted in all modes (language-agnostic).
 
     Args:
         doc: A spaCy ``Doc`` object (from ``nlp(text)``).
-        use_ner: When True, run spaCy NER and skip Latin capitalization heuristics.
+        entity_extraction: One of ``auto``/``ner``/``heuristic``.
         language_code: ISO 639-1 code; controls CJK-aware thresholds (min length,
-          quote forms, noun-chunk robustness).
+            quote forms, noun-chunk robustness).
 
     Returns:
         Deduplicated list of ``(entity_type, entity_text)`` tuples.
         Entity types include PROPER, QUOTED, TOPIC, and IDENTIFIER.
     """
     is_cjk = language_code in CJK_LANGUAGES
+    if entity_extraction == "ner":
+        use_ner = True
+        run_heuristics = False
+    elif entity_extraction == "heuristic":
+        use_ner = False
+        run_heuristics = True
+    else:  # "auto"
+        use_ner = True
+        run_heuristics = not is_cjk
     min_len = 1 if is_cjk else 3
-    run_heuristics = not use_ner
 
     tokens = list(doc)
     candidates: list[_EntityCandidate] = []
@@ -797,10 +809,9 @@ def _extract_entities_from_doc(
     # Identifiers (package names, API paths) are language-agnostic — always useful.
     _add_technical_identifier_candidates(tokens, candidates, min_len=min_len)
     if run_heuristics:
-        _add_proper_name_candidates(tokens, candidates, min_len=min_len)
-    _add_quoted_candidates(doc.text, candidates, min_len=min_len)
-    if run_heuristics:
+        _add_proper_name_candidates(tokens, candidates, min_len=min_len, is_cjk=is_cjk)
         _add_topic_phrase_candidates(doc, candidates, min_len=min_len, is_cjk=is_cjk)
+    _add_quoted_candidates(doc.text, candidates, min_len=min_len)
     return _resolve_candidates(candidates)
 
 
@@ -824,7 +835,7 @@ def extract_entities(
         return []
     return _extract_entities_from_doc(
         nlp(text),
-        use_ner=config.uses_ner_extraction,
+        entity_extraction=config.entity_extraction,
         language_code=config.language_code,
     )
 
@@ -853,9 +864,9 @@ def extract_entities_batch(
     if nlp is None:
         return [[] for _ in texts]
 
-    use_ner = config.uses_ner_extraction
+    entity_extraction = config.entity_extraction
     language_code = config.language_code
     return [
-        _extract_entities_from_doc(doc, use_ner=use_ner, language_code=language_code)
+        _extract_entities_from_doc(doc, entity_extraction=entity_extraction, language_code=language_code)
         for doc in nlp.pipe(texts, batch_size=batch_size)
     ]

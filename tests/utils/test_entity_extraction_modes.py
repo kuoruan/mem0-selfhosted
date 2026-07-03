@@ -20,11 +20,26 @@ def _make_doc(text: str, *, ents=None, noun_chunks=None):
     return doc
 
 
+def _make_token(text, *, pos_="PROPN", dep_="nsubj", is_stop=False, head_pos="VERB", i=0):
+    """A spaCy-Token-like mock sufficient for the NER candidate path."""
+    tok = MagicMock()
+    tok.text = text
+    tok.text_with_ws = text
+    tok.lemma_ = text.lower()
+    tok.pos_ = pos_
+    tok.dep_ = dep_
+    tok.is_stop = is_stop
+    tok.i = i
+    tok.head.pos_ = head_pos
+    return tok
+
+
 class TestEntityExtractionModes:
     def test_ner_mode_skips_noun_chunk_heuristics(self):
         ent = MagicMock()
         ent.text = "OpenAI"
         ent.label_ = "ORG"
+        ent.__iter__.return_value = [_make_token("OpenAI")]
 
         chunk = MagicMock()
         chunk.__iter__.return_value = [MagicMock(text="machine", lemma_="machine", pos_="NOUN")]
@@ -55,18 +70,20 @@ class TestEntityExtractionModes:
         ent = MagicMock()
         ent.text = "北京"
         ent.label_ = "GPE"
+        ent.__iter__.return_value = [_make_token("北京")]
 
         doc = _make_doc("我去了北京", ents=[ent])
         result = _extract_entities_from_doc(doc, entity_extraction="auto", language_code="zh")
         texts = [e[1] for e in result]
         assert "北京" in texts
 
-    def test_auto_non_cjk_skips_ner(self):
-        """auto + non-CJK should skip NER and use heuristics."""
+    def test_auto_non_cjk_uses_ner(self):
+        """auto + non-CJK should use NER (matching upstream behavior)."""
         ent = MagicMock()
         ent.text = "OpenAI"
         ent.label_ = "ORG"
+        ent.__iter__.return_value = [_make_token("OpenAI")]
 
         doc = _make_doc("OpenAI", ents=[ent])
         result = _extract_entities_from_doc(doc, entity_extraction="auto", language_code="en")
-        assert not any("OpenAI" in e[1] for e in result)
+        assert any("OpenAI" in e[1] for e in result), f"auto mode should use NER, got {result}"
