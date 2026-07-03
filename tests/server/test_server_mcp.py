@@ -720,3 +720,181 @@ def test_platform_context_is_taken_from_header(mcp_testbed):
         assert structured["platform"] == "cursor"
     finally:
         module.mcp._tool_manager._tools.pop("__test_platform", None)
+
+
+# ---------------------------------------------------------------------------
+# add_memory — expiration_date passthrough
+# ---------------------------------------------------------------------------
+
+
+def test_add_memory_passes_expiration_date(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "add_memory",
+        {"text": "fact", "user_id": "alice", "infer": False, "expiration_date": "2099-12-31"},
+    )
+
+    mock_memory.add.assert_called_once()
+    assert mock_memory.add.call_args.kwargs["expiration_date"] == "2099-12-31"
+
+
+def test_add_memory_expiration_date_not_passed_when_none(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "add_memory",
+        {"text": "fact", "user_id": "alice", "infer": False},
+    )
+
+    mock_memory.add.assert_called_once()
+    assert "expiration_date" not in mock_memory.add.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# update_memory — expiration_date, source, text optional
+# ---------------------------------------------------------------------------
+
+
+def test_update_memory_passes_expiration_date(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _call_tool(
+        client,
+        "update_memory",
+        {"memory_id": "mem-1", "text": "updated", "expiration_date": "2099-12-31"},
+    )
+
+    mock_memory.update.assert_called_once_with(
+        memory_id="mem-1", data="updated", expiration_date="2099-12-31"
+    )
+
+
+def test_update_memory_merges_source_into_metadata(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _call_tool(
+        client,
+        "update_memory",
+        {"memory_id": "mem-1", "text": "updated", "source": "cursor"},
+    )
+
+    mock_memory.update.assert_called_once_with(
+        memory_id="mem-1", data="updated", metadata={"source": "cursor"}
+    )
+
+
+def test_update_memory_source_and_metadata_merged(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _call_tool(
+        client,
+        "update_memory",
+        {"memory_id": "mem-1", "text": "updated", "source": "cursor", "metadata": {"type": "note"}},
+    )
+
+    mock_memory.update.assert_called_once_with(
+        memory_id="mem-1", data="updated", metadata={"source": "cursor", "type": "note"}
+    )
+
+
+def test_update_memory_text_optional(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _call_tool(
+        client,
+        "update_memory",
+        {"memory_id": "mem-1", "metadata": {"type": "note"}},
+    )
+
+    mock_memory.update.assert_called_once_with(
+        memory_id="mem-1", data=None, metadata={"type": "note"}
+    )
+
+
+# ---------------------------------------------------------------------------
+# search_memories — rerank passthrough
+# ---------------------------------------------------------------------------
+
+
+def test_search_memories_passes_rerank(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "search_memories",
+        {"query": "hello", "user_id": "alice", "rerank": True},
+    )
+
+    mock_memory.search.assert_called_once()
+    assert mock_memory.search.call_args.kwargs["rerank"] is True
+
+
+def test_search_memories_rerank_defaults_to_none(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "search_memories",
+        {"query": "hello", "user_id": "alice"},
+    )
+
+    mock_memory.search.assert_called_once()
+    assert "rerank" not in mock_memory.search.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# get_memories — source accepted
+# ---------------------------------------------------------------------------
+
+
+def test_get_memories_accepts_source(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "get_memories",
+        {"user_id": "alice", "source": "cursor"},
+    )
+
+    mock_memory.get_all.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# delete_all_memories — source accepted
+# ---------------------------------------------------------------------------
+
+
+def test_delete_all_memories_accepts_source(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _call_tool(
+        client,
+        "delete_all_memories",
+        {"user_id": "alice", "source": "cursor"},
+    )
+
+    mock_memory.delete_all.assert_called_once_with(user_id="alice")
+
+
+# ---------------------------------------------------------------------------
+# Tool descriptions
+# ---------------------------------------------------------------------------
+
+
+def test_tool_descriptions_mention_app_id(mcp_testbed):
+    _, client, _ = mcp_testbed
+
+    response = client.post("/mcp", json=_jsonrpc("tools/list", req_id=2), headers=MCP_HEADERS)
+    descriptions = {tool["name"]: tool["description"] for tool in response.json()["result"]["tools"]}
+    assert "app_id" in descriptions["add_memory"]
+
+
+def test_update_memory_description_matches(mcp_testbed):
+    _, client, _ = mcp_testbed
+
+    response = client.post("/mcp", json=_jsonrpc("tools/list", req_id=2), headers=MCP_HEADERS)
+    descriptions = {tool["name"]: tool["description"] for tool in response.json()["result"]["tools"]}
+    assert "Update an existing memory" in descriptions["update_memory"]

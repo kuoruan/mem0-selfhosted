@@ -56,7 +56,7 @@ def _mcp_auth_user_id() -> str | None:
         "Store a new preference, fact, or conversation snippet. "
         "Requires at least one: user_id, agent_id, app_id or run_id. "
         "When infer=False, returns memory results immediately. "
-        "When infer=True (default), returns event_id — poll get_event_status until SUCCEEDED."
+        "When infer=True or omitted, returns event_id — poll get_event_status until SUCCEEDED."
     )
 )
 def add_memory(
@@ -77,10 +77,7 @@ def add_memory(
     infer: Annotated[
         bool,
         Field(
-            description=(
-                "When False, store verbatim (sync results). When True (default), run LLM fact extraction "
-                "(async event_id)."
-            ),
+            description="Extract structured memories via LLM (default true). When False, stores verbatim and returns results immediately.",
         ),
     ] = True,
     metadata: Annotated[
@@ -92,7 +89,7 @@ def add_memory(
     ] = None,
     expiration_date: Annotated[
         Optional[str],
-        Field(default=None, description="Accepted for compatibility; not processed."),
+        Field(default=None, description="Optional expiration date in YYYY-MM-DD format. After this date, memories are hidden from search and get_all unless show_expired is True."),
     ] = None,
 ) -> dict[str, Any]:
     scope = require_entity_scope(
@@ -109,6 +106,9 @@ def add_memory(
     if platform := platform_var.get():
         base_md["platform"] = platform
     add_kwargs["metadata"] = {**base_md, **(metadata or {})}
+
+    if expiration_date is not None:
+        add_kwargs["expiration_date"] = expiration_date
 
     # Hybrid write path (same semantics as REST POST /v3/memories/add/):
     #   infer=False — fast path: no LLM, sync response with memory ids.
@@ -154,9 +154,19 @@ def search_memories(
         Optional[int], Field(default=None, description="Number of results to return (1-1000, default 10).")
     ] = None,
     threshold: Annotated[
-        Optional[float], Field(default=None, description="Minimum semantic relevance score (0.0–1.0).")
+        Optional[float], Field(default=None, description="Minimum similarity score (0.0-1.0). Default 0.1; pass 0.0 to disable filtering.")
+    ] = None,
+    rerank: Annotated[
+        Optional[bool],
+        Field(default=None, description="Re-rank results for better relevance (adds 200-400ms latency). Default false."),
+    ] = None,
+    source: Annotated[
+        Optional[str],
+        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
     ] = None,
 ) -> dict[str, Any]:
+    # source is accepted for compatibility but not processed — self-hosted
+    # does not track events for read operations.
     scoped_filters = build_search_filters(
         user_id=user_id,
         agent_id=agent_id,
@@ -170,6 +180,8 @@ def search_memories(
         search_kwargs["top_k"] = top_k
     if threshold is not None:
         search_kwargs["threshold"] = threshold
+    if rerank is not None:
+        search_kwargs["rerank"] = rerank
 
     raw = get_memory_instance().search(query=query, **search_kwargs)
     return normalize_results_dict(raw)
@@ -197,7 +209,13 @@ def get_memories(
     page_size: Annotated[
         Optional[int], Field(default=None, description="Number of memories per page (default 10, max 100).")
     ] = None,
+    source: Annotated[
+        Optional[str],
+        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
+    ] = None,
 ) -> dict[str, Any]:
+    # source is accepted for compatibility but not processed — self-hosted
+    # does not track events for read operations.
     scoped_filters = build_search_filters(
         user_id=user_id,
         agent_id=agent_id,
@@ -230,17 +248,32 @@ def get_memory(
     return result
 
 
-@mcp.tool(description="Overwrite an existing memory's text.")
+@mcp.tool(description="Update an existing memory's text and/or metadata.")
 def update_memory(
-    memory_id: Annotated[str, Field(description="Exact memory_id to overwrite.")],
-    text: Annotated[str, Field(description="Replacement text for the memory.")],
+    memory_id: Annotated[str, Field(description="Exact memory_id to update.")],
+    text: Annotated[
+        Optional[str], Field(default=None, description="Replacement text for the memory.")
+    ] = None,
     metadata: Annotated[
-        Optional[dict[str, Any]], Field(default=None, description="Optional metadata to attach to the updated memory.")
+        Optional[dict[str, Any]], Field(default=None, description="Metadata to merge into the memory.")
+    ] = None,
+    expiration_date: Annotated[
+        Optional[str],
+        Field(default=None, description="Optional expiration date in YYYY-MM-DD format, or null to clear."),
+    ] = None,
+    source: Annotated[
+        Optional[str],
+        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
     ] = None,
 ) -> dict[str, Any]:
     update_kwargs: dict[str, Any] = {"memory_id": memory_id, "data": text}
-    if metadata is not None:
-        update_kwargs["metadata"] = metadata
+    if metadata is not None or source is not None:
+        base_md = {}
+        if source is not None:
+            base_md["source"] = source
+        update_kwargs["metadata"] = {**base_md, **(metadata or {})}
+    if expiration_date is not None:
+        update_kwargs["expiration_date"] = expiration_date
 
     return run_memory_write_for_memory_id(lambda memory: memory.update(**update_kwargs), memory_id)
 
@@ -260,7 +293,13 @@ def delete_all_memories(
     agent_id: Annotated[Optional[str], Field(default=None, description="Optional agent scope to delete.")] = None,
     app_id: Annotated[Optional[str], Field(default=None, description="Optional app scope to delete.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Optional run scope to delete.")] = None,
+    source: Annotated[
+        Optional[str],
+        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
+    ] = None,
 ) -> dict[str, Any]:
+    # source is accepted for compatibility but not processed — self-hosted
+    # does not track events for delete operations.
     scope = require_entity_scope(
         user_id=user_id,
         agent_id=agent_id,
@@ -328,22 +367,30 @@ def get_event_status(
 
 @mcp.prompt()
 def memory_assistant() -> str:
-    return """You are using the Mem0 MCP server for long-term memory management.
+    return """You are using the Mem0 MCP server (self-hosted) for long-term memory management.
 
 Quick Start:
-1. Store memories: add_memory with infer=False returns results immediately; infer=True returns event_id — poll get_event_status until SUCCEEDED
+1. Store memories: Use add_memory to save facts, preferences, or conversations
 2. Search memories: Use search_memories for semantic queries
 3. List memories: Use get_memories for filtered browsing
 4. Update/Delete: Use update_memory and delete_memory for modifications
-5. List entities: Use list_entities to see all users, agents, and runs
-6. Track writes: Use list_events to browse recent add/search operations
+5. List events: Use list_events to see recent memory operations
+6. Check status: Use get_event_status to poll async operation status
+
+Filter Examples:
+- User memories: {"AND": [{"user_id": "john"}]}
+- Agent memories: {"AND": [{"agent_id": "agent_name"}]}
+- Recent only: {"AND": [{"user_id": "john"}, {"created_at": {"gte": "2024-01-01"}}]}
+
+Search Defaults:
+- threshold defaults to 0.1 (pass 0.0 to disable similarity filtering)
+- rerank defaults to false (set true for better relevance, adds 200-400ms)
 
 Tips:
 - user_id is automatically added to filters
 - Use "*" as wildcard for any non-null value
-- Use delete_entities to remove an entity and all its memories
-- Use get_memories with page and page_size for paginated results
-- Combine filters with AND/OR/NOT for complex queries"""
+- Combine filters with AND/OR/NOT for complex queries
+- Use infer=false in add_memory to skip LLM extraction and store raw text"""
 
 
 async def _run_streamable_transport(request: Request) -> Response:
