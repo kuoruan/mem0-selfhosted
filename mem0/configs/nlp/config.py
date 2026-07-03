@@ -56,9 +56,9 @@ class NlpConfig(BaseModel):
         default="auto",
         description=(
             "Entity extraction strategy: "
-            "`auto` — NER for zh/ja/ko, capitalization heuristics otherwise; "
+            "`auto` — NER + heuristics for non-CJK, NER only for zh/ja/ko; "
             "`ner` — spaCy NER only; "
-            "`heuristic` — English-style rules (poor for CJK)."
+            "`heuristic` — capitalization-based rules (not suitable for CJK)."
         ),
     )
     auto_download: bool = Field(
@@ -111,12 +111,8 @@ class NlpConfig(BaseModel):
 
     @property
     def uses_ner_extraction(self) -> bool:
-        """Whether entity extraction should prefer spaCy NER over capitalization heuristics."""
-        if self.entity_extraction == "ner":
-            return True
-        if self.entity_extraction == "heuristic":
-            return False
-        return self.language_code in CJK_LANGUAGES
+        """Whether spaCy NER is enabled for entity extraction."""
+        return self.entity_extraction != "heuristic"
 
     def resolve_model(self, variant: Literal["full", "lemma"] = "full") -> Optional[str]:
         """Resolve the spaCy package name for entity extraction (full) or BM25 (lemma)."""
@@ -128,9 +124,5 @@ class NlpConfig(BaseModel):
             return self.model
         mapped = LANGUAGE_MODEL_MAP.get(self.language_code)
         if mapped is None:
-            supported = ", ".join(sorted(SUPPORTED_LANGUAGES))
-            raise ValueError(
-                f"Unsupported NLP language '{self.language}'. "
-                f"Set `model` explicitly, or use one of: {supported}"
-            )
+            return None
         return mapped
