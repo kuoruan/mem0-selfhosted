@@ -1,7 +1,8 @@
 import contextvars
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated, Any, Optional
+from contextlib import asynccontextmanager
+from typing import Annotated, Any, AsyncIterator, Optional
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import Response
@@ -45,10 +46,25 @@ _EXPIRATION_DATE_DEFAULT = Field(default_factory=lambda: UNSET)
 mcp = FastMCP("mem0", json_response=True, stateless_http=True)
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP Endpoints"])
 
+_MCP_LIFESPAN_INSTALLED_STATE = "mem0_mcp_lifespan_installed"
+_MCP_SESSION_MANAGER_STATE = "mem0_mcp_session_manager"
+
 
 def _mcp_auth_user_id() -> str | None:
     """Authenticated user id from the current MCP request context."""
     return auth_user_id_var.get()
+
+
+def _new_mcp_session_manager() -> StreamableHTTPSessionManager:
+    return StreamableHTTPSessionManager(
+        app=mcp._mcp_server,
+        json_response=True,
+        stateless=True,
+    )
+
+
+def _mcp_session_manager(app: FastAPI) -> StreamableHTTPSessionManager:
+    return getattr(app.state, _MCP_SESSION_MANAGER_STATE)
 
 
 @mcp.tool(
@@ -412,19 +428,10 @@ Tips:
 
 
 async def _run_streamable_transport(request: Request) -> Response:
-    body = await request.body()
-    body_sent = False
     response_started = False
     response_status = 200
     response_headers: list[tuple[bytes, bytes]] = []
     response_body = bytearray()
-
-    async def replay_receive():
-        nonlocal body_sent
-        if body_sent:
-            return {"type": "http.request", "body": b"", "more_body": False}
-        body_sent = True
-        return {"type": "http.request", "body": body, "more_body": False}
 
     async def capture_send(message):
         nonlocal response_started, response_status
@@ -435,14 +442,8 @@ async def _run_streamable_transport(request: Request) -> Response:
         elif message["type"] == "http.response.body":
             response_body.extend(message.get("body", b""))
 
-    session_manager = StreamableHTTPSessionManager(
-        app=mcp._mcp_server,
-        json_response=True,
-        stateless=True,
-    )
     try:
-        async with session_manager.run():
-            await session_manager.handle_request(request.scope, replay_receive, capture_send)
+        await _mcp_session_manager(request.app).handle_request(request.scope, request.receive, capture_send)
     except Exception:
         logger.exception("MCP streamable transport error")
         return Response(status_code=500, content=b"Internal MCP transport error")
@@ -450,11 +451,30 @@ async def _run_streamable_transport(request: Request) -> Response:
     if not response_started:
         return Response(status_code=500, content=b"Transport did not produce a response")
 
-    return Response(
+    response = Response(
         content=bytes(response_body),
         status_code=response_status,
-        headers={key.decode(): value.decode() for key, value in response_headers},
     )
+    response.raw_headers = response_headers
+    return response
+
+
+def _install_mcp_lifespan(app: FastAPI) -> None:
+    if getattr(app.state, _MCP_LIFESPAN_INSTALLED_STATE, False):
+        return
+
+    session_manager = _new_mcp_session_manager()
+    setattr(app.state, _MCP_SESSION_MANAGER_STATE, session_manager)
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan_with_mcp(app: FastAPI) -> AsyncIterator[None]:
+        async with original_lifespan(app):
+            async with session_manager.run():
+                yield
+
+    app.router.lifespan_context = lifespan_with_mcp
+    setattr(app.state, _MCP_LIFESPAN_INSTALLED_STATE, True)
 
 
 @mcp_router.api_route(
@@ -478,4 +498,5 @@ async def handle_streamable_http(request: Request, user=Depends(verify_auth)):
 
 
 def setup_mcp_server(app: FastAPI) -> None:
+    _install_mcp_lifespan(app)
     app.include_router(mcp_router)

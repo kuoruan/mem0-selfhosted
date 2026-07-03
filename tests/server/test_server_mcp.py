@@ -1,5 +1,6 @@
 import importlib
 import uuid
+from contextlib import asynccontextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 pytest.importorskip("fastapi", reason="fastapi not installed")
 pytest.importorskip("mcp", reason="mcp not installed")
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import server.mcp_server as mcp_server
@@ -72,6 +73,106 @@ class _ImmediateExecutor:
         return MagicMock()
 
 
+@pytest.mark.asyncio
+async def test_setup_mcp_server_wraps_existing_lifespan(monkeypatch):
+    module = importlib.reload(mcp_server)
+    events = []
+
+    @asynccontextmanager
+    async def original_lifespan(app):
+        events.append("app-start")
+        yield
+        events.append("app-stop")
+
+    class _SessionManager:
+        @asynccontextmanager
+        async def run(self):
+            events.append("mcp-start")
+            yield
+            events.append("mcp-stop")
+
+    monkeypatch.setattr(module, "_new_mcp_session_manager", _SessionManager)
+
+    app = FastAPI(lifespan=original_lifespan)
+    module.setup_mcp_server(app)
+
+    async with app.router.lifespan_context(app):
+        events.append("inside")
+
+    assert events == ["app-start", "mcp-start", "inside", "mcp-stop", "app-stop"]
+
+
+@pytest.mark.asyncio
+async def test_run_streamable_transport_delegates_to_session_manager(monkeypatch):
+    module = importlib.reload(mcp_server)
+    receive_calls = 0
+
+    async def receive():
+        nonlocal receive_calls
+        receive_calls += 1
+        return {"type": "http.request", "body": b'{"jsonrpc":"2.0"}', "more_body": False}
+
+    class _SessionManager:
+        async def handle_request(self, scope, receive, send):
+            assert scope["path"] == "/mcp"
+            message = await receive()
+            assert message["body"] == b'{"jsonrpc":"2.0"}'
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 202,
+                    "headers": [(b"x-repeat", b"one"), (b"x-repeat", b"two")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"accepted"})
+
+    app = FastAPI()
+    setattr(app.state, module._MCP_SESSION_MANAGER_STATE, _SessionManager())
+
+    request = Request(
+        {"type": "http", "method": "POST", "path": "/mcp", "headers": [], "app": app},
+        receive,
+    )
+
+    response = await module._run_streamable_transport(request)
+
+    assert receive_calls == 1
+    assert response.status_code == 202
+    assert response.body == b"accepted"
+    assert response.raw_headers == [(b"x-repeat", b"one"), (b"x-repeat", b"two")]
+
+
+def test_setup_mcp_server_uses_per_app_session_managers(monkeypatch):
+    module = importlib.reload(mcp_server)
+    managers = []
+
+    class _SessionManager:
+        @asynccontextmanager
+        async def run(self):
+            yield
+
+    def new_session_manager():
+        manager = _SessionManager()
+        managers.append(manager)
+        return manager
+
+    monkeypatch.setattr(module, "_new_mcp_session_manager", new_session_manager)
+
+    app_one = FastAPI()
+    app_two = FastAPI()
+
+    module.setup_mcp_server(app_one)
+    module.setup_mcp_server(app_two)
+
+    assert len(managers) == 2
+    assert getattr(app_one.state, module._MCP_SESSION_MANAGER_STATE) is managers[0]
+    assert getattr(app_two.state, module._MCP_SESSION_MANAGER_STATE) is managers[1]
+    assert getattr(app_one.state, module._MCP_SESSION_MANAGER_STATE) is not getattr(
+        app_two.state,
+        module._MCP_SESSION_MANAGER_STATE,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _clear_event_cache():
     event_cache_clear()
@@ -102,16 +203,16 @@ def mcp_testbed(monkeypatch):
     monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
 
     app = FastAPI()
-    app.include_router(module.mcp_router)
+    module.setup_mcp_server(app)
 
     def _verify_auth_override():
         return None
 
     app.dependency_overrides[module.verify_auth] = _verify_auth_override
 
-    client = TestClient(app)
-    _initialize_client(client)
-    return module, client, mock_memory
+    with TestClient(app) as client:
+        _initialize_client(client)
+        yield module, client, mock_memory
 
 
 def _initialize_client(client: TestClient, headers: dict | None = None) -> None:
@@ -283,16 +384,16 @@ def mcp_testbed_authed(monkeypatch):
     mock_user.id = auth_user_id
 
     app = FastAPI()
-    app.include_router(module.mcp_router)
+    module.setup_mcp_server(app)
 
     def _verify_auth_override():
         return mock_user
 
     app.dependency_overrides[module.verify_auth] = _verify_auth_override
 
-    client = TestClient(app)
-    _initialize_client(client)
-    return module, client, mock_memory, str(auth_user_id)
+    with TestClient(app) as client:
+        _initialize_client(client)
+        yield module, client, mock_memory, str(auth_user_id)
 
 
 def test_list_events_filters_by_authenticated_user(mcp_testbed_authed):
