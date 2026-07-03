@@ -86,6 +86,7 @@ def test_list_all_memories_handles_tuple_vector_store_shape(monkeypatch):
                 "agent_id": None,
                 "run_id": None,
                 "hash": None,
+                "expiration_date": None,
                 "metadata": {},
                 "created_at": None,
                 "updated_at": None,
