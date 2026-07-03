@@ -38,6 +38,7 @@ def build_search_kwargs(
     top_k: Optional[int],
     threshold: Optional[float],
     rerank: Optional[bool] = None,
+    show_expired: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Build keyword arguments for Memory.search() from common request fields."""
     kwargs: Dict[str, Any] = {"filters": filters}
@@ -47,6 +48,8 @@ def build_search_kwargs(
         kwargs["threshold"] = threshold
     if rerank is not None:
         kwargs["rerank"] = rerank
+    if show_expired is not None:
+        kwargs["show_expired"] = show_expired
     return kwargs
 
 
@@ -60,10 +63,15 @@ def resolve_existing(mem: Any, memory_id: str) -> Dict[str, Any]:
 
 
 def merge_and_update(
-    mem: Any, memory_id: str, *, text: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
+    mem: Any,
+    memory_id: str,
+    *,
+    text: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    expiration_date: Optional[str] = None,
 ) -> Any:
     """Read current memory, merge text/metadata changes, write back."""
     existing = resolve_existing(mem, memory_id)
     final_text = text if text is not None else (existing.get("memory") or existing.get("text") or "")
     merged = {**(existing.get("metadata") or {}), **(metadata or {})}
-    return mem.update(memory_id=memory_id, data=final_text, metadata=merged)
+    return mem.update(memory_id=memory_id, data=final_text, metadata=merged, expiration_date=expiration_date)

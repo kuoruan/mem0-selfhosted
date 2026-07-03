@@ -162,6 +162,14 @@ class MemorySearchInput(BaseModel):
         default=None,
         description="A list of field names to include in the response. If not provided, all fields will be returned.",
     )
+    show_expired: Optional[bool] = Field(
+        default=None,
+        description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
+    )
+    latest_only: Optional[bool] = Field(
+        default=None,
+        description="Accepted for compatibility; not processed by the self-hosted server.",
+    )
 
 
 class MemoryUpdateInput(BaseModel):
@@ -169,6 +177,10 @@ class MemoryUpdateInput(BaseModel):
     text: Optional[str] = Field(default=None, description="New text content for the memory.")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Updated metadata for the memory.")
     timestamp: Optional[Any] = Field(default=None, description="Unix timestamp for the memory.")
+    expiration_date: Optional[str] = Field(
+        default=None,
+        description="Expiration date in YYYY-MM-DD format, or null to clear. Accepted for compatibility.",
+    )
 
 
 class MemoryBatchUpdateItem(BaseModel):
@@ -228,6 +240,43 @@ class MemoryGetInputV2(BaseModel):
         default=None, description="Only return memories created on or before this ISO 8601 date."
     )
     categories: Optional[List[str]] = Field(default=None, description="A list of categories to filter the memories by.")
+    show_expired: Optional[bool] = Field(
+        default=None,
+        description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
+    )
+    fields: Optional[List[str]] = Field(
+        default=None,
+        description="A list of field names to include in the response. If not provided, all fields will be returned.",
+    )
+    latest_only: Optional[bool] = Field(
+        default=None,
+        description="Accepted for compatibility; not processed by the self-hosted server.",
+    )
+
+
+class MemoryGetInputV3(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    filters: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Entity and metadata filters. Must include at least one entity ID "
+        "(`user_id`, `agent_id`, `app_id` or `run_id`). Supports `AND`, `OR`, `NOT`, and "
+        "comparison operators (`in`, `gte`, `lte`, `gt`, `lt`, `contains`, `icontains`, `ne`).",
+    )
+    start_date: Optional[str] = Field(
+        default=None, description="Only return memories created on or after this ISO 8601 date."
+    )
+    end_date: Optional[str] = Field(
+        default=None, description="Only return memories created on or before this ISO 8601 date."
+    )
+    categories: Optional[List[str]] = Field(default=None, description="A list of categories to filter the memories by.")
+    show_expired: Optional[bool] = Field(
+        default=None,
+        description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
+    )
+    latest_only: Optional[bool] = Field(
+        default=None,
+        description="Accepted for compatibility; not processed by the self-hosted server.",
+    )
 
 
 class MemorySearchInputV2(BaseModel):
@@ -262,6 +311,14 @@ class MemorySearchInputV2(BaseModel):
     fields: Optional[List[str]] = Field(
         default=None,
         description="A list of field names to include in the response. If not provided, all fields will be returned.",
+    )
+    show_expired: Optional[bool] = Field(
+        default=None,
+        description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
+    )
+    latest_only: Optional[bool] = Field(
+        default=None,
+        description="Accepted for compatibility; not processed by the self-hosted server.",
     )
 
 
@@ -345,6 +402,19 @@ class MemorySearchInputV3(BaseModel):
         description='Response format. `v1.1` (default) returns `{"results": [...]}`. '
         "`v1.0` returns a flat array `[{...}]` for backwards compatibility.",
     )
+    show_expired: Optional[bool] = Field(
+        default=None,
+        description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
+    )
+    reference_date: Optional[Any] = Field(
+        default=None,
+        description="Optional query anchor time for relative temporal interpretation. "
+        "Accepts Unix epoch, YYYY-MM-DD, or ISO datetime.",
+    )
+    latest_only: Optional[bool] = Field(
+        default=None,
+        description="Accepted for compatibility; not processed by the self-hosted server.",
+    )
 
 
 @router.get("/v1/ping/", include_in_schema=False)
@@ -374,6 +444,7 @@ def v1_list_memories(
     agent_id: Optional[str] = None,
     app_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    show_expired: Optional[bool] = Query(default=None),
     auth=Depends(verify_auth),
 ):
     filters = drop_none({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
@@ -382,7 +453,10 @@ def v1_list_memories(
         ensure_admin(request, auth)
         raw = list_all_memories()
     else:
-        raw = get_memory_instance().get_all(filters=filters)
+        kwargs: Dict[str, Any] = {"filters": filters}
+        if isinstance(show_expired, bool):
+            kwargs["show_expired"] = show_expired
+        raw = get_memory_instance().get_all(**kwargs)
     return normalize_results(raw)
 
 
@@ -427,16 +501,18 @@ def v1_get_memory(memory_id: str, _auth=Depends(verify_auth)):
 @router.put("/v1/memories/{memory_id}/", summary="Update a memory (v1)")
 @upstream_guard
 def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(verify_auth)):
-    if body.text is None and body.metadata is None and body.timestamp is None:
+    if body.text is None and body.metadata is None and body.timestamp is None and body.expiration_date is None:
         raise HTTPException(
             status_code=400,
-            detail="At least one of text, metadata, or timestamp must be provided for update.",
+            detail="At least one of text, metadata, timestamp, or expiration_date must be provided for update.",
         )
     metadata = body.metadata
     if body.timestamp is not None:
         metadata = {**(metadata or {}), "timestamp": body.timestamp}
     return run_memory_write_for_memory_id(
-        lambda memory: merge_and_update(memory, memory_id, text=body.text, metadata=metadata),
+        lambda memory: merge_and_update(
+            memory, memory_id, text=body.text, metadata=metadata, expiration_date=body.expiration_date
+        ),
         memory_id,
     )
 
@@ -462,8 +538,16 @@ def v1_memory_history(memory_id: str, _auth=Depends(verify_auth)):
 @router.get("/v1/memories/{entity_type}/{entity_id}/", include_in_schema=False)
 @router.get("/v1/memories/{entity_type}/{entity_id}", summary="Get memories for an entity (v1)")
 @upstream_guard
-def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
-    raw = get_memory_instance().get_all(filters={get_entity_field(entity_type): entity_id})
+def v1_get_entity_memories(
+    entity_type: str,
+    entity_id: str,
+    show_expired: Optional[bool] = Query(default=None),
+    _auth=Depends(verify_auth),
+):
+    kwargs: Dict[str, Any] = {"filters": {get_entity_field(entity_type): entity_id}}
+    if isinstance(show_expired, bool):
+        kwargs["show_expired"] = show_expired
+    raw = get_memory_instance().get_all(**kwargs)
     return normalize_results(raw)
 
 
@@ -482,7 +566,8 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     effective_filters = append_search_convenience_filters(effective_filters, metadata=body.metadata)
 
     raw = get_memory_instance().search(
-        query=body.query, **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
+        query=body.query,
+        **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank, body.show_expired),
     )
     return normalize_results(raw)
 
@@ -655,7 +740,10 @@ def v2_list_memories(
         filters=body.filters,
         detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
     )
-    raw = get_memory_instance().get_all(filters=build_list_filters(body, entity_params))
+    kwargs: Dict[str, Any] = {"filters": build_list_filters(body, entity_params)}
+    if body.show_expired is not None:
+        kwargs["show_expired"] = body.show_expired
+    raw = get_memory_instance().get_all(**kwargs)
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
     # support server-side limit/offset. Known limitation for very large datasets.
     # NOTE: docs/openapi.json declares this endpoint as returning a bare array, but
@@ -678,7 +766,8 @@ def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
         detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
     raw = get_memory_instance().search(
-        query=body.query, **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
+        query=body.query,
+        **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank, body.show_expired),
     )
     # NOTE: docs/openapi.json declares a bare array response, but MemoryClient
     # reads response["results"]. We intentionally return the envelope here.
@@ -696,6 +785,7 @@ def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
     raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
 
+@router.delete("/v1/entities/{entity_type}/{entity_id}/", include_in_schema=False, status_code=204)
 @router.delete("/v2/entities/{entity_type}/{entity_id}/", include_in_schema=False, status_code=204)
 @router.delete("/v2/entities/{entity_type}/{entity_id}", summary="Delete entity (v2)", status_code=204)
 @upstream_guard
@@ -775,7 +865,7 @@ def v3_add_memory(
 @upstream_guard
 def v3_get_all_memories(
     request: Request,
-    body: MemoryGetInputV2,
+    body: MemoryGetInputV3,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=200),
     _auth=Depends(verify_auth),
@@ -784,7 +874,10 @@ def v3_get_all_memories(
         filters=body.filters,
         detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
     )
-    raw = get_memory_instance().get_all(filters=build_list_filters(body, entity_params))
+    kwargs: Dict[str, Any] = {"filters": build_list_filters(body, entity_params)}
+    if body.show_expired is not None:
+        kwargs["show_expired"] = body.show_expired
+    raw = get_memory_instance().get_all(**kwargs)
     # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
     # support server-side limit/offset. Known limitation for very large datasets.
     return paginate_response(request, normalize_results(raw), page, page_size)
@@ -809,7 +902,8 @@ def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
         metadata=body.metadata,
     )
     raw = get_memory_instance().search(
-        query=body.query, **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
+        query=body.query,
+        **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank, body.show_expired),
     )
 
     items = normalize_results(raw)
@@ -844,4 +938,56 @@ async def project_detail(org_id: str, project_id: str) -> None:
 @router.put("/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/", include_in_schema=False)
 @router.delete("/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/", include_in_schema=False)
 async def project_members(org_id: str, project_id: str) -> None:
+    raise unsupported_api_error()
+
+
+# ---------------------------------------------------------------------------
+# Feedback  — 501 stub; self-hosted server does not implement feedback.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/v1/feedback/", include_in_schema=False)
+async def feedback() -> None:
+    raise unsupported_api_error()
+
+
+# ---------------------------------------------------------------------------
+# Exports  — 501 stubs; self-hosted server does not implement export jobs.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/v1/exports/", include_in_schema=False)
+async def create_memory_export() -> None:
+    raise unsupported_api_error()
+
+
+@router.post("/v1/exports/get/", include_in_schema=False)
+async def get_memory_export() -> None:
+    raise unsupported_api_error()
+
+
+# ---------------------------------------------------------------------------
+# Summary  — 501 stub.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/v1/summary/", include_in_schema=False)
+async def get_summary() -> None:
+    raise unsupported_api_error()
+
+
+# ---------------------------------------------------------------------------
+# Webhooks  — 501 stubs; self-hosted server does not implement webhooks.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/v1/webhooks/projects/{project_id}/", include_in_schema=False)
+@router.post("/api/v1/webhooks/projects/{project_id}/", include_in_schema=False)
+async def webhooks_project(project_id: str) -> None:
+    raise unsupported_api_error()
+
+
+@router.put("/api/v1/webhooks/{webhook_id}/", include_in_schema=False)
+@router.delete("/api/v1/webhooks/{webhook_id}/", include_in_schema=False)
+async def webhook_detail(webhook_id: str) -> None:
     raise unsupported_api_error()

@@ -57,9 +57,14 @@ from server.compat.scope import (
 from server.routers.compat import (
     MemoryBatchDeleteInput,
     MemoryBatchDeleteLegacyInput,
+    MemoryAddInput,
     MemoryAddInputV3,
     MemoryGetInputV2,
+    MemoryGetInputV3,
+    MemorySearchInput,
+    MemorySearchInputV2,
     MemorySearchInputV3,
+    MemoryUpdateInput,
     build_list_filters,
     build_search_kwargs,
     merge_and_update,
@@ -914,14 +919,16 @@ class TestMergeAndUpdate:
         mem.get.return_value = {"id": "mem-1", "memory": "old text", "metadata": {}}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", text="new text")
-        mem.update.assert_called_once_with(memory_id="mem-1", data="new text", metadata={})
+        mem.update.assert_called_once_with(memory_id="mem-1", data="new text", metadata={}, expiration_date=None)
 
     def test_preserves_existing_text_when_none(self):
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "old text", "metadata": {"key": "val"}}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", text=None)
-        mem.update.assert_called_once_with(memory_id="mem-1", data="old text", metadata={"key": "val"})
+        mem.update.assert_called_once_with(
+            memory_id="mem-1", data="old text", metadata={"key": "val"}, expiration_date=None
+        )
 
     def test_preserves_existing_text_via_text_key(self):
         """Some SDK responses use 'text' instead of 'memory' for the content field."""
@@ -929,21 +936,23 @@ class TestMergeAndUpdate:
         mem.get.return_value = {"id": "mem-1", "text": "via text key", "metadata": {}}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1")
-        mem.update.assert_called_once_with(memory_id="mem-1", data="via text key", metadata={})
+        mem.update.assert_called_once_with(memory_id="mem-1", data="via text key", metadata={}, expiration_date=None)
 
     def test_metadata_new_keys_override_existing(self):
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"a": 1, "b": 2}}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", metadata={"b": 99, "c": 3})
-        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"a": 1, "b": 99, "c": 3})
+        mem.update.assert_called_once_with(
+            memory_id="mem-1", data="txt", metadata={"a": 1, "b": 99, "c": 3}, expiration_date=None
+        )
 
     def test_metadata_none_keeps_existing(self):
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"x": 1}}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", metadata=None)
-        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"x": 1})
+        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"x": 1}, expiration_date=None)
 
     def test_raises_404_when_memory_missing(self):
         """Delegates to resolve_existing which raises 404 for missing memory."""
@@ -958,7 +967,9 @@ class TestMergeAndUpdate:
         mem.get.return_value = {"id": "mem-1", "memory": "txt"}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", metadata={"new_key": "val"})
-        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"new_key": "val"})
+        mem.update.assert_called_once_with(
+            memory_id="mem-1", data="txt", metadata={"new_key": "val"}, expiration_date=None
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1335,3 +1346,339 @@ class TestSyntheticEvents:
         # expiration_date must NOT be forwarded to memory.add()
         call_kwargs = mem.add.call_args.kwargs
         assert "expiration_date" not in (call_kwargs.get("metadata") or {})
+
+
+# ---------------------------------------------------------------------------
+# Model field validation — new / updated fields
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryUpdateInputExpirationDate:
+    def test_accepts_expiration_date(self):
+        body = MemoryUpdateInput(text="hello", expiration_date="2099-12-31")
+        assert body.expiration_date == "2099-12-31"
+
+    def test_expiration_date_none_by_default(self):
+        body = MemoryUpdateInput(text="hello")
+        assert body.expiration_date is None
+
+    def test_rejects_unknown_field(self):
+        with pytest.raises(ValidationError):
+            MemoryUpdateInput(unknown_field="bad")
+
+
+class TestMemoryGetInputV2Fields:
+    def test_accepts_fields(self):
+        body = MemoryGetInputV2(filters={"user_id": "u1"}, fields=["id", "memory"])
+        assert body.fields == ["id", "memory"]
+
+    def test_accepts_latest_only(self):
+        body = MemoryGetInputV2(filters={"user_id": "u1"}, latest_only=True)
+        assert body.latest_only is True
+
+    def test_accepts_show_expired(self):
+        body = MemoryGetInputV2(filters={"user_id": "u1"}, show_expired=True)
+        assert body.show_expired is True
+
+    def test_rejects_unknown_field(self):
+        with pytest.raises(ValidationError):
+            MemoryGetInputV2(unknown_field="bad")
+
+
+class TestMemoryGetInputV3Fields:
+    def test_accepts_all_defined_fields(self):
+        body = MemoryGetInputV3(
+            filters={"user_id": "u1"},
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            categories=["finance"],
+            show_expired=True,
+            latest_only=True,
+        )
+        assert body.filters == {"user_id": "u1"}
+        assert body.start_date == "2024-01-01"
+        assert body.end_date == "2024-12-31"
+        assert body.categories == ["finance"]
+        assert body.show_expired is True
+        assert body.latest_only is True
+
+    def test_rejects_unknown_field(self):
+        with pytest.raises(ValidationError):
+            MemoryGetInputV3(unknown_field="bad")
+
+    def test_fields_not_in_v3(self):
+        """MemoryGetInputV3 must NOT have 'fields' — that's v2 only."""
+        with pytest.raises(ValidationError):
+            MemoryGetInputV3(fields=["id"])
+
+
+class TestMemorySearchInputLatestOnly:
+    def test_accepts_latest_only(self):
+        body = MemorySearchInput(query="hello", latest_only=True)
+        assert body.latest_only is True
+
+    def test_rejects_unknown_field(self):
+        with pytest.raises(ValidationError):
+            MemorySearchInput(unknown_field="bad")
+
+
+class TestMemorySearchInputV2LatestOnly:
+    def test_accepts_latest_only(self):
+        body = MemorySearchInputV2(query="hello", filters={"user_id": "u1"}, latest_only=True)
+        assert body.latest_only is True
+
+    def test_rejects_unknown_field(self):
+        with pytest.raises(ValidationError):
+            MemorySearchInputV2(unknown_field="bad")
+
+
+class TestMemorySearchInputV3LatestOnly:
+    def test_accepts_latest_only_and_reference_date(self):
+        body = MemorySearchInputV3(
+            query="hello",
+            filters={"user_id": "u1"},
+            latest_only=True,
+            reference_date="2024-06-01",
+        )
+        assert body.latest_only is True
+        assert body.reference_date == "2024-06-01"
+
+    def test_rejects_unknown_field(self):
+        with pytest.raises(ValidationError):
+            MemorySearchInputV3(unknown_field="bad")
+
+
+# ---------------------------------------------------------------------------
+# build_search_kwargs — show_expired passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSearchKwargsShowExpired:
+    def test_show_expired_false_passed_through(self):
+        kwargs = build_search_kwargs({"user_id": "u1"}, top_k=5, threshold=0.5, show_expired=False)
+        assert kwargs["show_expired"] is False
+
+    def test_show_expired_true_passed_through(self):
+        kwargs = build_search_kwargs({"user_id": "u1"}, top_k=None, threshold=None, show_expired=True)
+        assert kwargs["show_expired"] is True
+
+    def test_show_expired_none_not_included(self):
+        kwargs = build_search_kwargs({"user_id": "u1"}, top_k=5, threshold=None, show_expired=None)
+        assert "show_expired" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# merge_and_update — expiration_date passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestMergeAndUpdateExpirationDate:
+    def test_expiration_date_passed_to_mem_update(self):
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {}}
+        mem.update.return_value = {"message": "updated"}
+        merge_and_update(mem, "mem-1", expiration_date="2099-12-31")
+        mem.update.assert_called_once_with(
+            memory_id="mem-1", data="txt", metadata={}, expiration_date="2099-12-31"
+        )
+
+    def test_expiration_date_none_clears_it(self):
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {}}
+        mem.update.return_value = {"message": "updated"}
+        merge_and_update(mem, "mem-1", expiration_date=None)
+        mem.update.assert_called_once_with(
+            memory_id="mem-1", data="txt", metadata={}, expiration_date=None
+        )
+
+
+# ---------------------------------------------------------------------------
+# v1_list_memories — show_expired query param passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestV1ListMemoriesShowExpired:
+    def test_show_expired_passed_to_get_all(self, monkeypatch):
+        mem = MagicMock()
+        mem.get_all.return_value = [{"id": "m1"}]
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        v1_list_memories(request=MagicMock(), user_id="u1", show_expired=True, auth=None)
+
+        mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True)
+
+    def test_show_expired_false_passed_through(self, monkeypatch):
+        mem = MagicMock()
+        mem.get_all.return_value = [{"id": "m1"}]
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        v1_list_memories(request=MagicMock(), user_id="u1", show_expired=False, auth=None)
+
+        mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=False)
+
+
+# ---------------------------------------------------------------------------
+# v3_get_all_memories — show_expired passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestV3GetAllMemoriesShowExpired:
+    def test_show_expired_passed_to_get_all(self, monkeypatch):
+        mem = MagicMock()
+        mem.get_all.return_value = [{"id": "m1"}]
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        req = MagicMock()
+        req.url.path = "/v3/memories"
+        req.query_params = {"page": "1", "page_size": "10"}
+        body = MemoryGetInputV3(filters={"user_id": "u1"}, show_expired=True)
+
+        from server.routers.compat import v3_get_all_memories
+
+        v3_get_all_memories(request=req, body=body, page=1, page_size=10, _auth=None)
+
+        mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True)
+
+
+# ---------------------------------------------------------------------------
+# v3_search_memories — show_expired passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestV3SearchMemoriesShowExpired:
+    def test_show_expired_passed_to_search(self, monkeypatch):
+        mem = MagicMock()
+        mem.search.return_value = {"results": []}
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        body = MemorySearchInputV3(query="hello", user_id="u1", show_expired=True)
+        v3_search_memories(body, _auth=None)
+
+        assert mem.search.call_args.kwargs["show_expired"] is True
+
+    def test_show_expired_defaults_to_none(self, monkeypatch):
+        mem = MagicMock()
+        mem.search.return_value = {"results": []}
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        body = MemorySearchInputV3(query="hello", user_id="u1")
+        v3_search_memories(body, _auth=None)
+
+        assert "show_expired" not in mem.search.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# v2_list_memories — show_expired passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestV2ListMemoriesShowExpired:
+    def test_show_expired_passed_to_get_all(self, monkeypatch):
+        mem = MagicMock()
+        mem.get_all.return_value = [{"id": "m1"}]
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        req = MagicMock()
+        req.url.path = "/v2/memories"
+        req.query_params = {"page": "1", "page_size": "10"}
+        body = MemoryGetInputV2(filters={"user_id": "u1"}, show_expired=True)
+
+        from server.routers.compat import v2_list_memories
+
+        v2_list_memories(request=req, body=body, page=1, page_size=10, _auth=None)
+
+        mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True)
+
+
+# ---------------------------------------------------------------------------
+# v2_search_memories — show_expired passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestV2SearchMemoriesShowExpired:
+    def test_show_expired_passed_to_search(self, monkeypatch):
+        mem = MagicMock()
+        mem.search.return_value = {"results": []}
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        body = MemorySearchInputV2(query="hello", user_id="u1", show_expired=True)
+
+        from server.routers.compat import v2_search_memories
+
+        v2_search_memories(body, _auth=None)
+
+        assert mem.search.call_args.kwargs["show_expired"] is True
+
+
+# ---------------------------------------------------------------------------
+# v1_search_memories — show_expired passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestV1SearchMemoriesShowExpired:
+    def test_show_expired_passed_to_search(self, monkeypatch):
+        mem = MagicMock()
+        mem.search.return_value = {"results": []}
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        body = MemorySearchInput(query="hello", user_id="u1", show_expired=True)
+
+        from server.routers.compat import v1_search_memories
+
+        v1_search_memories(body, _auth=None)
+
+        assert mem.search.call_args.kwargs["show_expired"] is True
+
+
+# ---------------------------------------------------------------------------
+# v1_get_entity_memories — show_expired passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestV1GetEntityMemoriesShowExpired:
+    def test_show_expired_passed_to_get_all(self, monkeypatch):
+        mem = MagicMock()
+        mem.get_all.return_value = [{"id": "m1"}]
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        from server.routers.compat import v1_get_entity_memories
+
+        v1_get_entity_memories(entity_type="user", entity_id="alice", show_expired=True, _auth=None)
+
+        mem.get_all.assert_called_once_with(filters={"user_id": "alice"}, show_expired=True)
