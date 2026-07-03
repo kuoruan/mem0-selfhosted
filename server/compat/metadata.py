@@ -20,15 +20,15 @@ def merge_v1_add_metadata(
     2) Existing ``metadata`` from the request body is preserved.
     3) Explicit v1 body field ``categories`` always wins and overwrites.
     """
-    if not source and not platform and not categories:
+    if source is None and platform is None and categories is None:
         return metadata
 
     merged: Dict[str, Any] = dict(metadata or {})
-    if source:
+    if source is not None:
         merged.setdefault("source", source)
-    if platform:
+    if platform is not None:
         merged.setdefault("platform", platform)
-    if categories:
+    if categories is not None:
         merged["categories"] = categories
     return merged
 
@@ -70,14 +70,14 @@ def merge_v3_add_metadata(
     2) Existing ``metadata`` from the request body is preserved.
     3) ``extra_metadata`` from dedicated v3 body fields always wins via ``update``.
     """
-    if not source and not platform and not extra_metadata:
+    if source is None and platform is None and extra_metadata is None:
         return metadata
 
     merged: Dict[str, Any] = dict(metadata or {})
-    if source:
+    if source is not None:
         merged.setdefault("source", source)
-    if platform:
+    if platform is not None:
         merged.setdefault("platform", platform)
-    if extra_metadata:
+    if extra_metadata is not None:
         merged.update(extra_metadata)
     return merged

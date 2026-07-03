@@ -28,23 +28,31 @@ def run_v3_add_memory_task(
         items = normalize_results(raw)
         finished_iso = datetime.now(timezone.utc).isoformat()
         latency_ms = (time.perf_counter() - started_at) * 1000
-        event_cache_update(
+        if event_cache_update(
             event_id,
             status="SUCCEEDED",
             results=items,
             updated_at=finished_iso,
             completed_at=finished_iso,
             latency=latency_ms,
-        )
+        ) is None:
+            logger.warning(
+                "v3_add_memory background task completed but event cache update missed event_id=%s",
+                event_id,
+            )
     except Exception as exc:
         logger.exception("v3_add_memory background task failed for event_id=%s", event_id)
         finished_iso = datetime.now(timezone.utc).isoformat()
         latency_ms = (time.perf_counter() - started_at) * 1000
-        event_cache_update(
+        if event_cache_update(
             event_id,
             status="FAILED",
             updated_at=finished_iso,
             completed_at=finished_iso,
             latency=latency_ms,
             metadata={"error": str(exc)},
-        )
+        ) is None:
+            logger.warning(
+                "v3_add_memory background task failed but event cache update missed event_id=%s",
+                event_id,
+            )

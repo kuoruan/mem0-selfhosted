@@ -182,14 +182,21 @@ def event_cache_clear() -> None:
 
 def resolve_event_owner_id(auth: Any, entity_params: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Resolve the authenticated owner id to store on synthetic events."""
+    def _normalized_owner(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
     if auth is not None:
         owner_id = auth.get("id", None) if isinstance(auth, dict) else getattr(auth, "id", None)
-        if owner_id is not None:
-            return str(owner_id).strip()
+        normalized_owner = _normalized_owner(owner_id)
+        if normalized_owner is not None:
+            return normalized_owner
     if entity_params:
-        scoped_user = entity_params.get("user_id")
-        if scoped_user is not None and str(scoped_user).strip():
-            return str(scoped_user).strip()
+        normalized_scope_owner = _normalized_owner(entity_params.get("user_id"))
+        if normalized_scope_owner is not None:
+            return normalized_scope_owner
     return None
 
 

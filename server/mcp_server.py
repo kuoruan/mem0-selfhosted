@@ -3,12 +3,11 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, Optional
 
-import anyio
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import Response
 from fastapi.routing import APIRouter
 from mcp.server.fastmcp import FastMCP
-from mcp.server.streamable_http import StreamableHTTPServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from pydantic import Field
 
 from auth import verify_auth
@@ -28,7 +27,7 @@ from compat.responses import (
     resolve_optional_pagination,
     sync_add_response,
 )
-from compat.scope import build_search_filters, collect_entity_params, require_entity_scope
+from compat.scope import build_search_filters, collect_direct_entity_params, require_entity_scope
 from compat.tasks import run_v3_add_memory_task
 from memory_lock import run_memory_write, run_memory_write_for_memory_id
 from server_state import get_memory_instance
@@ -41,8 +40,9 @@ mem0_source_var: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_mem0_
 
 # Background pool for infer=True adds only (LLM extraction can take seconds).
 _ADD_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mcp-add-memory")
+_EXPIRATION_DATE_DEFAULT = Field(default_factory=lambda: UNSET)
 
-mcp = FastMCP("mem0")
+mcp = FastMCP("mem0", json_response=True, stateless_http=True)
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP Endpoints"])
 
 
@@ -60,7 +60,10 @@ def _mcp_auth_user_id() -> str | None:
     )
 )
 def add_memory(
-    text: Annotated[str, Field(description="Plain sentence summarizing what to store.")],
+    text: Annotated[
+        Optional[str],
+        Field(default=None, description="Plain sentence summarizing what to store. Required when messages is omitted."),
+    ] = None,
     messages: Annotated[
         Optional[list[dict[str, str]]],
         Field(
@@ -75,11 +78,12 @@ def add_memory(
     app_id: Annotated[Optional[str], Field(default=None, description="Optional app identifier.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Optional run identifier.")] = None,
     infer: Annotated[
-        bool,
+        Optional[bool],
         Field(
-            description="Extract structured memories via LLM (default true). When False, stores verbatim and returns results immediately.",
+            default=None,
+            description="Extract structured memories via LLM (default true). Set false to store raw text without extraction.",
         ),
-    ] = True,
+    ] = None,
     metadata: Annotated[
         Optional[dict[str, Any]], Field(default=None, description="Attach arbitrary metadata JSON to the memory.")
     ] = None,
@@ -99,6 +103,8 @@ def add_memory(
         run_id=run_id,
         fallback_user_id=_mcp_auth_user_id(),
     )
+    if messages is None and text is None:
+        raise ValueError("Provide either text or messages before calling add_memory.")
     conversation = messages if messages is not None else [{"role": "user", "content": text}]
     add_kwargs: dict[str, Any] = {**scope}
     base_md: dict[str, Any] = {"source": source or mem0_source_var.get()}
@@ -205,10 +211,10 @@ def get_memories(
     filters: Annotated[
         Optional[dict[str, Any]], Field(default=None, description="Structured filters; user_id injected automatically.")
     ] = None,
-    page: Annotated[Optional[int], Field(default=None, description="1-indexed page number when paginating.")] = None,
+    page: Annotated[int, Field(default=1, ge=1, description="1-indexed page number (default 1).")] = 1,
     page_size: Annotated[
-        Optional[int], Field(default=None, description="Number of memories per page (default 10, max 100).")
-    ] = None,
+        int, Field(default=10, ge=1, le=100, description="Number of memories per page (default 10, max 100).")
+    ] = 10,
     show_expired: Annotated[
         Optional[bool],
         Field(default=None, description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default."),
@@ -235,15 +241,13 @@ def get_memories(
 
     raw = get_memory_instance().get_all(**get_all_kwargs)
     items = normalize_results(raw)
-    pagination = resolve_optional_pagination(page, page_size, default_page_size=10)
-    if pagination:
-        effective_page, effective_page_size = pagination
-        start = (effective_page - 1) * effective_page_size
-        return {
-            "count": len(items),
-            "results": items[start : start + effective_page_size],
-        }
-    return {"count": len(items), "results": items}
+    clamped_page = max(1, page)
+    clamped_page_size = min(max(1, page_size), 100)
+    start = (clamped_page - 1) * clamped_page_size
+    return {
+        "count": len(items),
+        "results": items[start : start + clamped_page_size],
+    }
 
 
 @mcp.tool(description="Fetch a single memory by ID.")
@@ -267,20 +271,26 @@ def update_memory(
     ] = None,
     expiration_date: Annotated[
         Optional[str],
-        Field(default=None, description="Optional expiration date in YYYY-MM-DD format, or null to clear."),
-    ] = UNSET,
+        Field(description="Optional expiration date in YYYY-MM-DD format, or null to clear."),
+    ] = _EXPIRATION_DATE_DEFAULT,
     source: Annotated[
         Optional[str],
         Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
     ] = None,
 ) -> dict[str, Any]:
-    update_kwargs: dict[str, Any] = {"memory_id": memory_id, "data": text}
+    expiration_date_omitted = expiration_date is UNSET or expiration_date is _EXPIRATION_DATE_DEFAULT
+    if text is None and metadata is None and source is None and expiration_date_omitted:
+        raise ValueError("Provide text, metadata, source or expiration_date.")
+
+    update_kwargs: dict[str, Any] = {"memory_id": memory_id}
+    if text is not None:
+        update_kwargs["data"] = text
     if metadata is not None or source is not None:
         base_md = {}
         if source is not None:
             base_md["source"] = source
         update_kwargs["metadata"] = {**base_md, **(metadata or {})}
-    if expiration_date is not UNSET:
+    if not expiration_date_omitted:
         update_kwargs["expiration_date"] = expiration_date
 
     return run_memory_write_for_memory_id(lambda memory: memory.update(**update_kwargs), memory_id)
@@ -326,7 +336,7 @@ def delete_entities(
     app_id: Annotated[Optional[str], Field(default=None, description="Delete this app and its memories.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Delete this run and its memories.")] = None,
 ) -> dict[str, Any]:
-    selected = list(collect_entity_params(user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id).items())
+    selected = list(collect_direct_entity_params(user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id).items())
     if not selected:
         raise ValueError("Provide user_id, agent_id, app_id or run_id before calling delete_entities.")
     for key, value in selected:
@@ -402,10 +412,19 @@ Tips:
 
 
 async def _run_streamable_transport(request: Request) -> Response:
+    body = await request.body()
+    body_sent = False
     response_started = False
     response_status = 200
     response_headers: list[tuple[bytes, bytes]] = []
     response_body = bytearray()
+
+    async def replay_receive():
+        nonlocal body_sent
+        if body_sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        body_sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
 
     async def capture_send(message):
         nonlocal response_started, response_status
@@ -416,24 +435,14 @@ async def _run_streamable_transport(request: Request) -> Response:
         elif message["type"] == "http.response.body":
             response_body.extend(message.get("body", b""))
 
-    transport = StreamableHTTPServerTransport(mcp_session_id=None, is_json_response_enabled=True)
+    session_manager = StreamableHTTPSessionManager(
+        app=mcp._mcp_server,
+        json_response=True,
+        stateless=True,
+    )
     try:
-        async with anyio.create_task_group() as tg:
-
-            async def run_server(*, task_status=anyio.TASK_STATUS_IGNORED):
-                async with transport.connect() as (read_stream, write_stream):
-                    task_status.started()
-                    await mcp._mcp_server.run(
-                        read_stream,
-                        write_stream,
-                        mcp._mcp_server.create_initialization_options(),
-                        stateless=True,
-                    )
-
-            await tg.start(run_server)
-            await transport.handle_request(request.scope, request.receive, capture_send)
-            await transport.terminate()
-            tg.cancel_scope.cancel()
+        async with session_manager.run():
+            await session_manager.handle_request(request.scope, replay_receive, capture_send)
     except Exception:
         logger.exception("MCP streamable transport error")
         return Response(status_code=500, content=b"Internal MCP transport error")
@@ -469,5 +478,4 @@ async def handle_streamable_http(request: Request, user=Depends(verify_auth)):
 
 
 def setup_mcp_server(app: FastAPI) -> None:
-    mcp._mcp_server.name = "mem0-mcp"
     app.include_router(mcp_router)

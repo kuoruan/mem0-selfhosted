@@ -210,6 +210,23 @@ def test_add_memory_uses_messages_when_provided(mcp_testbed):
     assert mock_memory.add.call_args.kwargs["messages"] == messages
 
 
+def test_add_memory_allows_messages_without_text(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+
+    _structured(
+        client,
+        "add_memory",
+        {"user_id": "alice", "messages": messages},
+    )
+
+    mock_memory.add.assert_called_once()
+    assert mock_memory.add.call_args.kwargs["messages"] == messages
+
+
 def test_add_memory_infer_false_failure_surfaces_as_tool_error(mcp_testbed):
     _, client, mock_memory = mcp_testbed
     mock_memory.add.side_effect = RuntimeError("add failed")
@@ -311,7 +328,6 @@ def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):
         messages=[{"role": "user", "content": "remember this"}],
         user_id=auth_uid,
         metadata={"source": "MCP"},
-        infer=True,
     )
 
 
@@ -353,7 +369,6 @@ def test_add_memory_with_custom_source(mcp_testbed):
         messages=[{"role": "user", "content": "tagged"}],
         user_id="alice",
         metadata={"source": "cursor"},
-        infer=True,
     )
 
 
@@ -377,7 +392,6 @@ def test_add_memory_with_metadata(mcp_testbed):
         messages=[{"role": "user", "content": "decision made"}],
         user_id="alice",
         metadata={"source": "MCP", "type": "decision"},
-        infer=True,
     )
 
 
@@ -490,6 +504,17 @@ def test_get_memories_page_without_page_size_uses_defaults(mcp_testbed):
     assert len(structured["results"]) == 10
 
 
+def test_get_memories_without_pagination_params_uses_default_first_page(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+    mock_memory.get_all.return_value = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(25)]
+
+    structured = _structured(client, "get_memories", {"user_id": "alice"})
+
+    assert structured["count"] == 25
+    assert len(structured["results"]) == 10
+    assert structured["results"][0]["id"] == "mem-0"
+
+
 def test_list_events_page_without_page_size_uses_defaults(mcp_testbed):
     _, client, _ = mcp_testbed
     now = "2026-01-01T00:00:00+00:00"
@@ -567,7 +592,6 @@ def test_source_from_x_mem0_source_header(mcp_testbed):
         messages=[{"role": "user", "content": "hdr"}],
         user_id="alice",
         metadata={"source": "CURSOR"},
-        infer=True,
     )
 
 
@@ -752,6 +776,20 @@ def test_add_memory_expiration_date_not_passed_when_none(mcp_testbed):
     assert "expiration_date" not in mock_memory.add.call_args.kwargs
 
 
+def test_add_memory_default_infer_omits_infer_flag(mcp_testbed):
+    """When infer is not passed, infer should not appear in add kwargs."""
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "add_memory",
+        {"text": "fact", "user_id": "alice"},
+    )
+
+    mock_memory.add.assert_called_once()
+    assert "infer" not in mock_memory.add.call_args.kwargs
+
+
 # ---------------------------------------------------------------------------
 # update_memory — expiration_date, source, text optional
 # ---------------------------------------------------------------------------
@@ -808,9 +846,32 @@ def test_update_memory_text_optional(mcp_testbed):
         {"memory_id": "mem-1", "metadata": {"type": "note"}},
     )
 
-    mock_memory.update.assert_called_once_with(
-        memory_id="mem-1", data=None, metadata={"type": "note"}
+    mock_memory.update.assert_called_once_with(memory_id="mem-1", metadata={"type": "note"})
+
+
+def test_update_memory_null_expiration_date_clears(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _call_tool(
+        client,
+        "update_memory",
+        {"memory_id": "mem-1", "expiration_date": None},
     )
+
+    mock_memory.update.assert_called_once_with(memory_id="mem-1", expiration_date=None)
+
+
+def test_update_memory_noop_rejected(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    result = _call_tool(
+        client,
+        "update_memory",
+        {"memory_id": "mem-1"},
+    )
+
+    assert result.get("isError") is True
+    mock_memory.update.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

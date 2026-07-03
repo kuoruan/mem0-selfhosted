@@ -88,3 +88,14 @@ def warn_unsupported_fields(fields: Optional[List[str]], endpoint: str) -> None:
             endpoint,
             fields,
         )
+
+
+def warn_ignored_compat_params(endpoint: str, **params: Any) -> None:
+    """Log a warning for accepted hosted-compat params that OSS currently ignores."""
+    ignored = {key: value for key, value in params.items() if value is not None}
+    if ignored:
+        logger.warning(
+            "%s: unsupported compatibility parameters will be ignored by the self-hosted server: %s",
+            endpoint,
+            sorted(ignored),
+        )

@@ -1,7 +1,7 @@
 """Unit tests for the server compat utilities.
 
 Covers:
-  - compat.scope: collect_entity_params, require_entity_scope,
+  - compat.scope: collect_direct_entity_params, require_entity_scope,
                     build_search_filters, get_entity_field
   - compat.utils: drop_none
   - compat.helpers: normalize_results, normalize_results_dict
@@ -42,22 +42,23 @@ from server.compat.helpers import (
     normalize_results,
     normalize_results_dict,
 )
-from server.compat.utils import drop_none
+from server.compat.metadata import merge_v1_add_metadata, merge_v3_add_metadata
+from server.compat.utils import drop_none, parse_iso_timestamp
 from server.compat.responses import (
     resolve_optional_pagination,
+    warn_ignored_compat_params,
 )
 from server.errors import UpstreamError
 from server.compat.scope import (
     build_categories_filter,
     build_search_filters,
-    collect_entity_params,
+    collect_direct_entity_params,
     get_entity_field,
     require_entity_scope,
 )
 from server.routers.compat import (
     MemoryBatchDeleteInput,
     MemoryBatchDeleteLegacyInput,
-    MemoryAddInput,
     MemoryAddInputV3,
     MemoryGetInputV2,
     MemoryGetInputV3,
@@ -72,9 +73,11 @@ from server.routers.compat import (
     resolve_existing,
     warn_unsupported_fields,
     v1_get_event,
+    v1_list_entities,
     v1_list_events,
     v1_list_memories,
     v1_update_memory,
+    v2_list_memories,
     v3_add_memory,
     v3_search_memories,
 )
@@ -123,6 +126,125 @@ class TestCompatEntity:
         assert entities[0].id == "alice"
         assert entities[0].total_memories == 1
 
+    def test_aggregate_entity_buckets_handles_mixed_timezone_formats(self):
+        payloads = [
+            {"user_id": "alice", "created_at": "2026-01-02T00:00:00+00:00", "updated_at": "2026-01-03T00:00:00+00:00"},
+            {"user_id": "alice", "created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-04T00:00:00"},
+        ]
+
+        buckets = compat_entities.aggregate_entity_buckets(payloads, {"user": "user_id"})
+        bucket = buckets[("user", "alice")]
+        assert bucket["total_memories"] == 2
+        assert bucket["created_at"] is not None
+        assert bucket["updated_at"] is not None
+        assert bucket["created_at"].tzinfo is not None
+        assert bucket["updated_at"].tzinfo is not None
+
+    def test_iter_payloads_uses_store_count_when_available(self, monkeypatch):
+        row = MagicMock(payload={"user_id": "alice"})
+        mem = MagicMock()
+        mem.vector_store.col_info.return_value = {"count": 15_000}
+        mem.vector_store.list.return_value = [row]
+
+        monkeypatch.setattr(compat_entities, "get_memory_instance", lambda: mem)
+
+        payloads = compat_entities.iter_payloads()
+        assert payloads == [{"user_id": "alice"}]
+        mem.vector_store.list.assert_called_once_with(top_k=15_000)
+
+    def test_iter_payloads_uses_object_store_count_when_available(self, monkeypatch):
+        row = MagicMock(payload={"user_id": "alice"})
+        mem = MagicMock()
+        mem.vector_store.col_info.return_value = MagicMock(points_count=12_000)
+        mem.vector_store.list.return_value = [row]
+
+        monkeypatch.setattr(compat_entities, "get_memory_instance", lambda: mem)
+
+        payloads = compat_entities.iter_payloads()
+        assert payloads == [{"user_id": "alice"}]
+        mem.vector_store.list.assert_called_once_with(top_k=12_000)
+
+    def test_iter_payloads_warns_when_backend_returns_paged_tuple(self, monkeypatch, caplog):
+        row = MagicMock(payload={"user_id": "alice"})
+        mem = MagicMock()
+        mem.vector_store.col_info.return_value = {"count": 5}
+        mem.vector_store.list.return_value = ([row], "next-offset")
+
+        monkeypatch.setattr(compat_entities, "get_memory_instance", lambda: mem)
+
+        with caplog.at_level(logging.WARNING, logger="mem0.server.compat.entities"):
+            payloads = compat_entities.iter_payloads(limit=5)
+
+        assert payloads == [{"user_id": "alice"}]
+        assert "paged result while building entities" in caplog.text
+
+    def test_iter_payloads_retries_with_larger_top_k_when_count_missing(self, monkeypatch):
+        row1 = MagicMock(payload={"user_id": "alice"})
+        row2 = MagicMock(payload={"user_id": "bob"})
+        mem = MagicMock()
+        mem.vector_store.col_info.return_value = {}
+        mem.vector_store.list.side_effect = [([row1], "next-offset"), [row1, row2]]
+
+        monkeypatch.setattr(compat_entities, "get_memory_instance", lambda: mem)
+
+        payloads = compat_entities.iter_payloads(limit=2)
+        assert payloads == [{"user_id": "alice"}, {"user_id": "bob"}]
+        assert [call.kwargs["top_k"] for call in mem.vector_store.list.call_args_list] == [2, 4]
+
+    def test_v1_list_entities_returns_paginated_entities_with_mixed_timestamps(self, monkeypatch):
+        row1 = MagicMock(
+            payload={
+                "user_id": "alice",
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T01:00:00+00:00",
+            }
+        )
+        row2 = MagicMock(
+            payload={
+                "user_id": "alice",
+                "created_at": "2026-01-02T00:00:00+00:00",
+                "updated_at": "2026-01-03T00:00:00",
+            }
+        )
+        mem = MagicMock()
+        mem.vector_store.col_info.return_value = {"count": 2}
+        mem.vector_store.list.return_value = [row1, row2]
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.compat.entities.get_memory_instance", lambda: mem)
+
+        req = MagicMock()
+        req.url = URL("http://test/v1/entities?page=1&page_size=10")
+
+        result = v1_list_entities(request=req, page=1, page_size=10, _auth=None)
+
+        assert result["count"] == 1
+        assert len(result["results"]) == 1
+        entity = result["results"][0]
+        assert entity.id == "alice"
+        assert entity.total_memories == 2
+
+    def test_v1_list_entities_respects_pagination(self, monkeypatch):
+        rows = [
+            MagicMock(payload={"user_id": "alice", "created_at": "2026-01-01T00:00:00+00:00"}),
+            MagicMock(payload={"agent_id": "agent-1", "created_at": "2026-01-01T00:00:00+00:00"}),
+        ]
+        mem = MagicMock()
+        mem.vector_store.col_info.return_value = {"count": 2}
+        mem.vector_store.list.return_value = rows
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.compat.entities.get_memory_instance", lambda: mem)
+
+        req = MagicMock()
+        req.url = URL("http://test/v1/entities?page=1&page_size=1")
+
+        page = v1_list_entities(request=req, page=1, page_size=1, _auth=None)
+
+        assert page["count"] == 2
+        assert len(page["results"]) == 1
+        assert page["next"] is not None
+
 
 # ---------------------------------------------------------------------------
 # compat.scope
@@ -148,53 +270,72 @@ class TestGetEntityField:
         assert exc.value.status_code == 400
 
 
-class TestCollectEntityParams:
+class TestCollectDirectEntityParams:
     def test_explicit_user_id(self):
-        assert collect_entity_params(user_id="u1") == {"user_id": "u1"}
+        assert collect_direct_entity_params(user_id="u1") == {"user_id": "u1"}
 
     def test_multiple_kwargs(self):
-        result = collect_entity_params(user_id="u1", agent_id="a1")
+        result = collect_direct_entity_params(user_id="u1", agent_id="a1")
         assert result == {"user_id": "u1", "agent_id": "a1"}
 
     def test_app_id_kwarg(self):
-        assert collect_entity_params(app_id="app1") == {"app_id": "app1"}
+        assert collect_direct_entity_params(app_id="app1") == {"app_id": "app1"}
 
     def test_flat_filters(self):
-        result = collect_entity_params(filters={"user_id": "u1", "agent_id": "a1"})
+        result = collect_direct_entity_params(filters={"user_id": "u1", "agent_id": "a1"})
         assert result == {"user_id": "u1", "agent_id": "a1"}
 
     def test_non_entity_keys_in_filters_ignored(self):
-        result = collect_entity_params(filters={"user_id": "u1", "created_at": {"gte": "2024"}})
+        result = collect_direct_entity_params(filters={"user_id": "u1", "created_at": {"gte": "2024"}})
         assert result == {"user_id": "u1"}
 
-    def test_kwargs_override_filters(self):
-        result = collect_entity_params(
-            user_id="explicit",
-            filters={"user_id": "from_filter"},
-        )
-        assert result == {"user_id": "explicit"}
+    def test_kwargs_matching_filters(self):
+        result = collect_direct_entity_params(user_id="u1", filters={"user_id": "u1"})
+        assert result == {"user_id": "u1"}
+
+    def test_kwargs_conflicting_with_filters_raises(self):
+        with pytest.raises(HTTPException) as exc:
+            collect_direct_entity_params(
+                user_id="explicit",
+                filters={"user_id": "from_filter"},
+            )
+        assert exc.value.status_code == 400
+
+    def test_entity_filter_value_must_be_string(self):
+        with pytest.raises(HTTPException) as exc:
+            collect_direct_entity_params(filters={"user_id": {"in": ["u1"]}})
+        assert exc.value.status_code == 400
+        assert "user_id" in exc.value.detail
 
     def test_and_nested(self):
-        result = collect_entity_params(filters={"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]})
-        assert result == {"user_id": "u1"}
+        result = collect_direct_entity_params(filters={"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]})
+        assert result == {}
 
     def test_or_nested(self):
-        result = collect_entity_params(filters={"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]})
-        assert result == {"user_id": "u1", "agent_id": "a1"}
+        result = collect_direct_entity_params(filters={"OR": [{"user_id": "u1"}, {"user_id": "u1", "agent_id": "a1"}]})
+        assert result == {}
 
     def test_app_id_nested_and(self):
-        result = collect_entity_params(filters={"AND": [{"app_id": "app1"}, {"user_id": "u1"}]})
-        assert result == {"app_id": "app1", "user_id": "u1"}
+        result = collect_direct_entity_params(filters={"AND": [{"app_id": "app1"}, {"user_id": "u1"}]})
+        assert result == {}
 
     def test_app_id_nested_or(self):
-        result = collect_entity_params(filters={"OR": [{"app_id": "app1"}, {"agent_id": "a1"}]})
-        assert result == {"app_id": "app1", "agent_id": "a1"}
+        result = collect_direct_entity_params(filters={"OR": [{"app_id": "app1"}, {"app_id": "app1", "agent_id": "a1"}]})
+        assert result == {}
+
+    def test_or_without_shared_entity_scope_is_ignored(self):
+        result = collect_direct_entity_params(filters={"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]})
+        assert result == {}
+
+    def test_not_scope_is_ignored(self):
+        result = collect_direct_entity_params(filters={"NOT": {"user_id": "u1"}})
+        assert result == {}
 
     def test_none_values_skipped(self):
-        assert collect_entity_params(user_id=None, agent_id=None) == {}
+        assert collect_direct_entity_params(user_id=None, agent_id=None) == {}
 
     def test_empty_returns_empty(self):
-        assert collect_entity_params() == {}
+        assert collect_direct_entity_params() == {}
 
 
 class TestRequireEntityScope:
@@ -225,6 +366,30 @@ class TestRequireEntityScope:
         result = require_entity_scope(filters={"user_id": "u1"})
         assert result == {"user_id": "u1"}
 
+    def test_not_scope_does_not_satisfy_requirement(self):
+        with pytest.raises(HTTPException) as exc:
+            require_entity_scope(filters={"NOT": {"user_id": "u1"}})
+        assert exc.value.status_code == 400
+
+    def test_scope_from_and_filter_tree(self):
+        result = require_entity_scope(filters={"AND": [{"user_id": "u1"}, {"agent_id": "a1"}]})
+        assert result == {"user_id": "u1", "agent_id": "a1"}
+
+    def test_nested_entity_filter_value_must_be_string(self):
+        with pytest.raises(HTTPException) as exc:
+            require_entity_scope(filters={"AND": [{"user_id": {"in": ["u1"]}}]})
+        assert exc.value.status_code == 400
+        assert "user_id" in exc.value.detail
+
+    def test_scope_from_shared_or_filter_tree(self):
+        result = require_entity_scope(filters={"OR": [{"user_id": "u1"}, {"user_id": "u1", "agent_id": "a1"}]})
+        assert result == {"user_id": "u1"}
+
+    def test_conflicting_explicit_and_filter_tree_scope_raises(self):
+        with pytest.raises(HTTPException) as exc:
+            require_entity_scope(user_id="explicit", filters={"AND": [{"user_id": "from_filter"}]})
+        assert exc.value.status_code == 400
+
 
 class TestBuildSearchFilters:
     def test_no_filters_entity_kwarg(self):
@@ -238,47 +403,61 @@ class TestBuildSearchFilters:
         )
         assert result == {"user_id": "u1", "created_at": {"gte": "2024-01-01"}}
 
-    def test_flat_filters_entity_already_present(self):
-        """Entity kwarg should overwrite same key already in flat filters."""
+    def test_flat_filters_matching_entity_kwarg(self):
         result = build_search_filters(
-            user_id="explicit",
-            filters={"user_id": "from_filter", "created_at": {"gte": "2024"}},
+            user_id="u1",
+            filters={"user_id": "u1", "created_at": {"gte": "2024"}},
         )
-        assert result["user_id"] == "explicit"
+        assert result["user_id"] == "u1"
         assert "created_at" in result
 
-    def test_and_entity_in_conditions_not_re_injected(self):
-        """user_id already inside AND conditions: nothing extra to inject."""
+    def test_flat_filters_conflicting_entity_kwarg_raises(self):
+        with pytest.raises(HTTPException) as exc:
+            build_search_filters(
+                user_id="explicit",
+                filters={"user_id": "from_filter", "created_at": {"gte": "2024"}},
+            )
+        assert exc.value.status_code == 400
+
+    def test_and_entity_in_conditions_is_copied_to_top_level_for_sdk_validation(self):
         filters = {"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]}
         result = build_search_filters(filters=filters)
-        # result should equal the original AND structure, not add user_id at top level
-        assert result == filters
-        assert "user_id" not in result
+        assert result == {**filters, "user_id": "u1"}
 
-    def test_and_extra_entity_kwarg_injected_into_and(self):
-        """user_id from explicit kwarg not present in AND conditions: inject into AND list."""
+    def test_and_extra_entity_kwarg_copied_to_top_level(self):
         filters = {"AND": [{"created_at": {"gte": "2024"}}]}
         result = build_search_filters(user_id="u1", filters=filters)
-        assert "AND" in result
-        assert "user_id" not in result  # not at top level
-        and_items = result["AND"]
-        assert any(item.get("user_id") == "u1" for item in and_items)
+        assert result == {**filters, "user_id": "u1"}
 
     def test_and_does_not_mutate_input(self):
-        """Injecting into AND must not modify the original filters object."""
         original = {"AND": [{"created_at": {"gte": "2024"}}]}
         build_search_filters(user_id="u1", filters=original)
         assert original == {"AND": [{"created_at": {"gte": "2024"}}]}
 
-    def test_or_extra_entity_kwarg_wraps_in_outer_and(self):
-        """user_id from explicit kwarg with OR filters: wrap in AND."""
+    def test_or_extra_entity_kwarg_copied_to_top_level(self):
         filters = {"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]}
         result = build_search_filters(user_id="explicit", filters=filters)
-        assert "AND" in result
-        assert "OR" not in result  # OR is nested inside AND now
-        outer_and = result["AND"]
-        assert any("OR" in item for item in outer_and)
-        assert any(item.get("user_id") == "explicit" for item in outer_and)
+        assert result == {**filters, "user_id": "explicit"}
+
+    def test_shared_or_scope_copied_to_top_level(self):
+        filters = {"OR": [{"user_id": "u1"}, {"user_id": "u1", "agent_id": "a1"}]}
+        result = build_search_filters(filters=filters)
+        assert result == {**filters, "user_id": "u1"}
+
+    def test_or_without_shared_scope_raises(self):
+        with pytest.raises(HTTPException) as exc:
+            build_search_filters(filters={"OR": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]})
+        assert exc.value.status_code == 400
+
+    def test_fallback_user_id_copied_to_unscoped_or(self):
+        filters = {"OR": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]}
+        result = build_search_filters(filters=filters, fallback_user_id="fallback")
+        assert result == {**filters, "user_id": "fallback"}
+
+    def test_conflicting_explicit_and_and_scope_raises(self):
+        with pytest.raises(HTTPException) as exc:
+            build_search_filters(user_id="explicit", filters={"AND": [{"user_id": "from_filter"}]})
+        assert exc.value.status_code == 400
 
     def test_raises_without_any_scope(self):
         with pytest.raises(HTTPException) as exc:
@@ -296,10 +475,12 @@ class TestBuildSearchFilters:
         )
         assert result == {"app_id": "app1", "created_at": {"gte": "2024-01-01"}}
 
-    def test_app_id_injected_into_and_filters(self):
+    def test_app_id_copied_to_top_level_for_and_filters(self):
         filters = {"AND": [{"user_id": "u1"}]}
         result = build_search_filters(app_id="app1", filters=filters)
-        assert any(item.get("app_id") == "app1" for item in result["AND"])
+        assert result["app_id"] == "app1"
+        assert result["user_id"] == "u1"
+        assert result["AND"] == [{"user_id": "u1"}]
 
 
 class TestBuildCategoriesFilter:
@@ -330,6 +511,17 @@ class TestDropNone:
 
     def test_does_not_remove_falsy_non_none(self):
         assert drop_none({"a": 0, "b": False, "c": ""}) == {"a": 0, "b": False, "c": ""}
+
+
+class TestParseIsoTimestamp:
+    def test_naive_timestamp_is_normalized_to_utc(self):
+        parsed = parse_iso_timestamp("2026-01-01T12:00:00")
+        assert parsed is not None
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() == timezone.utc.utcoffset(None)
+
+    def test_invalid_timestamp_returns_none(self):
+        assert parse_iso_timestamp("not-a-time") is None
 
 
 class TestNormalizeResults:
@@ -381,6 +573,27 @@ class TestNormalizeResultsDict:
         }
 
 
+class TestMetadataMergeHelpers:
+    def test_merge_v1_add_metadata_allows_explicit_empty_categories(self):
+        merged = merge_v1_add_metadata(
+            {"categories": ["legacy"]},
+            source=None,
+            platform=None,
+            categories=[],
+        )
+        assert merged is not None
+        assert merged["categories"] == []
+
+    def test_merge_v3_add_metadata_accepts_empty_extra_metadata_dict(self):
+        merged = merge_v3_add_metadata(
+            {"source": "body-source", "keep": True},
+            source="HEADER",
+            platform="cursor",
+            extra_metadata={},
+        )
+        assert merged == {"source": "body-source", "keep": True, "platform": "cursor"}
+
+
 class TestResolveEventOwnerId:
     def test_extracts_from_user_object(self):
         auth = MagicMock()
@@ -397,6 +610,12 @@ class TestResolveEventOwnerId:
         assert resolve_event_owner_id(None, {"user_id": "scoped-user"}) == "scoped-user"
         assert resolve_event_owner_id([], {"user_id": "scoped-user"}) == "scoped-user"
         assert resolve_event_owner_id([{"id": "user-3"}], {"user_id": "scoped-user"}) == "scoped-user"
+
+    def test_blank_auth_owner_id_falls_back_to_scoped_user(self):
+        assert resolve_event_owner_id({"id": "   "}, {"user_id": "scoped-user"}) == "scoped-user"
+
+    def test_blank_auth_owner_id_without_scope_returns_none(self):
+        assert resolve_event_owner_id({"id": "   "}) is None
 
 
 class TestCompatEvent:
@@ -569,6 +788,40 @@ class TestEventCacheCopies:
             event_cache_update("evt-1", status="NOT_A_STATUS")
 
 
+class TestRunV3AddMemoryTask:
+    def test_warns_when_success_update_misses_event_cache(self, monkeypatch, caplog):
+        monkeypatch.setattr(compat_tasks, "entity_scope_from_params", lambda params: {"user_id": "u1"})
+        monkeypatch.setattr(compat_tasks, "run_memory_write", lambda callback, scope: {"results": [{"id": "m1"}]})
+        monkeypatch.setattr(compat_tasks, "event_cache_update", lambda event_id, **fields: None)
+
+        with caplog.at_level(logging.WARNING, logger="mem0.server.compat.tasks"):
+            compat_tasks.run_v3_add_memory_task(
+                "evt-1",
+                [{"role": "user", "content": "remember"}],
+                {"user_id": "u1"},
+            )
+
+        assert "completed but event cache update missed" in caplog.text
+
+    def test_warns_when_failure_update_misses_event_cache(self, monkeypatch, caplog):
+        monkeypatch.setattr(compat_tasks, "entity_scope_from_params", lambda params: {"user_id": "u1"})
+
+        def _raise_write(_callback, _scope):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(compat_tasks, "run_memory_write", _raise_write)
+        monkeypatch.setattr(compat_tasks, "event_cache_update", lambda event_id, **fields: None)
+
+        with caplog.at_level(logging.WARNING, logger="mem0.server.compat.tasks"):
+            compat_tasks.run_v3_add_memory_task(
+                "evt-2",
+                [{"role": "user", "content": "remember"}],
+                {"user_id": "u1"},
+            )
+
+        assert "failed but event cache update missed" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # build_list_filters
 # ---------------------------------------------------------------------------
@@ -634,6 +887,48 @@ class TestBuildListFilters:
         result = build_list_filters(body, {"user_id": "u1"})
         assert result["categories"] == {"in": ["personal"]}
 
+    def test_not_categories_does_not_block_categories_convenience_filter(self):
+        body = self._body(
+            filters={"AND": [{"user_id": "u1"}, {"NOT": {"categories": {"contains": "archived"}}}]},
+            categories=["finance"],
+        )
+        result = build_list_filters(body, {"user_id": "u1"})
+        assert {"categories": {"contains": "finance"}} in result["AND"]
+
+    def test_partial_or_created_at_does_not_block_date_convenience_filter(self):
+        body = self._body(
+            filters={"OR": [{"created_at": {"gte": "2023-01-01"}}, {"kind": "note"}]},
+            start_date="2024-01-01",
+        )
+        result = build_list_filters(body, {"user_id": "u1"})
+        assert {"created_at": {"gte": "2024-01-01"}} in result["AND"]
+
+    def test_or_with_categories_in_every_branch_blocks_categories_convenience_filter(self):
+        body = self._body(
+            filters={"OR": [{"categories": {"contains": "personal"}}, {"categories": {"contains": "work"}}]},
+            categories=["finance"],
+        )
+        result = build_list_filters(body, {"user_id": "u1"})
+        assert result == {
+            "OR": [{"categories": {"contains": "personal"}}, {"categories": {"contains": "work"}}],
+            "user_id": "u1",
+        }
+
+    def test_positive_key_scan_checks_or_after_non_matching_and(self):
+        body = self._body(
+            filters={
+                "AND": [{"kind": "note"}],
+                "OR": [{"created_at": {"gte": "2023-01-01"}}, {"created_at": {"gte": "2022-01-01"}}],
+            },
+            start_date="2024-01-01",
+        )
+        result = build_list_filters(body, {"user_id": "u1"})
+        assert result == {
+            "AND": [{"kind": "note"}],
+            "OR": [{"created_at": {"gte": "2023-01-01"}}, {"created_at": {"gte": "2022-01-01"}}],
+            "user_id": "u1",
+        }
+
     def test_and_format_skips_date_categories_merge(self):
         """Logical format: convenience fields are AND-ed at top level."""
         body = self._body(
@@ -642,19 +937,20 @@ class TestBuildListFilters:
             categories=["finance"],
         )
         result = build_list_filters(body, {"user_id": "u1"})
+        assert result["user_id"] == "u1"
         assert "AND" in result
         assert {"created_at": {"gte": "2024-01-01"}} in result["AND"]
         assert {"categories": {"contains": "finance"}} in result["AND"]
 
-    def test_and_filters_do_not_mix_top_level_entity_keys(self):
+    def test_and_filters_copy_entity_scope_to_top_level(self):
         body = self._body(filters={"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]})
         result = build_list_filters(body, {"user_id": "u1"})
-        assert result == {"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]}
+        assert result == {"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}], "user_id": "u1"}
 
-    def test_or_filters_do_not_mix_top_level_entity_keys(self):
+    def test_or_filters_copy_entity_scope_to_top_level(self):
         body = self._body(filters={"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]})
         result = build_list_filters(body, {"user_id": "u1", "agent_id": "a1"})
-        assert result == {"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]}
+        assert result == {"OR": [{"user_id": "u1"}, {"agent_id": "a1"}], "user_id": "u1", "agent_id": "a1"}
 
     def test_does_not_mutate_body_filters(self):
         original = {"user_id": "u1"}
@@ -782,6 +1078,58 @@ class TestWarnUnsupportedFields:
         assert "score" in caplog.text
 
 
+class TestWarnIgnoredCompatParams:
+    def test_no_ignored_params_no_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_ignored_compat_params("v3_search_memories", latest_only=None, reference_date=None)
+        assert "compatibility parameters" not in caplog.text
+
+    def test_emits_warning_for_non_none_params(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_ignored_compat_params("v3_search_memories", latest_only=False, reference_date="2024-06-01")
+
+        assert "v3_search_memories" in caplog.text
+        assert "latest_only" in caplog.text
+        assert "reference_date" in caplog.text
+
+    def test_v2_list_warns_for_fields_and_latest_only(self, monkeypatch, caplog):
+        mem = MagicMock()
+        mem.get_all.return_value = []
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        req = MagicMock()
+        req.url = URL("http://testserver/v2/memories?page=1&page_size=10")
+        body = MemoryGetInputV2(filters={"user_id": "u1"}, fields=["id"], latest_only=True)
+
+        with caplog.at_level(logging.WARNING):
+            v2_list_memories(req, body, page=1, page_size=10, _auth=None)
+
+        assert "v2_list_memories" in caplog.text
+        assert "fields" in caplog.text.lower()
+        assert "latest_only" in caplog.text
+        mem.get_all.assert_called_once_with(filters={"user_id": "u1"})
+
+    def test_v3_search_warns_for_reference_date_and_latest_only(self, monkeypatch, caplog):
+        mem = MagicMock()
+        mem.search.return_value = []
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        body = MemorySearchInputV3(
+            query="hello",
+            user_id="u1",
+            reference_date="2024-06-01",
+            latest_only=True,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            v3_search_memories(body, _auth=None)
+
+        assert "v3_search_memories" in caplog.text
+        assert "reference_date" in caplog.text
+        assert "latest_only" in caplog.text
+        mem.search.assert_called_once_with(query="hello", filters={"user_id": "u1"})
+
+
 # ---------------------------------------------------------------------------
 # build_search_kwargs
 # ---------------------------------------------------------------------------
@@ -854,7 +1202,7 @@ class TestV3SearchMemoriesConvenienceFields:
         called = mem.search.call_args.kwargs
         assert called["query"] == "hello"
         filters = called["filters"]
-        # build_search_filters wraps OR with outer AND for explicit user_id
+        # Convenience filters wrap the scoped OR tree in an outer AND.
         assert "AND" in filters
         assert {"categories": {"contains": "finance"}} in filters["AND"]
         assert {"foo": "bar"} in filters["AND"]
@@ -1063,6 +1411,25 @@ class TestSyntheticEvents:
         for task in tasks.tasks:
             task.func(*task.args, **task.kwargs)
 
+    @staticmethod
+    def _patch_memory(monkeypatch, get_mem) -> None:
+        for target in (
+            "server.routers.compat.get_memory_instance",
+            "server.server_state.get_memory_instance",
+            "server.memory_lock.get_memory_instance",
+            "server.compat.tasks.get_memory_instance",
+            "server.compat.tasks.run_memory_write",
+            "server.routers.compat.run_memory_write",
+            "memory_lock.get_memory_instance",
+            "compat.tasks.get_memory_instance",
+            "compat.tasks.run_memory_write",
+            "routers.compat.run_memory_write",
+        ):
+            if target.endswith("run_memory_write"):
+                monkeypatch.setattr(target, lambda fn, entity_scope=None, **_: fn(get_mem()), raising=False)
+            else:
+                monkeypatch.setattr(target, get_mem, raising=False)
+
     def test_v3_add_returns_event_id_and_event_is_fetchable(self, monkeypatch):
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
@@ -1070,9 +1437,7 @@ class TestSyntheticEvents:
         def get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+        self._patch_memory(monkeypatch, get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1103,9 +1468,7 @@ class TestSyntheticEvents:
         def get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+        self._patch_memory(monkeypatch, get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1146,9 +1509,7 @@ class TestSyntheticEvents:
         def get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+        self._patch_memory(monkeypatch, get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1175,9 +1536,7 @@ class TestSyntheticEvents:
         def get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+        self._patch_memory(monkeypatch, get_mem)
 
         tasks = BackgroundTasks()
 
@@ -1216,9 +1575,7 @@ class TestSyntheticEvents:
         def get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+        self._patch_memory(monkeypatch, get_mem)
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
@@ -1250,9 +1607,7 @@ class TestSyntheticEvents:
         def get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+        self._patch_memory(monkeypatch, get_mem)
 
         with pytest.raises(UpstreamError):
             v3_add_memory(
@@ -1273,9 +1628,7 @@ class TestSyntheticEvents:
         def get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+        self._patch_memory(monkeypatch, get_mem)
         monkeypatch.setattr(compat_tasks.time, "perf_counter", MagicMock(side_effect=[10.0, 10.25]))
 
         tasks = BackgroundTasks()
@@ -1298,9 +1651,7 @@ class TestSyntheticEvents:
         def get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+        self._patch_memory(monkeypatch, get_mem)
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
@@ -1326,9 +1677,7 @@ class TestSyntheticEvents:
         def get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.server_state.get_memory_instance", get_mem)
-        monkeypatch.setattr("server.memory_lock.get_memory_instance", get_mem)
+        self._patch_memory(monkeypatch, get_mem)
 
         tasks = BackgroundTasks()
         result = v3_add_memory(
@@ -1570,6 +1919,27 @@ class TestV1ListMemoriesShowExpired:
         v1_list_memories(request=MagicMock(), user_id="u1", show_expired=False, auth=None)
 
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=False)
+
+    def test_admin_path_passes_show_expired_to_list_all_memories(self, monkeypatch):
+        list_all = MagicMock(return_value={"results": [{"id": "m1"}]})
+
+        monkeypatch.setattr("server.routers.compat.ensure_admin", lambda request, auth: None)
+        monkeypatch.setattr("server.routers.compat.list_all_memories", list_all)
+
+        result = v1_list_memories(request=MagicMock(), show_expired=True, auth=MagicMock())
+
+        assert result == [{"id": "m1"}]
+        list_all.assert_called_once_with(limit=None, show_expired=True)
+
+    def test_admin_path_default_hides_expired(self, monkeypatch):
+        list_all = MagicMock(return_value={"results": [{"id": "m1"}]})
+
+        monkeypatch.setattr("server.routers.compat.ensure_admin", lambda request, auth: None)
+        monkeypatch.setattr("server.routers.compat.list_all_memories", list_all)
+
+        v1_list_memories(request=MagicMock(), auth=MagicMock())
+
+        list_all.assert_called_once_with(limit=None, show_expired=None)
 
 
 # ---------------------------------------------------------------------------

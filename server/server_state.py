@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 from copy import deepcopy
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict
 
 from mem0 import Memory
@@ -156,7 +157,17 @@ def get_memory_instance() -> Memory:
 
 
 ALL_MEMORIES_LIMIT = 1000
-_RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "hash", "created_at", "updated_at", "expiration_date"}
+_RESERVED_PAYLOAD_KEYS = {
+    "data",
+    "user_id",
+    "agent_id",
+    "app_id",
+    "run_id",
+    "hash",
+    "created_at",
+    "updated_at",
+    "expiration_date",
+}
 
 
 def serialize_memory(row: Any) -> Dict[str, Any]:
@@ -166,6 +177,7 @@ def serialize_memory(row: Any) -> Dict[str, Any]:
         "memory": payload.get("data"),
         "user_id": payload.get("user_id"),
         "agent_id": payload.get("agent_id"),
+        "app_id": payload.get("app_id"),
         "run_id": payload.get("run_id"),
         "hash": payload.get("hash"),
         "expiration_date": payload.get("expiration_date"),
@@ -175,14 +187,60 @@ def serialize_memory(row: Any) -> Dict[str, Any]:
     }
 
 
-def list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
-    results = get_memory_instance().vector_store.list(top_k=limit)
+def _normalize_vector_store_list(results: Any) -> list[Any]:
     if not results:
-        rows = []
-    elif isinstance(results, tuple):
-        rows = results[0] if isinstance(results[0], list) else []
-    elif isinstance(results, list) and results and isinstance(results[0], list):
-        rows = results[0]
-    else:
-        rows = results
-    return {"results": [serialize_memory(row) for row in rows]}
+        return []
+    if isinstance(results, tuple):
+        return results[0] if isinstance(results[0], list) else []
+    if isinstance(results, list) and results and isinstance(results[0], list):
+        return results[0]
+    if isinstance(results, list):
+        return results
+    return []
+
+
+def _vector_store_count(vector_store: Any) -> int | None:
+    col_info = getattr(vector_store, "col_info", None)
+    if not callable(col_info):
+        return None
+    try:
+        info = col_info()
+    except Exception:
+        return None
+    for key in ("count", "points_count", "vectors_count"):
+        count = info.get(key) if isinstance(info, dict) else getattr(info, key, None)
+        if isinstance(count, int) and count > 0:
+            return count
+    return None
+
+
+def _expiration_date_is_expired(expiration_date: Any) -> bool:
+    """Return whether an expiration date has passed.
+
+    Mirrors the OSS Memory SDK behavior for admin all-memory listing without
+    depending on private SDK helpers. Invalid or missing dates are treated as
+    active so malformed legacy payloads do not break admin reads.
+    """
+    if not expiration_date:
+        return False
+    try:
+        parsed_date = date.fromisoformat(str(expiration_date))
+    except ValueError:
+        return False
+    return parsed_date < datetime.now(timezone.utc).date()
+
+
+def list_all_memories(limit: int | None = ALL_MEMORIES_LIMIT, show_expired: bool | None = None) -> Dict[str, Any]:
+    vector_store = get_memory_instance().vector_store
+    top_k = limit if limit is not None else _vector_store_count(vector_store)
+    if top_k is None:
+        top_k = ALL_MEMORIES_LIMIT
+
+    rows = _normalize_vector_store_list(vector_store.list(top_k=top_k))
+    memories = [serialize_memory(row) for row in rows]
+
+    if show_expired is not True:
+        # Admin all-memory listing has no entity scope, so it cannot call
+        # Memory.get_all(show_expired=...) without tripping SDK scope validation.
+        memories = [m for m in memories if not _expiration_date_is_expired(m.get("expiration_date"))]
+    return {"results": memories}

@@ -71,6 +71,7 @@ from compat.metadata import build_v3_add_extra_metadata, merge_v1_add_metadata, 
 from compat.utils import drop_none
 from compat.responses import (
     paginate_response,
+    warn_ignored_compat_params,
     warn_unsupported_fields,
     pending_add_response,
     sync_add_response,
@@ -89,7 +90,7 @@ from compat.scope import (
     append_search_convenience_filters,
     build_list_filters,
     build_search_filters,
-    collect_entity_params,
+    collect_direct_entity_params,
     get_entity_field,
     require_entity_scope,
 )
@@ -447,15 +448,16 @@ def v1_list_memories(
     show_expired: Optional[bool] = Query(default=None),
     auth=Depends(verify_auth),
 ):
+    show_expired_flag = show_expired if isinstance(show_expired, bool) else None
     filters = drop_none({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
 
     if not filters:
         ensure_admin(request, auth)
-        raw = list_all_memories()
+        raw = list_all_memories(limit=None, show_expired=show_expired_flag)
     else:
         kwargs: Dict[str, Any] = {"filters": filters}
-        if isinstance(show_expired, bool):
-            kwargs["show_expired"] = show_expired
+        if show_expired_flag is not None:
+            kwargs["show_expired"] = show_expired_flag
         raw = get_memory_instance().get_all(**kwargs)
     return normalize_results(raw)
 
@@ -464,7 +466,7 @@ def v1_list_memories(
 @router.post("/v1/memories", summary="Add memories (v1)")
 @upstream_guard
 def v1_add_memories(body: MemoryAddInput, meta: RequestMeta = Depends(request_meta), _auth=Depends(verify_auth)):
-    entity_params = collect_entity_params(
+    entity_params = collect_direct_entity_params(
         user_id=body.user_id,
         agent_id=body.agent_id,
         app_id=body.app_id,
@@ -560,6 +562,7 @@ def v1_get_entity_memories(
 @upstream_guard
 def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     warn_unsupported_fields(body.fields, "v1_search_memories")
+    warn_ignored_compat_params("v1_search_memories", latest_only=body.latest_only)
     effective_filters = build_search_filters(
         user_id=body.user_id,
         agent_id=body.agent_id,
@@ -740,6 +743,8 @@ def v2_list_memories(
     page_size: int = Query(100, ge=1, le=200),
     _auth=Depends(verify_auth),
 ):
+    warn_unsupported_fields(body.fields, "v2_list_memories")
+    warn_ignored_compat_params("v2_list_memories", latest_only=body.latest_only)
     entity_params = require_entity_scope(
         filters=body.filters,
         detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
@@ -761,6 +766,7 @@ def v2_list_memories(
 @upstream_guard
 def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
     warn_unsupported_fields(body.fields, "v2_search_memories")
+    warn_ignored_compat_params("v2_search_memories", latest_only=body.latest_only)
     effective_filters = build_search_filters(
         user_id=body.user_id,
         agent_id=body.agent_id,
@@ -812,7 +818,7 @@ def v3_add_memory(
     meta: RequestMeta = Depends(request_meta),
     auth=Depends(verify_auth),
 ):
-    entity_params = collect_entity_params(
+    entity_params = collect_direct_entity_params(
         filters=body.filters,
         user_id=body.user_id,
         agent_id=body.agent_id,
@@ -877,6 +883,7 @@ def v3_get_all_memories(
     page_size: int = Query(100, ge=1, le=200),
     _auth=Depends(verify_auth),
 ):
+    warn_ignored_compat_params("v3_get_all_memories", latest_only=body.latest_only)
     entity_params = require_entity_scope(
         filters=body.filters,
         detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
@@ -895,6 +902,11 @@ def v3_get_all_memories(
 @upstream_guard
 def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
     warn_unsupported_fields(body.fields, "v3_search_memories")
+    warn_ignored_compat_params(
+        "v3_search_memories",
+        latest_only=body.latest_only,
+        reference_date=body.reference_date,
+    )
     effective_filters = build_search_filters(
         user_id=body.user_id,
         agent_id=body.agent_id,

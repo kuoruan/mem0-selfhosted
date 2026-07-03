@@ -84,6 +84,7 @@ def test_list_all_memories_handles_tuple_vector_store_shape(monkeypatch):
                 "memory": "hello",
                 "user_id": "u1",
                 "agent_id": None,
+                "app_id": None,
                 "run_id": None,
                 "hash": None,
                 "expiration_date": None,
@@ -93,3 +94,108 @@ def test_list_all_memories_handles_tuple_vector_store_shape(monkeypatch):
             }
         ]
     }
+
+
+def test_serialize_memory_promotes_app_id_out_of_metadata():
+    class Row:
+        id = "m1"
+        payload = {
+            "data": "hello",
+            "user_id": "u1",
+            "agent_id": "a1",
+            "app_id": "app1",
+            "run_id": "r1",
+            "kind": "note",
+        }
+
+    result = server_state.serialize_memory(Row())
+
+    assert result["app_id"] == "app1"
+    assert result["metadata"] == {"kind": "note"}
+
+
+def test_list_all_memories_hides_expired_by_default(monkeypatch):
+    class Row:
+        def __init__(self, row_id, payload):
+            self.id = row_id
+            self.payload = payload
+
+    class VectorStore:
+        def list(self, top_k):
+            return [
+                Row("active", {"data": "hello", "user_id": "u1", "expiration_date": "2999-01-01"}),
+                Row("expired", {"data": "old", "user_id": "u1", "expiration_date": "2000-01-01"}),
+            ]
+
+        def col_info(self):
+            return {"count": 2}
+
+    class MemoryInstance:
+        vector_store = VectorStore()
+
+    monkeypatch.setattr(server_state, "get_memory_instance", lambda: MemoryInstance())
+
+    result = server_state.list_all_memories(limit=None)
+    ids = [item["id"] for item in result["results"]]
+    assert ids == ["active"]
+
+
+def test_list_all_memories_uses_object_store_count_when_available(monkeypatch):
+    class Row:
+        id = "active"
+        payload = {"data": "hello", "user_id": "u1"}
+
+    class CollectionInfo:
+        points_count = 12_000
+
+    class VectorStore:
+        def __init__(self):
+            self.top_k = None
+
+        def list(self, top_k):
+            self.top_k = top_k
+            return [Row()]
+
+        def col_info(self):
+            return CollectionInfo()
+
+    vector_store = VectorStore()
+
+    class MemoryInstance:
+        pass
+
+    memory_instance = MemoryInstance()
+    memory_instance.vector_store = vector_store
+
+    monkeypatch.setattr(server_state, "get_memory_instance", lambda: memory_instance)
+
+    result = server_state.list_all_memories(limit=None)
+
+    assert vector_store.top_k == 12_000
+    assert result["results"][0]["id"] == "active"
+
+
+def test_list_all_memories_includes_expired_when_requested(monkeypatch):
+    class Row:
+        def __init__(self, row_id, payload):
+            self.id = row_id
+            self.payload = payload
+
+    class VectorStore:
+        def list(self, top_k):
+            return [
+                Row("active", {"data": "hello", "user_id": "u1", "expiration_date": "2999-01-01"}),
+                Row("expired", {"data": "old", "user_id": "u1", "expiration_date": "2000-01-01"}),
+            ]
+
+        def col_info(self):
+            return {"count": 2}
+
+    class MemoryInstance:
+        vector_store = VectorStore()
+
+    monkeypatch.setattr(server_state, "get_memory_instance", lambda: MemoryInstance())
+
+    result = server_state.list_all_memories(limit=None, show_expired=True)
+    ids = [item["id"] for item in result["results"]]
+    assert ids == ["active", "expired"]
