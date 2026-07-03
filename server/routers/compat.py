@@ -179,7 +179,7 @@ class MemoryUpdateInput(BaseModel):
     timestamp: Optional[Any] = Field(default=None, description="Unix timestamp for the memory.")
     expiration_date: Optional[str] = Field(
         default=None,
-        description="Expiration date in YYYY-MM-DD format, or null to clear. Accepted for compatibility.",
+        description="Expiration date in YYYY-MM-DD format, or null to clear.",
     )
 
 
@@ -365,7 +365,7 @@ class MemoryAddInputV3(BaseModel):
     )
     expiration_date: Optional[str] = Field(
         default=None,
-        description="Accepted for compatibility; not processed by the self-hosted server.",
+        description="Optional expiration date in YYYY-MM-DD format.",
     )
 
 
@@ -501,7 +501,8 @@ def v1_get_memory(memory_id: str, _auth=Depends(verify_auth)):
 @router.put("/v1/memories/{memory_id}/", summary="Update a memory (v1)")
 @upstream_guard
 def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(verify_auth)):
-    if body.text is None and body.metadata is None and body.timestamp is None and body.expiration_date is None:
+    has_expiration_update = "expiration_date" in body.model_fields_set
+    if body.text is None and body.metadata is None and body.timestamp is None and not has_expiration_update:
         raise HTTPException(
             status_code=400,
             detail="At least one of text, metadata, timestamp, or expiration_date must be provided for update.",
@@ -509,10 +510,13 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
     metadata = body.metadata
     if body.timestamp is not None:
         metadata = {**(metadata or {}), "timestamp": body.timestamp}
+    merge_kwargs = {"text": body.text, "metadata": metadata}
+    # Use model_fields_set to distinguish "explicitly passed as null" (clear)
+    # from "omitted" (preserve existing). Both would be None in the field value.
+    if has_expiration_update:
+        merge_kwargs["expiration_date"] = body.expiration_date
     return run_memory_write_for_memory_id(
-        lambda memory: merge_and_update(
-            memory, memory_id, text=body.text, metadata=metadata, expiration_date=body.expiration_date
-        ),
+        lambda memory: merge_and_update(memory, memory_id, **merge_kwargs),
         memory_id,
     )
 
@@ -841,6 +845,9 @@ def v3_add_memory(
         platform=meta.platform,
         extra_metadata=extra_md,
     )
+
+    if body.expiration_date is not None:
+        params["expiration_date"] = body.expiration_date
 
     # Hybrid write path (same semantics as MCP add_memory):
     #   infer=False — fast path: no LLM, sync response with memory ids.

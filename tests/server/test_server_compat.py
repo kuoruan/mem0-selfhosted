@@ -74,6 +74,7 @@ from server.routers.compat import (
     v1_get_event,
     v1_list_events,
     v1_list_memories,
+    v1_update_memory,
     v3_add_memory,
     v3_search_memories,
 )
@@ -919,7 +920,7 @@ class TestMergeAndUpdate:
         mem.get.return_value = {"id": "mem-1", "memory": "old text", "metadata": {}}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", text="new text")
-        mem.update.assert_called_once_with(memory_id="mem-1", data="new text", metadata={}, expiration_date=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", data="new text", metadata={})
 
     def test_preserves_existing_text_when_none(self):
         mem = MagicMock()
@@ -927,7 +928,7 @@ class TestMergeAndUpdate:
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", text=None)
         mem.update.assert_called_once_with(
-            memory_id="mem-1", data="old text", metadata={"key": "val"}, expiration_date=None
+            memory_id="mem-1", data="old text", metadata={"key": "val"}
         )
 
     def test_preserves_existing_text_via_text_key(self):
@@ -936,7 +937,7 @@ class TestMergeAndUpdate:
         mem.get.return_value = {"id": "mem-1", "text": "via text key", "metadata": {}}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1")
-        mem.update.assert_called_once_with(memory_id="mem-1", data="via text key", metadata={}, expiration_date=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", data="via text key", metadata={})
 
     def test_metadata_new_keys_override_existing(self):
         mem = MagicMock()
@@ -944,7 +945,7 @@ class TestMergeAndUpdate:
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", metadata={"b": 99, "c": 3})
         mem.update.assert_called_once_with(
-            memory_id="mem-1", data="txt", metadata={"a": 1, "b": 99, "c": 3}, expiration_date=None
+            memory_id="mem-1", data="txt", metadata={"a": 1, "b": 99, "c": 3}
         )
 
     def test_metadata_none_keeps_existing(self):
@@ -952,7 +953,7 @@ class TestMergeAndUpdate:
         mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"x": 1}}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", metadata=None)
-        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"x": 1}, expiration_date=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"x": 1})
 
     def test_raises_404_when_memory_missing(self):
         """Delegates to resolve_existing which raises 404 for missing memory."""
@@ -968,7 +969,7 @@ class TestMergeAndUpdate:
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", metadata={"new_key": "val"})
         mem.update.assert_called_once_with(
-            memory_id="mem-1", data="txt", metadata={"new_key": "val"}, expiration_date=None
+            memory_id="mem-1", data="txt", metadata={"new_key": "val"}
         )
 
 
@@ -1317,8 +1318,8 @@ class TestSyntheticEvents:
         assert event["metadata"] is not None
         assert "boom" in event["metadata"]["error"]
 
-    def test_v3_add_accepts_expiration_date_without_error(self, monkeypatch):
-        """expiration_date is accepted for plugin compat but not forwarded to memory.add()."""
+    def test_v3_add_forwards_expiration_date(self, monkeypatch):
+        """expiration_date is forwarded to memory.add() when provided."""
         mem = MagicMock()
         mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
 
@@ -1343,9 +1344,8 @@ class TestSyntheticEvents:
         )
 
         assert result["status"] == "SUCCEEDED"
-        # expiration_date must NOT be forwarded to memory.add()
         call_kwargs = mem.add.call_args.kwargs
-        assert "expiration_date" not in (call_kwargs.get("metadata") or {})
+        assert call_kwargs["expiration_date"] == "2099-12-31"
 
 
 # ---------------------------------------------------------------------------
@@ -1361,6 +1361,41 @@ class TestMemoryUpdateInputExpirationDate:
     def test_expiration_date_none_by_default(self):
         body = MemoryUpdateInput(text="hello")
         assert body.expiration_date is None
+
+    def test_expiration_date_omitted_not_in_fields_set(self):
+        """When omitted, model_fields_set does NOT contain expiration_date."""
+        body = MemoryUpdateInput(text="hello")
+        assert "expiration_date" not in body.model_fields_set
+
+    def test_expiration_date_explicit_null_in_fields_set(self):
+        """When explicitly set to None, model_fields_set DOES contain it."""
+        body = MemoryUpdateInput(text="hello", expiration_date=None)
+        assert body.expiration_date is None
+        assert "expiration_date" in body.model_fields_set
+
+    def test_explicit_null_only_clears_expiration_date(self, monkeypatch):
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"kind": "note"}}
+        mem.update.return_value = {"message": "updated"}
+
+        def _run_memory_write_for_memory_id(callback, memory_id):
+            assert memory_id == "mem-1"
+            return callback(mem)
+
+        monkeypatch.setattr(
+            "server.routers.compat.run_memory_write_for_memory_id",
+            _run_memory_write_for_memory_id,
+        )
+
+        result = v1_update_memory("mem-1", MemoryUpdateInput(expiration_date=None), _auth=None)
+
+        assert result == {"message": "updated"}
+        mem.update.assert_called_once_with(
+            memory_id="mem-1",
+            data="txt",
+            metadata={"kind": "note"},
+            expiration_date=None,
+        )
 
     def test_rejects_unknown_field(self):
         with pytest.raises(ValidationError):
@@ -1482,13 +1517,25 @@ class TestMergeAndUpdateExpirationDate:
             memory_id="mem-1", data="txt", metadata={}, expiration_date="2099-12-31"
         )
 
-    def test_expiration_date_none_clears_it(self):
+    def test_expiration_date_none_passed_to_clear(self):
+        """When expiration_date is explicitly None, it MUST be passed to mem.update().
+        The SDK interprets None as "clear the expiration date"."""
         mem = MagicMock()
         mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {}}
         mem.update.return_value = {"message": "updated"}
         merge_and_update(mem, "mem-1", expiration_date=None)
         mem.update.assert_called_once_with(
             memory_id="mem-1", data="txt", metadata={}, expiration_date=None
+        )
+
+    def test_expiration_date_omitted_preserves_existing(self):
+        """When expiration_date is not passed (defaults to _UNSET), it is NOT forwarded."""
+        mem = MagicMock()
+        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {}}
+        mem.update.return_value = {"message": "updated"}
+        merge_and_update(mem, "mem-1")
+        mem.update.assert_called_once_with(
+            memory_id="mem-1", data="txt", metadata={}
         )
 
 

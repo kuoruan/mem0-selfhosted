@@ -381,8 +381,8 @@ def test_add_memory_with_metadata(mcp_testbed):
     )
 
 
-def test_add_memory_accepts_expiration_date_without_forwarding(mcp_testbed):
-    """expiration_date is accepted for plugin compat but not forwarded to memory.add()."""
+def test_add_memory_default_infer_passes_expiration_date(mcp_testbed):
+    """expiration_date is forwarded on the default async add path."""
     _, client, mock_memory = mcp_testbed
 
     _structured(
@@ -393,9 +393,8 @@ def test_add_memory_accepts_expiration_date_without_forwarding(mcp_testbed):
 
     mock_memory.add.assert_called_once()
     call_kwargs = mock_memory.add.call_args.kwargs
-    # expiration_date must NOT appear in the metadata forwarded to memory.add()
-    metadata = call_kwargs.get("metadata", {})
-    assert "expiration_date" not in metadata
+    assert call_kwargs["expiration_date"] == "2099-12-31"
+    assert "expiration_date" not in (call_kwargs.get("metadata") or {})
 
 
 def test_list_events_filter_and_pagination(mcp_testbed):
@@ -843,6 +842,68 @@ def test_search_memories_rerank_defaults_to_none(mcp_testbed):
 
     mock_memory.search.assert_called_once()
     assert "rerank" not in mock_memory.search.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# search_memories — show_expired passthrough
+# ---------------------------------------------------------------------------
+
+
+def test_search_memories_passes_show_expired(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "search_memories",
+        {"query": "hello", "user_id": "alice", "show_expired": True},
+    )
+
+    mock_memory.search.assert_called_once()
+    assert mock_memory.search.call_args.kwargs["show_expired"] is True
+
+
+def test_search_memories_show_expired_defaults_to_none(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "search_memories",
+        {"query": "hello", "user_id": "alice"},
+    )
+
+    mock_memory.search.assert_called_once()
+    assert "show_expired" not in mock_memory.search.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# get_memories — show_expired passthrough
+# ---------------------------------------------------------------------------
+
+
+def test_get_memories_passes_show_expired(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "get_memories",
+        {"user_id": "alice", "show_expired": True},
+    )
+
+    mock_memory.get_all.assert_called_once()
+    assert mock_memory.get_all.call_args.kwargs["show_expired"] is True
+
+
+def test_get_memories_show_expired_defaults_to_none(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "get_memories",
+        {"user_id": "alice"},
+    )
+
+    mock_memory.get_all.assert_called_once()
+    assert "show_expired" not in mock_memory.get_all.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------

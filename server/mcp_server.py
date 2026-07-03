@@ -21,7 +21,7 @@ from compat.events import (
     events_visible_to_caller,
     resolve_event_owner_id,
 )
-from compat.helpers import normalize_results, normalize_results_dict
+from compat.helpers import UNSET, build_search_kwargs, normalize_results, normalize_results_dict
 from compat.requests import request_meta
 from compat.responses import (
     pending_add_response,
@@ -160,6 +160,10 @@ def search_memories(
         Optional[bool],
         Field(default=None, description="Re-rank results for better relevance (adds 200-400ms latency). Default false."),
     ] = None,
+    show_expired: Annotated[
+        Optional[bool],
+        Field(default=None, description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default."),
+    ] = None,
     source: Annotated[
         Optional[str],
         Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
@@ -175,15 +179,11 @@ def search_memories(
         filters=filters,
         fallback_user_id=_mcp_auth_user_id(),
     )
-    search_kwargs: dict[str, Any] = {"filters": scoped_filters}
-    if top_k is not None:
-        search_kwargs["top_k"] = top_k
-    if threshold is not None:
-        search_kwargs["threshold"] = threshold
-    if rerank is not None:
-        search_kwargs["rerank"] = rerank
 
-    raw = get_memory_instance().search(query=query, **search_kwargs)
+    raw = get_memory_instance().search(
+        query=query,
+        **build_search_kwargs(scoped_filters, top_k, threshold, rerank, show_expired),
+    )
     return normalize_results_dict(raw)
 
 
@@ -209,6 +209,10 @@ def get_memories(
     page_size: Annotated[
         Optional[int], Field(default=None, description="Number of memories per page (default 10, max 100).")
     ] = None,
+    show_expired: Annotated[
+        Optional[bool],
+        Field(default=None, description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default."),
+    ] = None,
     source: Annotated[
         Optional[str],
         Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
@@ -225,7 +229,11 @@ def get_memories(
         fallback_user_id=_mcp_auth_user_id(),
     )
 
-    raw = get_memory_instance().get_all(filters=scoped_filters)
+    get_all_kwargs: dict[str, Any] = {"filters": scoped_filters}
+    if show_expired is not None:
+        get_all_kwargs["show_expired"] = show_expired
+
+    raw = get_memory_instance().get_all(**get_all_kwargs)
     items = normalize_results(raw)
     pagination = resolve_optional_pagination(page, page_size, default_page_size=10)
     if pagination:
@@ -260,7 +268,7 @@ def update_memory(
     expiration_date: Annotated[
         Optional[str],
         Field(default=None, description="Optional expiration date in YYYY-MM-DD format, or null to clear."),
-    ] = None,
+    ] = UNSET,
     source: Annotated[
         Optional[str],
         Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
@@ -272,7 +280,7 @@ def update_memory(
         if source is not None:
             base_md["source"] = source
         update_kwargs["metadata"] = {**base_md, **(metadata or {})}
-    if expiration_date is not None:
+    if expiration_date is not UNSET:
         update_kwargs["expiration_date"] = expiration_date
 
     return run_memory_write_for_memory_id(lambda memory: memory.update(**update_kwargs), memory_id)
