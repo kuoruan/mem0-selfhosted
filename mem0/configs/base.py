@@ -56,7 +56,7 @@ class MemoryConfig(BaseModel):
         description="Custom instructions for fact extraction",
         default=None,
     )
-    preserve_input_language: bool = Field(
+    use_input_language: bool = Field(
         description=(
             "When True, instructs the extraction LLM to respond in the same language "
             "and script as the input messages."
