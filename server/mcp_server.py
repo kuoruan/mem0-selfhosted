@@ -1,8 +1,8 @@
 import contextvars
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
-from typing import Annotated, Any, AsyncIterator, Optional
+from contextlib import asynccontextmanager, contextmanager
+from typing import Annotated, Any, AsyncIterator, Iterator, Optional
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import Response
@@ -477,24 +477,28 @@ def _install_mcp_lifespan(app: FastAPI) -> None:
     setattr(app.state, _MCP_LIFESPAN_INSTALLED_STATE, True)
 
 
+@contextmanager
+def _mcp_request_context(request: Request, user: Any) -> Iterator[None]:
+    auth_token = auth_user_id_var.set(str(user.id) if user is not None else None)
+    meta = request_meta(request)
+    platform_token = platform_var.set(meta.platform or meta.ua_tool_name)
+    source_token = mem0_source_var.set(meta.source or "MCP")
+
+    try:
+        yield
+    finally:
+        auth_user_id_var.reset(auth_token)
+        platform_var.reset(platform_token)
+        mem0_source_var.reset(source_token)
+
+
 @mcp_router.api_route(
     "/", methods=["GET", "POST", "DELETE"], include_in_schema=False, operation_id="handle_streamable_http_slash"
 )
 @mcp_router.api_route("", methods=["GET", "POST", "DELETE"], summary="MCP Endpoint")
 async def handle_streamable_http(request: Request, user=Depends(verify_auth)):
-    auth_token = auth_user_id_var.set(str(user.id) if user is not None else None)
-
-    meta = request_meta(request)
-
-    platform_token = platform_var.set(meta.platform or meta.ua_tool_name)
-    source_token = mem0_source_var.set(meta.source or "MCP")
-
-    try:
+    with _mcp_request_context(request, user):
         return await _run_streamable_transport(request)
-    finally:
-        auth_user_id_var.reset(auth_token)
-        platform_var.reset(platform_token)
-        mem0_source_var.reset(source_token)
 
 
 def setup_mcp_server(app: FastAPI) -> None:
