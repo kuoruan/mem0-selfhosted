@@ -496,6 +496,98 @@ def test_add_memory_with_metadata(mcp_testbed):
     )
 
 
+def test_add_memory_top_level_source_wins_over_metadata_source(mcp_testbed):
+    """An explicit top-level source arg wins over a same-named key in metadata."""
+    _, client, mock_memory = mcp_testbed
+
+    client.post(
+        "/mcp",
+        json=_jsonrpc(
+            "tools/call",
+            {
+                "name": "add_memory",
+                "arguments": {
+                    "text": "x",
+                    "user_id": "alice",
+                    "source": "cursor",
+                    "metadata": {"source": "spoof", "extra": 1},
+                },
+            },
+            req_id=2,
+        ),
+        headers=MCP_HEADERS,
+    )
+
+    mock_memory.add.assert_called_once()
+    md = mock_memory.add.call_args.kwargs["metadata"]
+    assert md["source"] == "cursor"
+    assert md["extra"] == 1
+    assert "spoof" not in md.values()
+
+
+def test_add_memory_metadata_source_wins_over_header_source(mcp_testbed):
+    """Caller metadata.source beats the request-header source (setdefault, matching REST)."""
+    _, client, mock_memory = mcp_testbed
+    headers = {**MCP_HEADERS, "x-mem0-source": "CURSOR"}
+
+    client.post(
+        "/mcp",
+        json=_jsonrpc(
+            "tools/call",
+            {
+                "name": "add_memory",
+                "arguments": {"text": "x", "user_id": "alice", "metadata": {"source": "from-metadata"}},
+            },
+            req_id=2,
+        ),
+        headers=headers,
+    )
+
+    mock_memory.add.assert_called_once()
+    assert mock_memory.add.call_args.kwargs["metadata"]["source"] == "from-metadata"
+
+
+def test_add_memory_header_platform_written_to_metadata(mcp_testbed):
+    """Request-header platform (x-mem0-platform) is recorded in metadata when not set by caller."""
+    _, client, mock_memory = mcp_testbed
+    headers = {**MCP_HEADERS, "x-mem0-platform": "cursor"}
+
+    client.post(
+        "/mcp",
+        json=_jsonrpc(
+            "tools/call",
+            {"name": "add_memory", "arguments": {"text": "x", "user_id": "alice"}},
+            req_id=2,
+        ),
+        headers=headers,
+    )
+
+    mock_memory.add.assert_called_once()
+    assert mock_memory.add.call_args.kwargs["metadata"]["platform"] == "cursor"
+
+
+def test_add_memory_metadata_platform_wins_over_header(mcp_testbed):
+    """Caller metadata.platform beats the request-header platform (setdefault, matching REST)."""
+    _, client, mock_memory = mcp_testbed
+    headers = {**MCP_HEADERS, "x-mem0-platform": "cursor"}
+
+    client.post(
+        "/mcp",
+        json=_jsonrpc(
+            "tools/call",
+            {
+                "name": "add_memory",
+                "arguments": {"text": "x", "user_id": "alice", "metadata": {"platform": "from-metadata"}},
+            },
+            req_id=2,
+        ),
+        headers=headers,
+    )
+
+    mock_memory.add.assert_called_once()
+    assert mock_memory.add.call_args.kwargs["metadata"]["platform"] == "from-metadata"
+
+
 def test_add_memory_default_infer_passes_expiration_date(mcp_testbed):
     """expiration_date is forwarded on the default async add path."""
     _, client, mock_memory = mcp_testbed
@@ -938,6 +1030,25 @@ def test_update_memory_source_and_metadata_merged(mcp_testbed):
     )
 
 
+def test_update_memory_top_level_source_wins_over_metadata_source(mcp_testbed):
+    """An explicit top-level source beats a same-named key inside the metadata bag."""
+    _, client, mock_memory = mcp_testbed
+
+    _call_tool(
+        client,
+        "update_memory",
+        {
+            "memory_id": "mem-1",
+            "source": "cursor",
+            "metadata": {"source": "spoof", "type": "note"},
+        },
+    )
+
+    mock_memory.update.assert_called_once_with(
+        memory_id="mem-1", metadata={"source": "cursor", "type": "note"}
+    )
+
+
 def test_update_memory_text_optional(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
@@ -1066,40 +1177,6 @@ def test_get_memories_show_expired_defaults_to_none(mcp_testbed):
 
     mock_memory.get_all.assert_called_once()
     assert "show_expired" not in mock_memory.get_all.call_args.kwargs
-
-
-# ---------------------------------------------------------------------------
-# get_memories — source accepted
-# ---------------------------------------------------------------------------
-
-
-def test_get_memories_accepts_source(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-
-    _structured(
-        client,
-        "get_memories",
-        {"user_id": "alice", "source": "cursor"},
-    )
-
-    mock_memory.get_all.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# delete_all_memories — source accepted
-# ---------------------------------------------------------------------------
-
-
-def test_delete_all_memories_accepts_source(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-
-    _call_tool(
-        client,
-        "delete_all_memories",
-        {"user_id": "alice", "source": "cursor"},
-    )
-
-    mock_memory.delete_all.assert_called_once_with(user_id="alice")
 
 
 # ---------------------------------------------------------------------------

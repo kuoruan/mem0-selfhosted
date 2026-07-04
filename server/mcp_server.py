@@ -123,11 +123,18 @@ def add_memory(
         raise ValueError("Provide either text or messages before calling add_memory.")
     conversation = messages if messages is not None else [{"role": "user", "content": text}]
     add_kwargs: dict[str, Any] = {**scope}
-    base_md: dict[str, Any] = {"source": source or mem0_source_var.get()}
 
+    # Three-layer metadata precedence, matching REST merge_v3_add_metadata:
+    # request-header source/platform (x-mem0-*) fill missing keys, caller
+    # metadata is preserved, and an explicit top-level `source` arg wins.
+    merged_metadata: dict[str, Any] = dict(metadata or {})
+    if header_source := mem0_source_var.get():
+        merged_metadata.setdefault("source", header_source)
     if platform := platform_var.get():
-        base_md["platform"] = platform
-    add_kwargs["metadata"] = {**base_md, **(metadata or {})}
+        merged_metadata.setdefault("platform", platform)
+    if source is not None:
+        merged_metadata["source"] = source
+    add_kwargs["metadata"] = merged_metadata
 
     if expiration_date is not None:
         add_kwargs["expiration_date"] = expiration_date
@@ -142,7 +149,8 @@ def add_memory(
             scope,
         )
         return sync_add_response(raw)
-    elif infer is True:
+
+    if infer is True:
         add_kwargs["infer"] = True
 
     event_id = create_pending_add_event(_mcp_auth_user_id() or resolve_event_owner_id(None, scope))
@@ -186,13 +194,7 @@ def search_memories(
         Optional[bool],
         Field(default=None, description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default."),
     ] = None,
-    source: Annotated[
-        Optional[str],
-        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
-    ] = None,
 ) -> dict[str, Any]:
-    # source is accepted for compatibility but not processed — self-hosted
-    # does not track events for read operations.
     scoped_filters = build_search_filters(
         user_id=user_id,
         agent_id=agent_id,
@@ -235,13 +237,7 @@ def get_memories(
         Optional[bool],
         Field(default=None, description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default."),
     ] = None,
-    source: Annotated[
-        Optional[str],
-        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
-    ] = None,
 ) -> dict[str, Any]:
-    # source is accepted for compatibility but not processed — self-hosted
-    # does not track events for read operations.
     scoped_filters = build_search_filters(
         user_id=user_id,
         agent_id=agent_id,
@@ -294,7 +290,7 @@ def update_memory(
         Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
     ] = None,
 ) -> dict[str, Any]:
-    expiration_date_omitted = expiration_date is UNSET or expiration_date is _EXPIRATION_DATE_DEFAULT
+    expiration_date_omitted = expiration_date is UNSET
     if text is None and metadata is None and source is None and expiration_date_omitted:
         raise ValueError("Provide text, metadata, source or expiration_date.")
 
@@ -302,10 +298,13 @@ def update_memory(
     if text is not None:
         update_kwargs["data"] = text
     if metadata is not None or source is not None:
-        base_md = {}
+        # Caller metadata is preserved; an explicit top-level `source` arg wins
+        # over a same-named key in the metadata bag. (Unlike add_memory, update
+        # has no request-header source layer.)
+        merged_metadata: dict[str, Any] = dict(metadata or {})
         if source is not None:
-            base_md["source"] = source
-        update_kwargs["metadata"] = {**base_md, **(metadata or {})}
+            merged_metadata["source"] = source
+        update_kwargs["metadata"] = merged_metadata
     if not expiration_date_omitted:
         update_kwargs["expiration_date"] = expiration_date
 
@@ -327,13 +326,7 @@ def delete_all_memories(
     agent_id: Annotated[Optional[str], Field(default=None, description="Optional agent scope to delete.")] = None,
     app_id: Annotated[Optional[str], Field(default=None, description="Optional app scope to delete.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Optional run scope to delete.")] = None,
-    source: Annotated[
-        Optional[str],
-        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
-    ] = None,
 ) -> dict[str, Any]:
-    # source is accepted for compatibility but not processed — self-hosted
-    # does not track events for delete operations.
     scope = require_entity_scope(
         user_id=user_id,
         agent_id=agent_id,
