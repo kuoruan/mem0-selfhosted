@@ -62,7 +62,6 @@ from compat.requests import RequestMeta, request_meta
 from compat.entities import list_entities_payload
 from compat.helpers import (
     build_search_kwargs,
-    merge_and_update,
     normalize_results,
     normalize_results_dict,
     resolve_existing,
@@ -509,18 +508,29 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
             status_code=400,
             detail="At least one of text, metadata, timestamp, or expiration_date must be provided for update.",
         )
+    # Forward only the fields the caller explicitly set (mirrors main.update_memory).
+    params: Dict[str, Any] = {"memory_id": memory_id}
+    if body.text is not None:
+        params["data"] = body.text
     metadata = body.metadata
     if body.timestamp is not None:
         metadata = {**(metadata or {}), "timestamp": body.timestamp}
-    merge_kwargs = {"text": body.text, "metadata": metadata}
-    # Use model_fields_set to distinguish "explicitly passed as null" (clear)
-    # from "omitted" (preserve existing). Both would be None in the field value.
+    if metadata is not None:
+        params["metadata"] = metadata
     if has_expiration_update:
-        merge_kwargs["expiration_date"] = body.expiration_date
-    return run_memory_write_for_memory_id(
-        lambda memory: merge_and_update(memory, memory_id, **merge_kwargs),
-        memory_id,
-    )
+        params["expiration_date"] = body.expiration_date
+    try:
+        return run_memory_write_for_memory_id(
+            lambda memory: memory.update(**params),
+            memory_id,
+        )
+    except ValueError as e:
+        # "not found" → 404 (matches main._client_error and the prior
+        # resolve_existing behaviour); any other ValueError falls through to
+        # @upstream_guard, which maps it to 400.
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
+        raise
 
 
 @router.delete("/v1/memories/{memory_id}/", include_in_schema=False)
@@ -664,7 +674,8 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     invalid: List[str] = [item.memory_id for item in body.memories if item.text is None and item.metadata is None]
     if invalid:
         raise HTTPException(status_code=400, detail=f"Items missing both 'text' and 'metadata': {invalid}")
-    # Every update now requires a get() to merge metadata (N+1). Cap to avoid timeouts.
+    # Cap updates per request: each update still issues vector-store reads
+    # internally (lock scope resolution + _update_memory), so bound the work.
     if len(body.memories) > 100:
         raise HTTPException(
             status_code=400,
@@ -674,7 +685,7 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     for item in body.memories:
         try:
             run_memory_write_for_memory_id(
-                lambda memory, it=item: merge_and_update(memory, it.memory_id, text=it.text, metadata=it.metadata),
+                lambda memory, it=item: memory.update(memory_id=it.memory_id, data=it.text, metadata=it.metadata),
                 item.memory_id,
             )
             updated_count += 1

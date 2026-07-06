@@ -8,7 +8,7 @@ Covers:
   - compat.decorators: upstream_guard exception mapping
   - routers.compat helpers: build_list_filters, paginate_response,
                             warn_unsupported_fields, build_search_kwargs,
-                            resolve_existing, merge_and_update
+                            resolve_existing
 """
 
 import logging
@@ -59,6 +59,8 @@ from server.compat.scope import (
 from server.routers.compat import (
     MemoryBatchDeleteInput,
     MemoryBatchDeleteLegacyInput,
+    MemoryBatchUpdateInput,
+    MemoryBatchUpdateItem,
     MemoryAddInputV3,
     MemoryGetInputV2,
     MemoryGetInputV3,
@@ -68,10 +70,11 @@ from server.routers.compat import (
     MemoryUpdateInput,
     build_list_filters,
     build_search_kwargs,
-    merge_and_update,
     paginate_response,
     resolve_existing,
     warn_unsupported_fields,
+    v1_batch_delete,
+    v1_batch_update,
     v1_get_event,
     v1_list_entities,
     v1_list_events,
@@ -1258,67 +1261,173 @@ class TestResolveExisting:
 
 
 # ---------------------------------------------------------------------------
-# merge_and_update
+# v1_update_memory — field forwarding
 # ---------------------------------------------------------------------------
 
 
-class TestMergeAndUpdate:
-    def test_new_text_overwrites_existing(self):
-        mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "memory": "old text", "metadata": {}}
-        mem.update.return_value = {"message": "updated"}
-        merge_and_update(mem, "mem-1", text="new text")
-        mem.update.assert_called_once_with(memory_id="mem-1", data="new text", metadata={})
+class TestV1UpdateMemoryForwarding:
+    """The route forwards only explicitly-set fields to ``Memory.update``. The SDK
+    preserves existing text when ``data`` is omitted and merges metadata into the
+    existing payload (non-replacing), so the route no longer pre-fetches. Not-found
+    ``ValueError`` maps to 404; other ``ValueError``s fall through to
+    ``@upstream_guard`` (400)."""
 
-    def test_preserves_existing_text_when_none(self):
-        mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "memory": "old text", "metadata": {"key": "val"}}
-        mem.update.return_value = {"message": "updated"}
-        merge_and_update(mem, "mem-1", text=None)
-        mem.update.assert_called_once_with(
-            memory_id="mem-1", data="old text", metadata={"key": "val"}
-        )
+    @staticmethod
+    def _patch_run(monkeypatch, mem):
+        def _run(callback, memory_id):
+            return callback(mem)
 
-    def test_preserves_existing_text_via_text_key(self):
-        """Some SDK responses use 'text' instead of 'memory' for the content field."""
-        mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "text": "via text key", "metadata": {}}
-        mem.update.return_value = {"message": "updated"}
-        merge_and_update(mem, "mem-1")
-        mem.update.assert_called_once_with(memory_id="mem-1", data="via text key", metadata={})
+        monkeypatch.setattr("server.routers.compat.run_memory_write_for_memory_id", _run)
 
-    def test_metadata_new_keys_override_existing(self):
+    def test_forwards_text_and_metadata(self, monkeypatch):
         mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"a": 1, "b": 2}}
         mem.update.return_value = {"message": "updated"}
-        merge_and_update(mem, "mem-1", metadata={"b": 99, "c": 3})
-        mem.update.assert_called_once_with(
-            memory_id="mem-1", data="txt", metadata={"a": 1, "b": 99, "c": 3}
-        )
+        self._patch_run(monkeypatch, mem)
+        v1_update_memory("mem-1", MemoryUpdateInput(text="new", metadata={"k": "v"}), _auth=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", data="new", metadata={"k": "v"})
 
-    def test_metadata_none_keeps_existing(self):
+    def test_text_only_omits_metadata(self, monkeypatch):
         mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"x": 1}}
         mem.update.return_value = {"message": "updated"}
-        merge_and_update(mem, "mem-1", metadata=None)
-        mem.update.assert_called_once_with(memory_id="mem-1", data="txt", metadata={"x": 1})
+        self._patch_run(monkeypatch, mem)
+        v1_update_memory("mem-1", MemoryUpdateInput(text="new"), _auth=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", data="new")
 
-    def test_raises_404_when_memory_missing(self):
-        """Delegates to resolve_existing which raises 404 for missing memory."""
+    def test_metadata_only_omits_data(self, monkeypatch):
+        """text omitted -> ``data`` is not forwarded; the SDK preserves existing text."""
         mem = MagicMock()
-        mem.get.return_value = None
+        mem.update.return_value = {"message": "updated"}
+        self._patch_run(monkeypatch, mem)
+        v1_update_memory("mem-1", MemoryUpdateInput(metadata={"k": "v"}), _auth=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", metadata={"k": "v"})
+
+    def test_timestamp_folded_into_metadata(self, monkeypatch):
+        mem = MagicMock()
+        mem.update.return_value = {"message": "updated"}
+        self._patch_run(monkeypatch, mem)
+        v1_update_memory("mem-1", MemoryUpdateInput(timestamp=123, metadata={"k": "v"}), _auth=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", metadata={"k": "v", "timestamp": 123})
+
+    def test_not_found_returns_404(self, monkeypatch):
+        mem = MagicMock()
+        mem.update.side_effect = ValueError("Memory with id mem-x not found. Please provide a valid 'memory_id'")
+        self._patch_run(monkeypatch, mem)
         with pytest.raises(HTTPException) as exc:
-            merge_and_update(mem, "nonexistent", text="new")
+            v1_update_memory("mem-x", MemoryUpdateInput(text="new"), _auth=None)
         assert exc.value.status_code == 404
 
-    def test_handles_missing_metadata_on_existing(self):
+    def test_other_value_error_maps_to_400(self, monkeypatch):
+        """Non-not-found ValueError is re-raised; @upstream_guard converts it to 400."""
         mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "memory": "txt"}
+        mem.update.side_effect = ValueError("data must be a non-empty string")
+        self._patch_run(monkeypatch, mem)
+        with pytest.raises(HTTPException) as exc:
+            v1_update_memory("mem-1", MemoryUpdateInput(text="new"), _auth=None)
+        assert exc.value.status_code == 400
+
+    def test_no_fields_rejected_400(self):
+        """No text/metadata/timestamp/expiration_date set -> 400 (nothing to update)."""
+        with pytest.raises(HTTPException) as exc:
+            v1_update_memory("mem-1", MemoryUpdateInput(), _auth=None)
+        assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# v1_batch_update — route-level boundaries
+# ---------------------------------------------------------------------------
+
+
+class TestV1BatchUpdateRoute:
+    @staticmethod
+    def _patch_run(monkeypatch, mem):
+        def _run(callback, memory_id):
+            return callback(mem)
+
+        monkeypatch.setattr("server.routers.compat.run_memory_write_for_memory_id", _run)
+
+    def test_too_many_items_returns_400(self):
+        items = [MemoryBatchUpdateItem(memory_id=f"m{i}", text="x") for i in range(101)]
+        with pytest.raises(HTTPException) as exc:
+            v1_batch_update(MemoryBatchUpdateInput(memories=items), _auth=None)
+        assert exc.value.status_code == 400
+        assert "100" in exc.value.detail
+
+    def test_item_missing_text_and_metadata_returns_400(self):
+        items = [MemoryBatchUpdateItem(memory_id="m1")]
+        with pytest.raises(HTTPException) as exc:
+            v1_batch_update(MemoryBatchUpdateInput(memories=items), _auth=None)
+        assert exc.value.status_code == 400
+        assert "m1" in exc.value.detail
+
+    def test_mixed_valid_and_not_found_counts_successes(self, monkeypatch):
+        mem = MagicMock()
+
+        def _update(memory_id, **kw):
+            if memory_id == "m2":
+                raise ValueError("Memory with id m2 not found. Please provide a valid 'memory_id'")
+            return {"message": "updated"}
+
+        mem.update.side_effect = _update
+        self._patch_run(monkeypatch, mem)
+        items = [
+            MemoryBatchUpdateItem(memory_id="m1", text="a"),
+            MemoryBatchUpdateItem(memory_id="m2", text="b"),
+            MemoryBatchUpdateItem(memory_id="m3", metadata={"k": "v"}),
+        ]
+        result = v1_batch_update(MemoryBatchUpdateInput(memories=items), _auth=None)
+        assert result == {"message": "Memories updated successfully, count: 2."}
+
+    def test_all_valid_counts_successes(self, monkeypatch):
+        mem = MagicMock()
         mem.update.return_value = {"message": "updated"}
-        merge_and_update(mem, "mem-1", metadata={"new_key": "val"})
-        mem.update.assert_called_once_with(
-            memory_id="mem-1", data="txt", metadata={"new_key": "val"}
-        )
+        self._patch_run(monkeypatch, mem)
+        items = [
+            MemoryBatchUpdateItem(memory_id="m1", text="a"),
+            MemoryBatchUpdateItem(memory_id="m2", metadata={"k": "v"}),
+        ]
+        result = v1_batch_update(MemoryBatchUpdateInput(memories=items), _auth=None)
+        assert result == {"message": "Memories updated successfully, count: 2."}
+
+
+# ---------------------------------------------------------------------------
+# v1_batch_delete — route-level boundaries
+# ---------------------------------------------------------------------------
+
+
+class TestV1BatchDeleteRoute:
+    @staticmethod
+    def _patch_run(monkeypatch, mem):
+        def _run(callback, memory_id):
+            return callback(mem)
+
+        monkeypatch.setattr("server.routers.compat.run_memory_write_for_memory_id", _run)
+
+    def test_too_many_returns_400(self):
+        ids = [f"m{i}" for i in range(1001)]
+        with pytest.raises(HTTPException) as exc:
+            v1_batch_delete(MemoryBatchDeleteInput(memory_ids=ids), _auth=None)
+        assert exc.value.status_code == 400
+
+    def test_mixed_valid_and_not_found_counts_successes(self, monkeypatch):
+        mem = MagicMock()
+
+        def _delete(memory_id):
+            if memory_id == "m2":
+                raise ValueError("Memory with id m2 not found")
+            return None
+
+        mem.delete.side_effect = _delete
+        self._patch_run(monkeypatch, mem)
+        result = v1_batch_delete(MemoryBatchDeleteInput(memory_ids=["m1", "m2", "m3"]), _auth=None)
+        assert result == {"message": "Memories deleted successfully, count: 2."}
+
+    def test_legacy_format_accepted(self, monkeypatch):
+        mem = MagicMock()
+        mem.delete.return_value = None
+        self._patch_run(monkeypatch, mem)
+        body = MemoryBatchDeleteLegacyInput(memories=[{"memory_id": "m1"}])
+        result = v1_batch_delete(body, _auth=None)
+        assert result == {"message": "Memories deleted successfully, count: 1."}
 
 
 # ---------------------------------------------------------------------------
@@ -1724,7 +1833,6 @@ class TestMemoryUpdateInputExpirationDate:
 
     def test_explicit_null_only_clears_expiration_date(self, monkeypatch):
         mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {"kind": "note"}}
         mem.update.return_value = {"message": "updated"}
 
         def _run_memory_write_for_memory_id(callback, memory_id):
@@ -1739,12 +1847,23 @@ class TestMemoryUpdateInputExpirationDate:
         result = v1_update_memory("mem-1", MemoryUpdateInput(expiration_date=None), _auth=None)
 
         assert result == {"message": "updated"}
-        mem.update.assert_called_once_with(
-            memory_id="mem-1",
-            data="txt",
-            metadata={"kind": "note"},
-            expiration_date=None,
+        # Only expiration_date is forwarded; text/metadata are omitted (None) so
+        # the SDK preserves the existing values. expiration_date=None means "clear".
+        mem.update.assert_called_once_with(memory_id="mem-1", expiration_date=None)
+
+    def test_expiration_date_set_is_forwarded(self, monkeypatch):
+        mem = MagicMock()
+        mem.update.return_value = {"message": "updated"}
+
+        def _run_memory_write_for_memory_id(callback, memory_id):
+            return callback(mem)
+
+        monkeypatch.setattr(
+            "server.routers.compat.run_memory_write_for_memory_id",
+            _run_memory_write_for_memory_id,
         )
+        v1_update_memory("mem-1", MemoryUpdateInput(text="new", expiration_date="2099-12-31"), _auth=None)
+        mem.update.assert_called_once_with(memory_id="mem-1", data="new", expiration_date="2099-12-31")
 
     def test_rejects_unknown_field(self):
         with pytest.raises(ValidationError):
@@ -1849,43 +1968,6 @@ class TestBuildSearchKwargsShowExpired:
     def test_show_expired_none_not_included(self):
         kwargs = build_search_kwargs({"user_id": "u1"}, top_k=5, threshold=None, show_expired=None)
         assert "show_expired" not in kwargs
-
-
-# ---------------------------------------------------------------------------
-# merge_and_update — expiration_date passthrough
-# ---------------------------------------------------------------------------
-
-
-class TestMergeAndUpdateExpirationDate:
-    def test_expiration_date_passed_to_mem_update(self):
-        mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {}}
-        mem.update.return_value = {"message": "updated"}
-        merge_and_update(mem, "mem-1", expiration_date="2099-12-31")
-        mem.update.assert_called_once_with(
-            memory_id="mem-1", data="txt", metadata={}, expiration_date="2099-12-31"
-        )
-
-    def test_expiration_date_none_passed_to_clear(self):
-        """When expiration_date is explicitly None, it MUST be passed to mem.update().
-        The SDK interprets None as "clear the expiration date"."""
-        mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {}}
-        mem.update.return_value = {"message": "updated"}
-        merge_and_update(mem, "mem-1", expiration_date=None)
-        mem.update.assert_called_once_with(
-            memory_id="mem-1", data="txt", metadata={}, expiration_date=None
-        )
-
-    def test_expiration_date_omitted_preserves_existing(self):
-        """When expiration_date is not passed (defaults to _UNSET), it is NOT forwarded."""
-        mem = MagicMock()
-        mem.get.return_value = {"id": "mem-1", "memory": "txt", "metadata": {}}
-        mem.update.return_value = {"message": "updated"}
-        merge_and_update(mem, "mem-1")
-        mem.update.assert_called_once_with(
-            memory_id="mem-1", data="txt", metadata={}
-        )
 
 
 # ---------------------------------------------------------------------------

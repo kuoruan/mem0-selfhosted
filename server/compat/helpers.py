@@ -4,9 +4,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
-# Sentinel to distinguish "not provided" (preserve existing) from None (clear).
-UNSET: Any = object()
-
 
 def normalize_results(raw: Any) -> List[Any]:
     """Normalise SDK output to a plain ``list``.
@@ -63,25 +60,3 @@ def resolve_existing(mem: Any, memory_id: str) -> Dict[str, Any]:
     if not isinstance(item, dict):
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
     return item
-
-
-def merge_and_update(
-    mem: Any,
-    memory_id: str,
-    *,
-    text: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    expiration_date: Optional[str] = UNSET,
-) -> Any:
-    """Read current memory, merge text/metadata changes, write back.
-
-    *expiration_date* uses the ``UNSET`` sentinel to distinguish
-    "not provided" (preserve existing) from ``None`` (clear).
-    """
-    existing = resolve_existing(mem, memory_id)
-    final_text = text if text is not None else (existing.get("memory") or existing.get("text") or "")
-    merged = {**(existing.get("metadata") or {}), **(metadata or {})}
-    update_kwargs = {"memory_id": memory_id, "data": final_text, "metadata": merged}
-    if expiration_date is not UNSET:
-        update_kwargs["expiration_date"] = expiration_date
-    return mem.update(**update_kwargs)
