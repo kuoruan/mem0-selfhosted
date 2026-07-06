@@ -9,6 +9,7 @@ from fastapi.responses import Response
 from fastapi.routing import APIRouter
 from mcp.server.fastmcp import FastMCP
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from auth import verify_auth
@@ -73,7 +74,8 @@ def _mcp_session_manager(app: FastAPI) -> StreamableHTTPSessionManager:
         "Requires at least one: user_id, agent_id, app_id or run_id. "
         "When infer=False, returns memory results immediately. "
         "When infer=True or omitted, returns event_id — poll get_event_status until SUCCEEDED."
-    )
+    ),
+    annotations=ToolAnnotations(readOnlyHint=False),
 )
 def add_memory(
     text: Annotated[
@@ -109,7 +111,10 @@ def add_memory(
     ] = None,
     expiration_date: Annotated[
         Optional[str],
-        Field(default=None, description="Optional expiration date in YYYY-MM-DD format. After this date, memories are hidden from search and get_all unless show_expired is True."),
+        Field(
+            default=None,
+            description="Optional expiration date in YYYY-MM-DD format. After this date, memories are hidden from search and get_all unless show_expired is True.",
+        ),
     ] = None,
 ) -> dict[str, Any]:
     scope = require_entity_scope(
@@ -166,7 +171,8 @@ Use filters to narrow results. Common filter patterns:
 - Agent memories: {"AND": [{"agent_id": "agent_name"}]}
 - Recent memories: {"AND": [{"user_id": "john"}, {"created_at": {"gte": "2024-01-01"}}]}
 
-user_id is automatically added to filters if not provided."""
+user_id is automatically added to filters if not provided.""",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
 def search_memories(
     query: Annotated[str, Field(description="Natural language description of what to find.")],
@@ -184,17 +190,35 @@ def search_memories(
         Optional[int], Field(default=None, description="Number of results to return (1-1000, default 10).")
     ] = None,
     threshold: Annotated[
-        Optional[float], Field(default=None, description="Minimum similarity score (0.0-1.0). Default 0.1; pass 0.0 to disable filtering.")
+        Optional[float],
+        Field(
+            default=None, description="Minimum similarity score (0.0-1.0). Default 0.1; pass 0.0 to disable filtering."
+        ),
     ] = None,
     rerank: Annotated[
         Optional[bool],
-        Field(default=None, description="Re-rank results for better relevance (adds 200-400ms latency). Default false."),
+        Field(
+            default=None, description="Re-rank results for better relevance (adds 200-400ms latency). Default false."
+        ),
+    ] = None,
+    source: Annotated[
+        Optional[str],
+        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
     ] = None,
     show_expired: Annotated[
         Optional[bool],
-        Field(default=None, description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default."),
+        Field(
+            default=None,
+            description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
+        ),
     ] = None,
 ) -> dict[str, Any]:
+    # `source` is accepted for parity with the platform MCP. The self-hosted
+    # event model only tracks ADD events (see compat.events), so read/delete
+    # paths have no SEARCH/GET_ALL/DELETE_ALL event to tag — record intent only.
+    if source is not None:
+        logger.debug("search_memories: source=%s (advisory; self-hosted tracks ADD events only)", source)
+
     scoped_filters = build_search_filters(
         user_id=user_id,
         agent_id=agent_id,
@@ -219,7 +243,8 @@ Use filters to list specific memories. Common filter patterns:
 - Agent memories: {"AND": [{"agent_id": "agent_name"}]}
 
 Pagination: Use page (1-indexed) and page_size for browsing results.
-user_id is automatically added to filters if not provided."""
+user_id is automatically added to filters if not provided.""",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
 def get_memories(
     user_id: Annotated[Optional[str], Field(default=None, description="List memories for this user.")] = None,
@@ -233,11 +258,21 @@ def get_memories(
     page_size: Annotated[
         int, Field(default=10, ge=1, le=100, description="Number of memories per page (default 10, max 100).")
     ] = 10,
+    source: Annotated[
+        Optional[str],
+        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
+    ] = None,
     show_expired: Annotated[
         Optional[bool],
-        Field(default=None, description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default."),
+        Field(
+            default=None,
+            description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
+        ),
     ] = None,
 ) -> dict[str, Any]:
+    if source is not None:
+        logger.debug("get_memories: source=%s (advisory; self-hosted tracks ADD events only)", source)
+
     scoped_filters = build_search_filters(
         user_id=user_id,
         agent_id=agent_id,
@@ -262,7 +297,10 @@ def get_memories(
     }
 
 
-@mcp.tool(description="Fetch a single memory by ID.")
+@mcp.tool(
+    description="Fetch a single memory by ID.",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 def get_memory(
     memory_id: Annotated[str, Field(description="Exact memory_id to fetch.")],
 ) -> dict[str, Any]:
@@ -272,12 +310,13 @@ def get_memory(
     return result
 
 
-@mcp.tool(description="Update an existing memory's text and/or metadata.")
+@mcp.tool(
+    description="Update an existing memory's text and/or metadata.",
+    annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True),
+)
 def update_memory(
     memory_id: Annotated[str, Field(description="Exact memory_id to update.")],
-    text: Annotated[
-        Optional[str], Field(default=None, description="Replacement text for the memory.")
-    ] = None,
+    text: Annotated[Optional[str], Field(default=None, description="Replacement text for the memory.")] = None,
     metadata: Annotated[
         Optional[dict[str, Any]], Field(default=None, description="Metadata to merge into the memory.")
     ] = None,
@@ -311,14 +350,20 @@ def update_memory(
     return run_memory_write_for_memory_id(lambda memory: memory.update(**update_kwargs), memory_id)
 
 
-@mcp.tool(description="Delete one memory after the user confirms its memory_id.")
+@mcp.tool(
+    description="Delete one memory after the user confirms its memory_id.",
+    annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True),
+)
 def delete_memory(
     memory_id: Annotated[str, Field(description="Exact memory_id to delete.")],
 ) -> dict[str, Any]:
     return run_memory_write_for_memory_id(lambda memory: memory.delete(memory_id), memory_id)
 
 
-@mcp.tool(description="Delete every memory in the given user/agent/app/run scope but keep the entity.")
+@mcp.tool(
+    description="Delete every memory in the given user/agent/app/run scope but keep the entity.",
+    annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True),
+)
 def delete_all_memories(
     user_id: Annotated[
         Optional[str], Field(default=None, description="User scope to delete; defaults to server user.")
@@ -326,7 +371,14 @@ def delete_all_memories(
     agent_id: Annotated[Optional[str], Field(default=None, description="Optional agent scope to delete.")] = None,
     app_id: Annotated[Optional[str], Field(default=None, description="Optional app scope to delete.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Optional run scope to delete.")] = None,
+    source: Annotated[
+        Optional[str],
+        Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
+    ] = None,
 ) -> dict[str, Any]:
+    if source is not None:
+        logger.debug("delete_all_memories: source=%s (advisory; self-hosted tracks ADD events only)", source)
+
     scope = require_entity_scope(
         user_id=user_id,
         agent_id=agent_id,
@@ -338,14 +390,19 @@ def delete_all_memories(
     return run_memory_write(lambda memory: memory.delete_all(**scope), scope)
 
 
-@mcp.tool(description="Remove an entity and cascade-delete its memories.")
+@mcp.tool(
+    description="Remove an entity and cascade-delete its memories.",
+    annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True),
+)
 def delete_entities(
     user_id: Annotated[Optional[str], Field(default=None, description="Delete this user and its memories.")] = None,
     agent_id: Annotated[Optional[str], Field(default=None, description="Delete this agent and its memories.")] = None,
     app_id: Annotated[Optional[str], Field(default=None, description="Delete this app and its memories.")] = None,
     run_id: Annotated[Optional[str], Field(default=None, description="Delete this run and its memories.")] = None,
 ) -> dict[str, Any]:
-    selected = list(collect_direct_entity_params(user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id).items())
+    selected = list(
+        collect_direct_entity_params(user_id=user_id, agent_id=agent_id, app_id=app_id, run_id=run_id).items()
+    )
     if not selected:
         raise ValueError("Provide user_id, agent_id, app_id or run_id before calling delete_entities.")
     for key, value in selected:
@@ -353,13 +410,19 @@ def delete_entities(
     return {"message": f"Entities deleted successfully, count: {len(selected)}."}
 
 
-@mcp.tool(description="List which users/agents/apps/runs currently hold memories.")
+@mcp.tool(
+    description="List which users/agents/apps/runs currently hold memories.",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 def list_entities() -> dict[str, Any]:
     results = list_entities_payload()
     return {"count": len(results), "results": [item.model_dump() for item in results]}
 
 
-@mcp.tool(description="List memory operation events with optional filters and pagination.")
+@mcp.tool(
+    description="List memory operation events with optional filters and pagination.",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 def list_events(
     event_type: Annotated[
         Optional[str],
@@ -382,7 +445,10 @@ def list_events(
     return {"count": len(items), "results": items}
 
 
-@mcp.tool(description="Check the status of a specific memory operation event by its ID.")
+@mcp.tool(
+    description="Check the status of a specific memory operation event by its ID.",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 def get_event_status(
     event_id: Annotated[str, Field(description="UUID of the event to check.")],
 ) -> dict[str, Any]:
