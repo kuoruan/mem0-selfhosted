@@ -15,9 +15,10 @@ import server.mcp_server as mcp_server
 from server.compat.entities import iter_payloads, normalize_vector_store_list
 from server.compat.events import event_cache_clear, event_cache_put, make_event_obj
 
-# MCP_HEADERS with a User-Agent prefixed with "Mozilla" so it's skipped as generic,
-# avoiding platform injection in tests that don't explicitly test that feature.
+# User-Agent "Mozilla" is treated as a generic client (no platform injection),
+# so tests that don't exercise platform/source headers stay unaffected by them.
 MCP_HEADERS = {"Accept": "application/json, text/event-stream", "User-Agent": "Mozilla"}
+AUTH_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def _jsonrpc(method: str, params: dict | None = None, req_id: int = 1) -> dict:
@@ -41,36 +42,47 @@ def _initialize_payload(req_id: int = 1) -> dict:
     )
 
 
-def _call_tool(client: TestClient, name: str, arguments: dict | None = None, *, req_id: int = 2) -> dict:
+def _call_tool(
+    client: TestClient,
+    name: str,
+    arguments: dict | None = None,
+    *,
+    req_id: int = 2,
+    headers: dict | None = None,
+) -> dict:
+    """Invoke an MCP tool over JSON-RPC and return the result (asserting HTTP 200)."""
     response = client.post(
         "/mcp",
         json=_jsonrpc("tools/call", {"name": name, "arguments": arguments or {}}, req_id=req_id),
-        headers=MCP_HEADERS,
+        headers=headers or MCP_HEADERS,
     )
     assert response.status_code == 200
     return response.json()["result"]
 
 
-def _structured(client: TestClient, name: str, arguments: dict | None = None, *, req_id: int = 2) -> dict:
-    result = _call_tool(client, name, arguments, req_id=req_id)
+def _structured(
+    client: TestClient,
+    name: str,
+    arguments: dict | None = None,
+    *,
+    req_id: int = 2,
+    headers: dict | None = None,
+) -> dict:
+    """Like _call_tool but asserts the tool succeeded and returns its structuredContent."""
+    result = _call_tool(client, name, arguments, req_id=req_id, headers=headers)
     assert not result.get("isError"), result
     return result["structuredContent"]
-
-
-class _ImmediateThread:
-    def __init__(self, target=None, args=(), kwargs=None, daemon=False, name=None):
-        self._target = target
-        self._args = args
-
-    def start(self):
-        if self._target:
-            self._target(*self._args)
 
 
 class _ImmediateExecutor:
     def submit(self, fn, *args, **kwargs):
         fn(*args, **kwargs)
         return MagicMock()
+
+
+# ---------------------------------------------------------------------------
+# Transport & lifespan
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -84,14 +96,19 @@ async def test_setup_mcp_server_wraps_existing_lifespan(monkeypatch):
         yield
         events.append("app-stop")
 
-    class _SessionManager:
+    class _FakeSessionManager:
+        # The lifespan constructs the session manager inline (per cycle), so
+        # patching the class captures both construction and run() ordering.
+        def __init__(self, **kwargs):
+            pass
+
         @asynccontextmanager
         async def run(self):
             events.append("mcp-start")
             yield
             events.append("mcp-stop")
 
-    monkeypatch.setattr(module, "_new_mcp_session_manager", _SessionManager)
+    monkeypatch.setattr(module, "StreamableHTTPSessionManager", _FakeSessionManager)
 
     app = FastAPI(lifespan=original_lifespan)
     module.setup_mcp_server(app)
@@ -103,8 +120,16 @@ async def test_setup_mcp_server_wraps_existing_lifespan(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_streamable_transport_delegates_to_session_manager(monkeypatch):
+async def test_mcp_streamable_response_delegates_to_session_manager(monkeypatch):
+    """_McpStreamableResponse passes the real ASGI send straight through to the
+    session manager (no capture buffer), so status/headers/body reach the client
+    verbatim, including duplicate headers."""
     module = importlib.reload(mcp_server)
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
     receive_calls = 0
 
     async def receive():
@@ -112,9 +137,10 @@ async def test_run_streamable_transport_delegates_to_session_manager(monkeypatch
         receive_calls += 1
         return {"type": "http.request", "body": b'{"jsonrpc":"2.0"}', "more_body": False}
 
-    class _SessionManager:
+    class _FakeSessionManager:
         async def handle_request(self, scope, receive, send):
-            assert scope["path"] == "/mcp"
+            self.received_send = send
+            self.received_scope = scope
             message = await receive()
             assert message["body"] == b'{"jsonrpc":"2.0"}'
             await send(
@@ -126,43 +152,64 @@ async def test_run_streamable_transport_delegates_to_session_manager(monkeypatch
             )
             await send({"type": "http.response.body", "body": b"accepted"})
 
-    app = FastAPI()
-    setattr(app.state, module._MCP_SESSION_MANAGER_STATE, _SessionManager())
+    fake_sm = _FakeSessionManager()
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [],
+        "root_path": "",
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("localhost", 8000),
+        "client": ("127.0.0.1", 50000),
+        "http_version": "1.1",
+    }
+    request = Request(scope, receive)
 
-    request = Request(
-        {"type": "http", "method": "POST", "path": "/mcp", "headers": [], "app": app},
-        receive,
-    )
-
-    response = await module._run_streamable_transport(request)
+    response = module._McpStreamableResponse(request, user=None, session_manager=fake_sm)
+    await response(scope, receive, send)
 
     assert receive_calls == 1
-    assert response.status_code == 202
-    assert response.body == b"accepted"
-    assert response.raw_headers == [(b"x-repeat", b"one"), (b"x-repeat", b"two")]
+    assert fake_sm.received_scope["path"] == "/mcp"
+    # Real send pass-through: handle_request got the same callable, and its
+    # messages arrived verbatim (duplicate headers preserved).
+    assert fake_sm.received_send is send
+    assert sent[0] == {
+        "type": "http.response.start",
+        "status": 202,
+        "headers": [(b"x-repeat", b"one"), (b"x-repeat", b"two")],
+    }
+    assert sent[1] == {"type": "http.response.body", "body": b"accepted"}
 
 
-def test_setup_mcp_server_uses_per_app_session_managers(monkeypatch):
+@pytest.mark.asyncio
+async def test_setup_mcp_server_uses_per_app_session_managers(monkeypatch):
+    """Each FastAPI app gets its own session manager. Construction is per
+    lifespan cycle (not at install time), so drive each app's lifespan once."""
     module = importlib.reload(mcp_server)
     managers = []
 
-    class _SessionManager:
+    class _FakeSessionManager:
+        def __init__(self, **kwargs):
+            managers.append(self)
+
         @asynccontextmanager
         async def run(self):
             yield
 
-    def new_session_manager():
-        manager = _SessionManager()
-        managers.append(manager)
-        return manager
-
-    monkeypatch.setattr(module, "_new_mcp_session_manager", new_session_manager)
+    monkeypatch.setattr(module, "StreamableHTTPSessionManager", _FakeSessionManager)
 
     app_one = FastAPI()
     app_two = FastAPI()
 
     module.setup_mcp_server(app_one)
     module.setup_mcp_server(app_two)
+
+    async with app_one.router.lifespan_context(app_one):
+        pass
+    async with app_two.router.lifespan_context(app_two):
+        pass
 
     assert len(managers) == 2
     assert getattr(app_one.state, module._MCP_SESSION_MANAGER_STATE) is managers[0]
@@ -173,6 +220,91 @@ def test_setup_mcp_server_uses_per_app_session_managers(monkeypatch):
     )
 
 
+class _RecordingSessionManager:
+    """Records construction kwargs and run() calls for lifespan assertions."""
+
+    instances: list = []
+
+    def __init__(self, **kwargs):
+        self.__class__.instances.append(self)
+        self.init_kwargs = kwargs
+        self.run_calls = 0
+
+    @asynccontextmanager
+    async def run(self):
+        self.run_calls += 1
+        yield
+
+
+@pytest.mark.asyncio
+async def test_lifespan_creates_fresh_session_manager_per_cycle(monkeypatch):
+    """The SDK's run() is once-per-instance; reusing one across lifespan cycles
+    raises RuntimeError. Each cycle must construct a fresh manager (the fix)."""
+    module = importlib.reload(mcp_server)
+    _RecordingSessionManager.instances = []
+    monkeypatch.setattr(module, "StreamableHTTPSessionManager", _RecordingSessionManager)
+
+    app = FastAPI()
+    module.setup_mcp_server(app)
+
+    state_during_cycle = []
+    for _ in range(3):
+        async with app.router.lifespan_context(app):
+            state_during_cycle.append(getattr(app.state, module._MCP_SESSION_MANAGER_STATE))
+
+    instances = _RecordingSessionManager.instances
+    assert len(instances) == 3
+    assert len({id(s) for s in instances}) == 3  # three distinct instances
+    assert all(s.run_calls == 1 for s in instances)  # run() exactly once each
+    # app.state pointed at the cycle's own manager while it was active
+    for captured, instance in zip(state_during_cycle, instances):
+        assert captured is instance
+
+
+@pytest.mark.asyncio
+async def test_lifespan_session_manager_kwargs_mirror_mcp_settings(monkeypatch):
+    """Per-cycle construction passes app=mcp._mcp_server and the json/stateless
+    flags matching the FastMCP constructor."""
+    module = importlib.reload(mcp_server)
+    _RecordingSessionManager.instances = []
+    monkeypatch.setattr(module, "StreamableHTTPSessionManager", _RecordingSessionManager)
+
+    app = FastAPI()
+    module.setup_mcp_server(app)
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert len(_RecordingSessionManager.instances) == 1
+    kwargs = _RecordingSessionManager.instances[0].init_kwargs
+    assert kwargs["app"] is module.mcp._mcp_server
+    assert kwargs["json_response"] is True
+    assert kwargs["stateless"] is True
+
+
+@pytest.mark.asyncio
+async def test_setup_mcp_server_idempotent_no_double_wrap(monkeypatch):
+    """Two setup calls on the same app must not double-wrap the lifespan
+    (installed-state guard), so a single cycle still constructs one manager."""
+    module = importlib.reload(mcp_server)
+    _RecordingSessionManager.instances = []
+    monkeypatch.setattr(module, "StreamableHTTPSessionManager", _RecordingSessionManager)
+
+    app = FastAPI()
+    module.setup_mcp_server(app)
+    module.setup_mcp_server(app)
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert len(_RecordingSessionManager.instances) == 1
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
 @pytest.fixture(autouse=True)
 def _clear_event_cache():
     event_cache_clear()
@@ -180,8 +312,12 @@ def _clear_event_cache():
     event_cache_clear()
 
 
-@pytest.fixture
-def mcp_testbed(monkeypatch):
+def _build_testbed(monkeypatch, *, auth_user_id: str | None = None):
+    """Build a FastAPI app backed by a mocked Memory (caller owns the TestClient).
+
+    *auth_user_id* selects the verify_auth override: None -> admin/no-user;
+    a UUID string -> a mock user with that id (tools see str(id) as the scope).
+    """
     module = importlib.reload(mcp_server)
     event_cache_clear()
 
@@ -205,11 +341,19 @@ def mcp_testbed(monkeypatch):
     app = FastAPI()
     module.setup_mcp_server(app)
 
-    def _verify_auth_override():
-        return None
+    if auth_user_id is None:
+        app.dependency_overrides[module.verify_auth] = lambda: None
+    else:
+        mock_user = MagicMock()
+        mock_user.id = uuid.UUID(auth_user_id)
+        app.dependency_overrides[module.verify_auth] = lambda: mock_user
 
-    app.dependency_overrides[module.verify_auth] = _verify_auth_override
+    return module, app, mock_memory, auth_user_id
 
+
+@pytest.fixture
+def mcp_testbed(monkeypatch):
+    module, app, mock_memory, _ = _build_testbed(monkeypatch)
     with TestClient(app) as client:
         _initialize_client(client)
         yield module, client, mock_memory
@@ -219,6 +363,20 @@ def _initialize_client(client: TestClient, headers: dict | None = None) -> None:
     response = client.post("/mcp", json=_initialize_payload(), headers=headers or MCP_HEADERS)
     assert response.status_code == 200
     assert response.json()["result"]["protocolVersion"] == "2025-03-26"
+
+
+@pytest.fixture
+def mcp_testbed_authed(monkeypatch):
+    """Like mcp_testbed but verify_auth returns a real User-like object with a known id."""
+    module, app, mock_memory, uid = _build_testbed(monkeypatch, auth_user_id=AUTH_USER_ID)
+    with TestClient(app) as client:
+        _initialize_client(client)
+        yield module, client, mock_memory, uid
+
+
+# ---------------------------------------------------------------------------
+# tools/list
+# ---------------------------------------------------------------------------
 
 
 def test_tools_list_exposes_expected_toolset(mcp_testbed):
@@ -246,8 +404,15 @@ def test_tools_list_exposes_expected_toolset(mcp_testbed):
     assert descriptions["add_memory"].startswith("Store a new preference")
     assert "infer=False" in descriptions["add_memory"]
     assert "get_event_status" in descriptions["add_memory"]
+    assert "app_id" in descriptions["add_memory"]
     assert "user_id is automatically added to filters" in descriptions["search_memories"]
     assert "user_id is automatically added to filters" in descriptions["get_memories"]
+    assert "Update an existing memory" in descriptions["update_memory"]
+
+
+# ---------------------------------------------------------------------------
+# add_memory
+# ---------------------------------------------------------------------------
 
 
 def test_add_memory_infer_false_returns_results_immediately(mcp_testbed):
@@ -261,7 +426,12 @@ def test_add_memory_infer_false_returns_results_immediately(mcp_testbed):
     assert structured["results"][0]["id"] == "mem-1"
     assert structured["event_id"] is None
     assert structured["status"] == "SUCCEEDED"
-    mock_memory.add.assert_called_once()
+    mock_memory.add.assert_called_once_with(
+        messages=[{"role": "user", "content": "verbatim fact"}],
+        user_id="alice",
+        metadata={"source": "MCP"},
+        infer=False,
+    )
 
 
 def test_add_memory_tool_uses_explicit_user_id(mcp_testbed):
@@ -290,6 +460,15 @@ def test_add_memory_requires_scope(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
     result = _call_tool(client, "add_memory", {"text": "no scope"})
+    assert result.get("isError") is True
+    mock_memory.add.assert_not_called()
+
+
+def test_add_memory_neither_text_nor_messages_rejected(mcp_testbed):
+    """Scope present but no content to store is a tool error."""
+    _, client, mock_memory = mcp_testbed
+
+    result = _call_tool(client, "add_memory", {"user_id": "alice"})
     assert result.get("isError") is True
     mock_memory.add.assert_not_called()
 
@@ -328,6 +507,39 @@ def test_add_memory_allows_messages_without_text(mcp_testbed):
     assert mock_memory.add.call_args.kwargs["messages"] == messages
 
 
+def test_add_memory_messages_win_over_text(mcp_testbed):
+    """When both text and messages are given, messages is used and text ignored."""
+    _, client, mock_memory = mcp_testbed
+    messages = [{"role": "user", "content": "from-messages"}]
+
+    _structured(
+        client,
+        "add_memory",
+        {"text": "from-text", "user_id": "alice", "messages": messages, "infer": False},
+    )
+
+    mock_memory.add.assert_called_once()
+    # `is` would fail: MCP deserializes tool args over JSON-RPC, so the messages
+    # list the tool receives is a reconstructed copy. Compare by equality, and
+    # confirm the text arg was dropped in favour of messages.
+    assert mock_memory.add.call_args.kwargs["messages"] == messages
+    assert mock_memory.add.call_args.kwargs["messages"][0]["content"] == "from-messages"
+
+
+def test_add_memory_default_infer_omits_infer_flag(mcp_testbed):
+    """When infer is not passed, infer should not appear in add kwargs."""
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "add_memory",
+        {"text": "fact", "user_id": "alice"},
+    )
+
+    mock_memory.add.assert_called_once()
+    assert "infer" not in mock_memory.add.call_args.kwargs
+
+
 def test_add_memory_infer_false_failure_surfaces_as_tool_error(mcp_testbed):
     _, client, mock_memory = mcp_testbed
     mock_memory.add.side_effect = RuntimeError("add failed")
@@ -356,74 +568,10 @@ def test_add_memory_failure_updates_event_status(mcp_testbed):
     assert "add failed" in event["metadata"]["error"]
 
 
-def test_get_event_status_not_found(mcp_testbed):
-    _, client, _ = mcp_testbed
-
-    result = _call_tool(client, "get_event_status", {"event_id": "00000000-0000-0000-0000-000000000099"})
-    assert result.get("isError") is True
-
-
-@pytest.fixture
-def mcp_testbed_authed(monkeypatch):
-    """Like mcp_testbed but verify_auth returns a real User-like object with a known id."""
-    module = importlib.reload(mcp_server)
-
-    mock_memory = MagicMock()
-    mock_memory.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "saved"}]}
-
-    def get_memory():
-        return mock_memory
-
-    monkeypatch.setattr(module, "get_memory_instance", get_memory)
-    monkeypatch.setattr("server.server_state.get_memory_instance", get_memory)
-    monkeypatch.setattr("server.memory_lock.get_memory_instance", get_memory)
-    monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
-
-    auth_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-    mock_user = MagicMock()
-    mock_user.id = auth_user_id
-
-    app = FastAPI()
-    module.setup_mcp_server(app)
-
-    def _verify_auth_override():
-        return mock_user
-
-    app.dependency_overrides[module.verify_auth] = _verify_auth_override
-
-    with TestClient(app) as client:
-        _initialize_client(client)
-        yield module, client, mock_memory, str(auth_user_id)
-
-
-def test_list_events_filters_by_authenticated_user(mcp_testbed_authed):
-    _, client, _, auth_uid = mcp_testbed_authed
-    now = "2026-01-01T00:00:00+00:00"
-    event_cache_put(
-        "e1",
-        {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_user_id": auth_uid},
-    )
-    event_cache_put(
-        "e2",
-        {
-            **make_event_obj("e2", [], now_iso="2026-01-02T00:00:00+00:00", status="SUCCEEDED"),
-            "owner_user_id": "other-user",
-        },
-    )
-
-    listed = _structured(client, "list_events")
-    assert listed["count"] == 1
-    assert listed["results"][0]["id"] == "e1"
-
-
 def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):
     _, client, mock_memory, auth_uid = mcp_testbed_authed
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc("tools/call", {"name": "add_memory", "arguments": {"text": "remember this"}}, req_id=2),
-        headers=MCP_HEADERS,
-    )
+    _call_tool(client, "add_memory", {"text": "remember this"})
 
     mock_memory.add.assert_called_once_with(
         messages=[{"role": "user", "content": "remember this"}],
@@ -432,39 +580,10 @@ def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):
     )
 
 
-def test_add_memory_infer_false_passes_flag(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-
-    structured = _structured(
-        client,
-        "add_memory",
-        {"text": "verbatim", "user_id": "alice", "infer": False},
-    )
-
-    assert structured["results"][0]["id"] == "mem-1"
-    mock_memory.add.assert_called_once_with(
-        messages=[{"role": "user", "content": "verbatim"}],
-        user_id="alice",
-        metadata={"source": "MCP"},
-        infer=False,
-    )
-
-
 def test_add_memory_with_custom_source(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {
-                "name": "add_memory",
-                "arguments": {"text": "tagged", "user_id": "alice", "source": "cursor"},
-            },
-            req_id=2,
-        ),
-        headers=MCP_HEADERS,
-    )
+    _call_tool(client, "add_memory", {"text": "tagged", "user_id": "alice", "source": "cursor"})
 
     mock_memory.add.assert_called_once_with(
         messages=[{"role": "user", "content": "tagged"}],
@@ -476,17 +595,10 @@ def test_add_memory_with_custom_source(mcp_testbed):
 def test_add_memory_with_metadata(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {
-                "name": "add_memory",
-                "arguments": {"text": "decision made", "user_id": "alice", "metadata": {"type": "decision"}},
-            },
-            req_id=2,
-        ),
-        headers=MCP_HEADERS,
+    _call_tool(
+        client,
+        "add_memory",
+        {"text": "decision made", "user_id": "alice", "metadata": {"type": "decision"}},
     )
 
     mock_memory.add.assert_called_once_with(
@@ -500,22 +612,15 @@ def test_add_memory_top_level_source_wins_over_metadata_source(mcp_testbed):
     """An explicit top-level source arg wins over a same-named key in metadata."""
     _, client, mock_memory = mcp_testbed
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {
-                "name": "add_memory",
-                "arguments": {
-                    "text": "x",
-                    "user_id": "alice",
-                    "source": "cursor",
-                    "metadata": {"source": "spoof", "extra": 1},
-                },
-            },
-            req_id=2,
-        ),
-        headers=MCP_HEADERS,
+    _call_tool(
+        client,
+        "add_memory",
+        {
+            "text": "x",
+            "user_id": "alice",
+            "source": "cursor",
+            "metadata": {"source": "spoof", "extra": 1},
+        },
     )
 
     mock_memory.add.assert_called_once()
@@ -530,16 +635,10 @@ def test_add_memory_metadata_source_wins_over_header_source(mcp_testbed):
     _, client, mock_memory = mcp_testbed
     headers = {**MCP_HEADERS, "x-mem0-source": "CURSOR"}
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {
-                "name": "add_memory",
-                "arguments": {"text": "x", "user_id": "alice", "metadata": {"source": "from-metadata"}},
-            },
-            req_id=2,
-        ),
+    _call_tool(
+        client,
+        "add_memory",
+        {"text": "x", "user_id": "alice", "metadata": {"source": "from-metadata"}},
         headers=headers,
     )
 
@@ -552,15 +651,7 @@ def test_add_memory_header_platform_written_to_metadata(mcp_testbed):
     _, client, mock_memory = mcp_testbed
     headers = {**MCP_HEADERS, "x-mem0-platform": "cursor"}
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {"name": "add_memory", "arguments": {"text": "x", "user_id": "alice"}},
-            req_id=2,
-        ),
-        headers=headers,
-    )
+    _call_tool(client, "add_memory", {"text": "x", "user_id": "alice"}, headers=headers)
 
     mock_memory.add.assert_called_once()
     assert mock_memory.add.call_args.kwargs["metadata"]["platform"] == "cursor"
@@ -571,21 +662,28 @@ def test_add_memory_metadata_platform_wins_over_header(mcp_testbed):
     _, client, mock_memory = mcp_testbed
     headers = {**MCP_HEADERS, "x-mem0-platform": "cursor"}
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {
-                "name": "add_memory",
-                "arguments": {"text": "x", "user_id": "alice", "metadata": {"platform": "from-metadata"}},
-            },
-            req_id=2,
-        ),
+    _call_tool(
+        client,
+        "add_memory",
+        {"text": "x", "user_id": "alice", "metadata": {"platform": "from-metadata"}},
         headers=headers,
     )
 
     mock_memory.add.assert_called_once()
     assert mock_memory.add.call_args.kwargs["metadata"]["platform"] == "from-metadata"
+
+
+def test_source_from_x_mem0_source_header(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+    headers = {**MCP_HEADERS, "x-mem0-source": "CURSOR"}
+
+    _call_tool(client, "add_memory", {"text": "hdr", "user_id": "alice"}, headers=headers)
+
+    mock_memory.add.assert_called_once_with(
+        messages=[{"role": "user", "content": "hdr"}],
+        user_id="alice",
+        metadata={"source": "CURSOR"},
+    )
 
 
 def test_add_memory_default_infer_passes_expiration_date(mcp_testbed):
@@ -604,59 +702,22 @@ def test_add_memory_default_infer_passes_expiration_date(mcp_testbed):
     assert "expiration_date" not in (call_kwargs.get("metadata") or {})
 
 
-def test_list_events_filter_and_pagination(mcp_testbed):
-    _, client, _ = mcp_testbed
-    now = "2026-01-01T00:00:00+00:00"
-    event_cache_put("e1", {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_user_id": "alice"})
-    event_cache_put(
-        "e2",
-        {
-            **make_event_obj("e2", [], now_iso="2026-01-02T00:00:00+00:00", status="SUCCEEDED"),
-            "owner_user_id": "bob",
-        },
-    )
-    event_cache_put(
-        "e3",
-        {
-            **make_event_obj("e3", [], now_iso="2026-01-03T00:00:00+00:00", status="PENDING"),
-            "owner_user_id": "alice",
-        },
-    )
-
-    listed = _structured(client, "list_events")
-    assert listed["count"] == 3
-    assert len(listed["results"]) == 3
-
-    paged = _structured(client, "list_events", {"page": 1, "page_size": 2})
-    assert paged["count"] == 3
-    assert len(paged["results"]) == 2
-
-
-def test_prompts_get_memory_assistant(mcp_testbed):
-    _, client, _ = mcp_testbed
-
-    response = client.post(
-        "/mcp", json=_jsonrpc("prompts/get", {"name": "memory_assistant"}, req_id=2), headers=MCP_HEADERS
-    )
-    assert response.status_code == 200
-    messages = response.json()["result"]["messages"]
-    assert any("add_memory" in msg.get("content", {}).get("text", "") for msg in messages)
-
-
-def test_get_memory_success(mcp_testbed):
+def test_add_memory_expiration_date_not_passed_when_none(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    structured = _structured(client, "get_memory", {"memory_id": "mem-1"})
-    assert structured["id"] == "mem-1"
-    mock_memory.get.assert_called_once_with("mem-1")
+    _structured(
+        client,
+        "add_memory",
+        {"text": "fact", "user_id": "alice", "infer": False},
+    )
+
+    mock_memory.add.assert_called_once()
+    assert "expiration_date" not in mock_memory.add.call_args.kwargs
 
 
-def test_get_memory_not_found(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-    mock_memory.get.return_value = None
-
-    result = _call_tool(client, "get_memory", {"memory_id": "missing"})
-    assert result.get("isError") is True
+# ---------------------------------------------------------------------------
+# search_memories
+# ---------------------------------------------------------------------------
 
 
 def test_search_memories_passes_top_k_and_threshold(mcp_testbed):
@@ -674,6 +735,76 @@ def test_search_memories_passes_top_k_and_threshold(mcp_testbed):
         top_k=5,
         threshold=0.8,
     )
+
+
+def test_search_memories_with_explicit_user_id(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _call_tool(client, "search_memories", {"query": "test", "user_id": "alice"})
+
+    mock_memory.search.assert_called_once_with(query="test", filters={"user_id": "alice"})
+
+
+def test_search_memories_requires_scope(mcp_testbed):
+    """search_memories with no entity scope and no auth user is rejected."""
+    _, client, mock_memory = mcp_testbed
+
+    result = _call_tool(client, "search_memories", {"query": "anything"})
+    assert result.get("isError") is True
+    mock_memory.search.assert_not_called()
+
+
+def test_search_memories_passes_rerank(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "search_memories",
+        {"query": "hello", "user_id": "alice", "rerank": True},
+    )
+
+    mock_memory.search.assert_called_once()
+    assert mock_memory.search.call_args.kwargs["rerank"] is True
+
+
+def test_search_memories_passes_show_expired(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "search_memories",
+        {"query": "hello", "user_id": "alice", "show_expired": True},
+    )
+
+    mock_memory.search.assert_called_once()
+    assert mock_memory.search.call_args.kwargs["show_expired"] is True
+
+
+def test_search_memories_omits_optional_kwargs_when_unset(mcp_testbed):
+    """rerank and show_expired are absent from SDK kwargs when not provided."""
+    _, client, mock_memory = mcp_testbed
+
+    _structured(client, "search_memories", {"query": "hello", "user_id": "alice"})
+
+    mock_memory.search.assert_called_once()
+    kwargs = mock_memory.search.call_args.kwargs
+    assert "rerank" not in kwargs
+    assert "show_expired" not in kwargs
+
+
+def test_search_memories_source_param_is_advisory(mcp_testbed):
+    """source on read paths is accepted for parity but not forwarded to the SDK."""
+    _, client, mock_memory = mcp_testbed
+
+    _structured(client, "search_memories", {"query": "x", "user_id": "alice", "source": "cursor"})
+
+    mock_memory.search.assert_called_once()
+    assert "source" not in mock_memory.search.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# get_memories
+# ---------------------------------------------------------------------------
 
 
 def test_get_memories_pagination(mcp_testbed):
@@ -708,284 +839,115 @@ def test_get_memories_without_pagination_params_uses_default_first_page(mcp_test
     assert structured["results"][0]["id"] == "mem-0"
 
 
-def test_list_events_page_without_page_size_uses_defaults(mcp_testbed):
-    _, client, _ = mcp_testbed
-    now = "2026-01-01T00:00:00+00:00"
-    for i in range(3):
-        event_cache_put(f"e{i}", make_event_obj(f"e{i}", [], now_iso=now, status="SUCCEEDED"))
-
-    paged = _structured(client, "list_events", {"page": 2, "page_size": 2})
-    assert paged["count"] == 3
-    assert len(paged["results"]) == 1
-
-    page_only = _structured(client, "list_events", {"page": 1})
-    assert page_only["count"] == 3
-    assert len(page_only["results"]) == 3
-
-
-def test_delete_memory_invokes_sdk(mcp_testbed):
+def test_get_memories_page_beyond_range_returns_empty(mcp_testbed):
+    """A page past the last item yields empty results but count stays the total."""
     _, client, mock_memory = mcp_testbed
+    mock_memory.get_all.return_value = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(5)]
 
-    structured = _structured(client, "delete_memory", {"memory_id": "mem-1"})
-    mock_memory.delete.assert_called_once_with("mem-1")
-    assert structured["message"] == "Memory deleted successfully!"
+    structured = _structured(client, "get_memories", {"user_id": "alice", "page": 10, "page_size": 2})
 
-
-def test_delete_all_memories_scoped(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-
-    _structured(client, "delete_all_memories", {"user_id": "alice", "agent_id": "bot"})
-    mock_memory.delete_all.assert_called_once_with(user_id="alice", agent_id="bot")
-
-
-def test_delete_entities_requires_scope(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-
-    result = _call_tool(client, "delete_entities", {})
-    assert result.get("isError") is True
-    mock_memory.delete_all.assert_not_called()
-
-
-def test_delete_entities_calls_delete_all_per_entity(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-
-    structured = _structured(client, "delete_entities", {"user_id": "alice", "agent_id": "bot"})
-    assert structured["message"] == "Entities deleted successfully, count: 2."
-    assert mock_memory.delete_all.call_count == 2
-
-
-def test_list_entities_returns_payload(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-    row = MagicMock(
-        payload={
-            "user_id": "alice",
-            "created_at": "2026-01-01T00:00:00+00:00",
-            "updated_at": "2026-01-02T00:00:00+00:00",
-        }
-    )
-    mock_memory.vector_store.list.return_value = [row]
-
-    with patch("server.compat.entities.get_memory_instance", return_value=mock_memory):
-        structured = _structured(client, "list_entities")
-    assert structured["count"] == 1
-    assert structured["results"][0]["name"] == "alice"
-
-
-def test_source_from_x_mem0_source_header(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-    headers = {**MCP_HEADERS, "x-mem0-source": "CURSOR"}
-
-    client.post(
-        "/mcp",
-        json=_jsonrpc("tools/call", {"name": "add_memory", "arguments": {"text": "hdr", "user_id": "alice"}}, req_id=2),
-        headers=headers,
-    )
-
-    mock_memory.add.assert_called_once_with(
-        messages=[{"role": "user", "content": "hdr"}],
-        user_id="alice",
-        metadata={"source": "CURSOR"},
-    )
-
-
-def test_search_memories_with_explicit_user_id(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-
-    client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call", {"name": "search_memories", "arguments": {"query": "test", "user_id": "alice"}}, req_id=2
-        ),
-        headers=MCP_HEADERS,
-    )
-
-    mock_memory.search.assert_called_once_with(query="test", filters={"user_id": "alice"})
+    assert structured["count"] == 5
+    assert structured["results"] == []
 
 
 def test_get_memories_with_explicit_user_id(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc("tools/call", {"name": "get_memories", "arguments": {"user_id": "alice"}}, req_id=2),
-        headers=MCP_HEADERS,
-    )
+    _call_tool(client, "get_memories", {"user_id": "alice"})
 
     mock_memory.get_all.assert_called_once_with(filters={"user_id": "alice"})
 
 
-def test_get_memory_non_dict_returns_empty(mcp_testbed):
+def test_get_memories_requires_scope(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    result = _call_tool(client, "get_memories")
+    assert result.get("isError") is True
+    mock_memory.get_all.assert_not_called()
+
+
+def test_get_memories_passes_show_expired(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "get_memories",
+        {"user_id": "alice", "show_expired": True},
+    )
+
+    mock_memory.get_all.assert_called_once()
+    assert mock_memory.get_all.call_args.kwargs["show_expired"] is True
+
+
+def test_get_memories_show_expired_defaults_to_none(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(
+        client,
+        "get_memories",
+        {"user_id": "alice"},
+    )
+
+    mock_memory.get_all.assert_called_once()
+    assert "show_expired" not in mock_memory.get_all.call_args.kwargs
+
+
+def test_get_memories_source_param_is_advisory(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    _structured(client, "get_memories", {"user_id": "alice", "source": "cursor"})
+
+    mock_memory.get_all.assert_called_once()
+    assert "source" not in mock_memory.get_all.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# get_memory
+# ---------------------------------------------------------------------------
+
+
+def test_get_memory_success(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    structured = _structured(client, "get_memory", {"memory_id": "mem-1"})
+    assert structured["id"] == "mem-1"
+    mock_memory.get.assert_called_once_with("mem-1")
+
+
+def test_get_memory_not_found(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+    mock_memory.get.return_value = None
+
+    result = _call_tool(client, "get_memory", {"memory_id": "missing"})
+    assert result.get("isError") is True
+
+
+def test_get_memory_non_dict_surfaces_as_tool_error(mcp_testbed):
     """When SDK get() returns a non-dict, MCP reports a tool error (Pydantic validation)."""
-    module, client, mock_memory = mcp_testbed
+    _, client, mock_memory = mcp_testbed
     mock_memory.get.return_value = ["not", "a", "dict"]
 
-    response = client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {"name": "get_memory", "arguments": {"memory_id": "mem-x"}},
-            req_id=2,
-        ),
-        headers=MCP_HEADERS,
-    )
+    result = _call_tool(client, "get_memory", {"memory_id": "mem-x"})
 
-    assert response.status_code == 200
     mock_memory.get.assert_called_once_with("mem-x")
-    result = response.json()["result"]
-    # Non-dict SDK output causes Pydantic validation error in MCP framework
     assert result.get("isError") is True
 
 
-def test_update_memory_non_dict_returns_fallback(mcp_testbed):
-    """When SDK update() returns a non-dict, MCP reports a tool error (Pydantic validation)."""
-    module, client, mock_memory = mcp_testbed
-    mock_memory.update.return_value = "ok"
-
-    response = client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {"name": "update_memory", "arguments": {"memory_id": "mem-x", "text": "new"}},
-            req_id=2,
-        ),
-        headers=MCP_HEADERS,
-    )
-
-    assert response.status_code == 200
-    mock_memory.update.assert_called_once_with(memory_id="mem-x", data="new")
-    result = response.json()["result"]
-    # Non-dict SDK output causes Pydantic validation error in MCP framework
-    assert result.get("isError") is True
-
-
-def test_normalize_list_result_shapes():
-    """normalize_vector_store_list should handle all documented backend return shapes."""
-    # Empty / falsy
-    assert normalize_vector_store_list(None) == []
-    assert normalize_vector_store_list([]) == []
-
-    # PGVector / Chroma: nested list
-    row = MagicMock(payload={"foo": "bar"})
-    assert normalize_vector_store_list([[row]]) == [row]
-
-    # Qdrant: tuple of (rows, offset)
-    assert normalize_vector_store_list(([row], "next_offset")) == [row]
-
-    # Qdrant edge: tuple with non-list first element
-    assert normalize_vector_store_list((None, "offset")) == []
-    assert normalize_vector_store_list(("not-a-list", 0)) == []
-
-    # Flat list
-    assert normalize_vector_store_list([row]) == [row]
-
-
-def test_iter_payloads_skips_none_rows():
-    """iter_payloads should skip None entries in the rows list."""
-    from unittest.mock import patch
-
-    row = MagicMock(payload={"data": 1})
-    mock_memory = MagicMock()
-    mock_memory.vector_store.list.return_value = [row, None, MagicMock(payload={"data": 2})]
-
-    with patch("server.compat.entities.get_memory_instance", return_value=mock_memory):
-        payloads = iter_payloads()
-
-    assert payloads == [{"data": 1}, {"data": 2}]
-    assert len(payloads) == 2
+# ---------------------------------------------------------------------------
+# update_memory
+# ---------------------------------------------------------------------------
 
 
 def test_update_memory_with_metadata(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    client.post(
-        "/mcp",
-        json=_jsonrpc(
-            "tools/call",
-            {
-                "name": "update_memory",
-                "arguments": {"memory_id": "mem-1", "text": "new text", "metadata": {"type": "revised"}},
-            },
-            req_id=2,
-        ),
-        headers=MCP_HEADERS,
+    _call_tool(
+        client,
+        "update_memory",
+        {"memory_id": "mem-1", "text": "new text", "metadata": {"type": "revised"}},
     )
 
     mock_memory.update.assert_called_once_with(memory_id="mem-1", data="new text", metadata={"type": "revised"})
-
-
-def test_platform_context_is_taken_from_header(mcp_testbed):
-    module, client, _ = mcp_testbed
-    captured: dict[str, str | None] = {}
-
-    @module.mcp.tool(name="__test_platform", description="test only")
-    def _capture_platform() -> dict[str, str | None]:
-        captured["platform"] = module.platform_var.get(None)
-        return {"platform": captured["platform"]}
-
-    headers = {**MCP_HEADERS, "x-mem0-platform": "cursor"}
-
-    try:
-        response = client.post(
-            "/mcp",
-            json=_jsonrpc("tools/call", {"name": "__test_platform", "arguments": {}}, req_id=2),
-            headers=headers,
-        )
-        assert response.status_code == 200
-        structured = response.json()["result"]["structuredContent"]
-        assert captured["platform"] == "cursor"
-        assert structured["platform"] == "cursor"
-    finally:
-        module.mcp._tool_manager._tools.pop("__test_platform", None)
-
-
-# ---------------------------------------------------------------------------
-# add_memory — expiration_date passthrough
-# ---------------------------------------------------------------------------
-
-
-def test_add_memory_passes_expiration_date(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-
-    _structured(
-        client,
-        "add_memory",
-        {"text": "fact", "user_id": "alice", "infer": False, "expiration_date": "2099-12-31"},
-    )
-
-    mock_memory.add.assert_called_once()
-    assert mock_memory.add.call_args.kwargs["expiration_date"] == "2099-12-31"
-
-
-def test_add_memory_expiration_date_not_passed_when_none(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-
-    _structured(
-        client,
-        "add_memory",
-        {"text": "fact", "user_id": "alice", "infer": False},
-    )
-
-    mock_memory.add.assert_called_once()
-    assert "expiration_date" not in mock_memory.add.call_args.kwargs
-
-
-def test_add_memory_default_infer_omits_infer_flag(mcp_testbed):
-    """When infer is not passed, infer should not appear in add kwargs."""
-    _, client, mock_memory = mcp_testbed
-
-    _structured(
-        client,
-        "add_memory",
-        {"text": "fact", "user_id": "alice"},
-    )
-
-    mock_memory.add.assert_called_once()
-    assert "infer" not in mock_memory.add.call_args.kwargs
-
-
-# ---------------------------------------------------------------------------
-# update_memory — expiration_date, source, text optional
-# ---------------------------------------------------------------------------
 
 
 def test_update_memory_passes_expiration_date(mcp_testbed):
@@ -997,9 +959,7 @@ def test_update_memory_passes_expiration_date(mcp_testbed):
         {"memory_id": "mem-1", "text": "updated", "expiration_date": "2099-12-31"},
     )
 
-    mock_memory.update.assert_called_once_with(
-        memory_id="mem-1", data="updated", expiration_date="2099-12-31"
-    )
+    mock_memory.update.assert_called_once_with(memory_id="mem-1", data="updated", expiration_date="2099-12-31")
 
 
 def test_update_memory_merges_source_into_metadata(mcp_testbed):
@@ -1011,9 +971,7 @@ def test_update_memory_merges_source_into_metadata(mcp_testbed):
         {"memory_id": "mem-1", "text": "updated", "source": "cursor"},
     )
 
-    mock_memory.update.assert_called_once_with(
-        memory_id="mem-1", data="updated", metadata={"source": "cursor"}
-    )
+    mock_memory.update.assert_called_once_with(memory_id="mem-1", data="updated", metadata={"source": "cursor"})
 
 
 def test_update_memory_source_and_metadata_merged(mcp_testbed):
@@ -1044,9 +1002,7 @@ def test_update_memory_top_level_source_wins_over_metadata_source(mcp_testbed):
         },
     )
 
-    mock_memory.update.assert_called_once_with(
-        memory_id="mem-1", metadata={"source": "cursor", "type": "note"}
-    )
+    mock_memory.update.assert_called_once_with(memory_id="mem-1", metadata={"source": "cursor", "type": "note"})
 
 
 def test_update_memory_text_optional(mcp_testbed):
@@ -1086,115 +1042,271 @@ def test_update_memory_noop_rejected(mcp_testbed):
     mock_memory.update.assert_not_called()
 
 
+def test_update_memory_non_dict_surfaces_as_tool_error(mcp_testbed):
+    """When SDK update() returns a non-dict, MCP reports a tool error (Pydantic validation)."""
+    _, client, mock_memory = mcp_testbed
+    mock_memory.update.return_value = "ok"
+
+    result = _call_tool(client, "update_memory", {"memory_id": "mem-x", "text": "new"})
+
+    mock_memory.update.assert_called_once_with(memory_id="mem-x", data="new")
+    assert result.get("isError") is True
+
+
 # ---------------------------------------------------------------------------
-# search_memories — rerank passthrough
+# delete_memory / delete_all_memories / delete_entities
 # ---------------------------------------------------------------------------
 
 
-def test_search_memories_passes_rerank(mcp_testbed):
+def test_delete_memory_invokes_sdk(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    _structured(
-        client,
-        "search_memories",
-        {"query": "hello", "user_id": "alice", "rerank": True},
-    )
-
-    mock_memory.search.assert_called_once()
-    assert mock_memory.search.call_args.kwargs["rerank"] is True
+    structured = _structured(client, "delete_memory", {"memory_id": "mem-1"})
+    mock_memory.delete.assert_called_once_with("mem-1")
+    assert structured["message"] == "Memory deleted successfully!"
 
 
-def test_search_memories_rerank_defaults_to_none(mcp_testbed):
+def test_delete_all_memories_scoped(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    _structured(
-        client,
-        "search_memories",
-        {"query": "hello", "user_id": "alice"},
-    )
-
-    mock_memory.search.assert_called_once()
-    assert "rerank" not in mock_memory.search.call_args.kwargs
+    _structured(client, "delete_all_memories", {"user_id": "alice", "agent_id": "bot"})
+    mock_memory.delete_all.assert_called_once_with(user_id="alice", agent_id="bot")
 
 
-# ---------------------------------------------------------------------------
-# search_memories — show_expired passthrough
-# ---------------------------------------------------------------------------
-
-
-def test_search_memories_passes_show_expired(mcp_testbed):
+def test_delete_all_memories_requires_scope(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    _structured(
-        client,
-        "search_memories",
-        {"query": "hello", "user_id": "alice", "show_expired": True},
-    )
-
-    mock_memory.search.assert_called_once()
-    assert mock_memory.search.call_args.kwargs["show_expired"] is True
+    result = _call_tool(client, "delete_all_memories")
+    assert result.get("isError") is True
+    mock_memory.delete_all.assert_not_called()
 
 
-def test_search_memories_show_expired_defaults_to_none(mcp_testbed):
+def test_delete_all_memories_source_param_is_advisory(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    _structured(
-        client,
-        "search_memories",
-        {"query": "hello", "user_id": "alice"},
-    )
+    _structured(client, "delete_all_memories", {"user_id": "alice", "source": "cursor"})
 
-    mock_memory.search.assert_called_once()
-    assert "show_expired" not in mock_memory.search.call_args.kwargs
+    mock_memory.delete_all.assert_called_once()
+    assert "source" not in mock_memory.delete_all.call_args.kwargs
 
 
-# ---------------------------------------------------------------------------
-# get_memories — show_expired passthrough
-# ---------------------------------------------------------------------------
-
-
-def test_get_memories_passes_show_expired(mcp_testbed):
+def test_delete_entities_requires_scope(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    _structured(
-        client,
-        "get_memories",
-        {"user_id": "alice", "show_expired": True},
-    )
-
-    mock_memory.get_all.assert_called_once()
-    assert mock_memory.get_all.call_args.kwargs["show_expired"] is True
+    result = _call_tool(client, "delete_entities", {})
+    assert result.get("isError") is True
+    mock_memory.delete_all.assert_not_called()
 
 
-def test_get_memories_show_expired_defaults_to_none(mcp_testbed):
+def test_delete_entities_calls_delete_all_per_entity(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    _structured(
-        client,
-        "get_memories",
-        {"user_id": "alice"},
+    structured = _structured(client, "delete_entities", {"user_id": "alice", "agent_id": "bot"})
+    assert structured["message"] == "Entities deleted successfully, count: 2."
+    assert mock_memory.delete_all.call_count == 2
+
+
+def test_delete_entities_single_entity(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+
+    structured = _structured(client, "delete_entities", {"user_id": "alice"})
+    assert structured["message"] == "Entities deleted successfully, count: 1."
+    assert mock_memory.delete_all.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# list_entities
+# ---------------------------------------------------------------------------
+
+
+def test_list_entities_returns_payload(mcp_testbed):
+    _, client, mock_memory = mcp_testbed
+    row = MagicMock(
+        payload={
+            "user_id": "alice",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-02T00:00:00+00:00",
+        }
+    )
+    mock_memory.vector_store.list.return_value = [row]
+
+    with patch("server.compat.entities.get_memory_instance", return_value=mock_memory):
+        structured = _structured(client, "list_entities")
+    assert structured["count"] == 1
+    assert structured["results"][0]["name"] == "alice"
+
+
+# ---------------------------------------------------------------------------
+# list_events / get_event_status
+# ---------------------------------------------------------------------------
+
+
+def test_list_events_filter_and_pagination(mcp_testbed):
+    _, client, _ = mcp_testbed
+    now = "2026-01-01T00:00:00+00:00"
+    event_cache_put("e1", {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_user_id": "alice"})
+    event_cache_put(
+        "e2",
+        {
+            **make_event_obj("e2", [], now_iso="2026-01-02T00:00:00+00:00", status="SUCCEEDED"),
+            "owner_user_id": "bob",
+        },
+    )
+    event_cache_put(
+        "e3",
+        {
+            **make_event_obj("e3", [], now_iso="2026-01-03T00:00:00+00:00", status="PENDING"),
+            "owner_user_id": "alice",
+        },
     )
 
-    mock_memory.get_all.assert_called_once()
-    assert "show_expired" not in mock_memory.get_all.call_args.kwargs
+    listed = _structured(client, "list_events")
+    assert listed["count"] == 3
+    assert len(listed["results"]) == 3
+
+    paged = _structured(client, "list_events", {"page": 1, "page_size": 2})
+    assert paged["count"] == 3
+    assert len(paged["results"]) == 2
 
 
-# ---------------------------------------------------------------------------
-# Tool descriptions
-# ---------------------------------------------------------------------------
+def test_list_events_filters_by_authenticated_user(mcp_testbed_authed):
+    _, client, _, auth_uid = mcp_testbed_authed
+    now = "2026-01-01T00:00:00+00:00"
+    event_cache_put(
+        "e1",
+        {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_user_id": auth_uid},
+    )
+    event_cache_put(
+        "e2",
+        {
+            **make_event_obj("e2", [], now_iso="2026-01-02T00:00:00+00:00", status="SUCCEEDED"),
+            "owner_user_id": "other-user",
+        },
+    )
+
+    listed = _structured(client, "list_events")
+    assert listed["count"] == 1
+    assert listed["results"][0]["id"] == "e1"
 
 
-def test_tool_descriptions_mention_app_id(mcp_testbed):
+def test_list_events_page_without_page_size_uses_defaults(mcp_testbed):
+    _, client, _ = mcp_testbed
+    now = "2026-01-01T00:00:00+00:00"
+    for i in range(3):
+        event_cache_put(f"e{i}", make_event_obj(f"e{i}", [], now_iso=now, status="SUCCEEDED"))
+
+    paged = _structured(client, "list_events", {"page": 2, "page_size": 2})
+    assert paged["count"] == 3
+    assert len(paged["results"]) == 1
+
+    page_only = _structured(client, "list_events", {"page": 1})
+    assert page_only["count"] == 3
+    assert len(page_only["results"]) == 3
+
+
+def test_list_events_filters_by_event_type(mcp_testbed):
+    _, client, _ = mcp_testbed
+    now = "2026-01-01T00:00:00+00:00"
+    add_event = make_event_obj("e-add", [], now_iso=now, status="SUCCEEDED")
+    search_event = make_event_obj("e-search", [], now_iso=now, status="SUCCEEDED")
+    search_event["event_type"] = "SEARCH"
+    event_cache_put("e-add", add_event)
+    event_cache_put("e-search", search_event)
+
+    filtered = _structured(client, "list_events", {"event_type": "ADD"})
+    assert filtered["count"] == 1
+    assert filtered["results"][0]["id"] == "e-add"
+
+
+def test_get_event_status_not_found(mcp_testbed):
     _, client, _ = mcp_testbed
 
-    response = client.post("/mcp", json=_jsonrpc("tools/list", req_id=2), headers=MCP_HEADERS)
-    descriptions = {tool["name"]: tool["description"] for tool in response.json()["result"]["tools"]}
-    assert "app_id" in descriptions["add_memory"]
+    result = _call_tool(client, "get_event_status", {"event_id": "00000000-0000-0000-0000-000000000099"})
+    assert result.get("isError") is True
 
 
-def test_update_memory_description_matches(mcp_testbed):
+def test_get_event_status_denied_for_other_user_event(mcp_testbed_authed):
+    """An event owned by another user is reported as not found to this caller."""
+    _, client, _, _ = mcp_testbed_authed
+    event = {
+        **make_event_obj("e-other", [], now_iso="2026-01-01T00:00:00+00:00", status="SUCCEEDED"),
+        "owner_user_id": "someone-else",
+    }
+    event_cache_put("e-other", event)
+
+    result = _call_tool(client, "get_event_status", {"event_id": "e-other"})
+    assert result.get("isError") is True
+
+
+# ---------------------------------------------------------------------------
+# prompts & per-request context
+# ---------------------------------------------------------------------------
+
+
+def test_prompts_get_memory_assistant(mcp_testbed):
     _, client, _ = mcp_testbed
 
-    response = client.post("/mcp", json=_jsonrpc("tools/list", req_id=2), headers=MCP_HEADERS)
-    descriptions = {tool["name"]: tool["description"] for tool in response.json()["result"]["tools"]}
-    assert "Update an existing memory" in descriptions["update_memory"]
+    response = client.post(
+        "/mcp", json=_jsonrpc("prompts/get", {"name": "memory_assistant"}, req_id=2), headers=MCP_HEADERS
+    )
+    assert response.status_code == 200
+    messages = response.json()["result"]["messages"]
+    assert any("add_memory" in msg.get("content", {}).get("text", "") for msg in messages)
+
+
+def test_platform_context_is_taken_from_header(mcp_testbed):
+    module, client, _ = mcp_testbed
+    captured: dict[str, str | None] = {}
+
+    @module.mcp.tool(name="__test_platform", description="test only")
+    def _capture_platform() -> dict[str, str | None]:
+        captured["platform"] = module.platform_var.get(None)
+        return {"platform": captured["platform"]}
+
+    headers = {**MCP_HEADERS, "x-mem0-platform": "cursor"}
+
+    try:
+        structured = _structured(client, "__test_platform", {}, headers=headers)
+        assert captured["platform"] == "cursor"
+        assert structured["platform"] == "cursor"
+    finally:
+        module.mcp._tool_manager._tools.pop("__test_platform", None)
+
+
+# ---------------------------------------------------------------------------
+# compat helpers (entities normalization)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_list_result_shapes():
+    """normalize_vector_store_list should handle all documented backend return shapes."""
+    # Empty / falsy
+    assert normalize_vector_store_list(None) == []
+    assert normalize_vector_store_list([]) == []
+
+    # PGVector / Chroma: nested list
+    row = MagicMock(payload={"foo": "bar"})
+    assert normalize_vector_store_list([[row]]) == [row]
+
+    # Qdrant: tuple of (rows, offset)
+    assert normalize_vector_store_list(([row], "next_offset")) == [row]
+
+    # Qdrant edge: tuple with non-list first element
+    assert normalize_vector_store_list((None, "offset")) == []
+    assert normalize_vector_store_list(("not-a-list", 0)) == []
+
+    # Flat list
+    assert normalize_vector_store_list([row]) == [row]
+
+
+def test_iter_payloads_skips_none_rows():
+    """iter_payloads should skip None entries in the rows list."""
+    row = MagicMock(payload={"data": 1})
+    mock_memory = MagicMock()
+    mock_memory.vector_store.list.return_value = [row, None, MagicMock(payload={"data": 2})]
+
+    with patch("server.compat.entities.get_memory_instance", return_value=mock_memory):
+        payloads = iter_payloads()
+
+    assert payloads == [{"data": 1}, {"data": 2}]
+    assert len(payloads) == 2

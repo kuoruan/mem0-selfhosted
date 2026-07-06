@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import ToolAnnotations
 from pydantic import Field
+from starlette.types import Receive, Scope, Send
 
 from auth import verify_auth
 from compat.entities import list_entities_payload
@@ -54,18 +55,6 @@ _MCP_SESSION_MANAGER_STATE = "mem0_mcp_session_manager"
 def _mcp_auth_user_id() -> str | None:
     """Authenticated user id from the current MCP request context."""
     return auth_user_id_var.get()
-
-
-def _new_mcp_session_manager() -> StreamableHTTPSessionManager:
-    return StreamableHTTPSessionManager(
-        app=mcp._mcp_server,
-        json_response=True,
-        stateless=True,
-    )
-
-
-def _mcp_session_manager(app: FastAPI) -> StreamableHTTPSessionManager:
-    return getattr(app.state, _MCP_SESSION_MANAGER_STATE)
 
 
 @mcp.tool(
@@ -486,49 +475,64 @@ Tips:
 - Use infer=false in add_memory to skip LLM extraction and store raw text"""
 
 
-async def _run_streamable_transport(request: Request) -> Response:
-    response_started = False
-    response_status = 200
-    response_headers: list[tuple[bytes, bytes]] = []
-    response_body = bytearray()
+class _McpStreamableResponse(Response):
+    """Bridge the MCP session manager's ASGI app into a Starlette ``Response``.
 
-    async def capture_send(message):
-        nonlocal response_started, response_status
-        if message["type"] == "http.response.start":
-            response_started = True
-            response_status = message["status"]
-            response_headers.extend(message.get("headers", []))
-        elif message["type"] == "http.response.body":
-            response_body.extend(message.get("body", b""))
+    Starlette calls ``await response(scope, receive, send)`` *after* the route
+    handler returns, with the middleware-chain-wrapped ``send`` (so CORS etc.
+    apply to the transport's own ``http.response.start``). Per-request
+    contextvars must therefore be (re)established here, inside ``__call__``,
+    so they are live when the session manager dispatches the per-request
+    server task — anyio copies the caller's context to task-group children, so
+    tools invoked in that task see ``auth_user_id_var`` / ``platform_var`` /
+    ``mem0_source_var``.
 
-    try:
-        await _mcp_session_manager(request.app).handle_request(request.scope, request.receive, capture_send)
-    except Exception:
-        logger.exception("MCP streamable transport error")
-        return Response(status_code=500, content=b"Internal MCP transport error")
+    Status code and headers come from the transport via the real ``send``;
+    ``__call__`` never calls ``super()``, so the defaults set in ``__init__``
+    are unused. This replaces a capture-and-rebuild buffer that defeated SSE
+    streaming and poked at ``Response.raw_headers`` with a direct pass-through.
+    """
 
-    if not response_started:
-        return Response(status_code=500, content=b"Transport did not produce a response")
+    def __init__(
+        self,
+        request: Request,
+        user: Any,
+        session_manager: StreamableHTTPSessionManager,
+    ) -> None:
+        super().__init__(status_code=200)
+        self._request = request
+        self._user = user
+        self._session_manager = session_manager
 
-    response = Response(
-        content=bytes(response_body),
-        status_code=response_status,
-    )
-    response.raw_headers = response_headers
-    return response
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:  # type: ignore[override]
+        with _mcp_request_context(self._request, self._user):
+            try:
+                await self._session_manager.handle_request(scope, receive, send)
+            except Exception:
+                logger.exception("MCP streamable transport error")
+                raise
 
 
 def _install_mcp_lifespan(app: FastAPI) -> None:
     if getattr(app.state, _MCP_LIFESPAN_INSTALLED_STATE, False):
         return
 
-    session_manager = _new_mcp_session_manager()
-    setattr(app.state, _MCP_SESSION_MANAGER_STATE, session_manager)
     original_lifespan = app.router.lifespan_context
 
     @asynccontextmanager
     async def lifespan_with_mcp(app: FastAPI) -> AsyncIterator[None]:
         async with original_lifespan(app):
+            # Fresh session manager per lifespan cycle: run() can only be
+            # called once per instance, so reusing one across cycles (TestClient
+            # with-blocks, in-process reload) raises RuntimeError. Mirrors mcp's
+            # ctor (json_response=True, stateless_http=True); stored on app.state
+            # for the route to read at request time.
+            session_manager = StreamableHTTPSessionManager(
+                app=mcp._mcp_server,
+                json_response=True,
+                stateless=True,
+            )
+            setattr(app.state, _MCP_SESSION_MANAGER_STATE, session_manager)
             async with session_manager.run():
                 yield
 
@@ -538,8 +542,10 @@ def _install_mcp_lifespan(app: FastAPI) -> None:
 
 @contextmanager
 def _mcp_request_context(request: Request, user: Any) -> Iterator[None]:
-    auth_token = auth_user_id_var.set(str(user.id) if user is not None else None)
+    # Resolve header metadata before setting any contextvar so a failure here
+    # cannot leave auth_user_id_var set without a matching reset.
     meta = request_meta(request)
+    auth_token = auth_user_id_var.set(str(user.id) if user is not None else None)
     platform_token = platform_var.set(meta.platform or meta.ua_tool_name)
     source_token = mem0_source_var.set(meta.source or "MCP")
 
@@ -556,8 +562,7 @@ def _mcp_request_context(request: Request, user: Any) -> Iterator[None]:
 )
 @mcp_router.api_route("", methods=["GET", "POST", "DELETE"], summary="MCP Endpoint")
 async def handle_streamable_http(request: Request, user=Depends(verify_auth)):
-    with _mcp_request_context(request, user):
-        return await _run_streamable_transport(request)
+    return _McpStreamableResponse(request, user, getattr(request.app.state, _MCP_SESSION_MANAGER_STATE))
 
 
 def setup_mcp_server(app: FastAPI) -> None:
