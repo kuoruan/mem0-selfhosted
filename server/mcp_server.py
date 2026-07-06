@@ -23,7 +23,7 @@ from compat.events import (
     events_visible_to_caller,
     resolve_event_owner_id,
 )
-from compat.helpers import UNSET, build_search_kwargs, normalize_results, normalize_results_dict
+from compat.helpers import build_search_kwargs, normalize_results, normalize_results_dict
 from compat.requests import request_meta
 from compat.responses import (
     pending_add_response,
@@ -43,7 +43,15 @@ mem0_source_var: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_mem0_
 
 # Background pool for infer=True adds only (LLM extraction can take seconds).
 _ADD_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mcp-add-memory")
-_EXPIRATION_DATE_DEFAULT = Field(default_factory=lambda: UNSET)
+
+# Sentinel distinguishing "expiration_date omitted" (preserve existing) from an
+# explicit None (clear) on the MCP tool's flat function arg. FastMCP does not
+# expose "was this arg provided", so a non-None default is the only way to tell.
+# Wrapped in Field(default_factory=...) so Pydantic does not try to JSON-serialize
+# the sentinel object when generating the tool's input schema (which a bare
+# ``= _UNSET`` default would trigger a non-serializable-default warning for).
+_UNSET = object()
+_EXPIRATION_DATE_DEFAULT = Field(default_factory=lambda: _UNSET)
 
 mcp = FastMCP("mem0", json_response=True, stateless_http=True)
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP Endpoints"])
@@ -318,7 +326,7 @@ def update_memory(
         Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
     ] = None,
 ) -> dict[str, Any]:
-    expiration_date_omitted = expiration_date is UNSET
+    expiration_date_omitted = expiration_date is _UNSET
     if text is None and metadata is None and source is None and expiration_date_omitted:
         raise ValueError("Provide text, metadata, source or expiration_date.")
 
