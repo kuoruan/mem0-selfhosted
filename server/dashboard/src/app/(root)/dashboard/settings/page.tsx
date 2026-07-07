@@ -17,6 +17,8 @@ export default function SettingsPage() {
   const { user, refreshUser } = useAuth();
   const { setTheme } = useTheme();
 
+  const isOidcUser = Boolean(user?.auth_provider && user.auth_provider !== "local");
+
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
@@ -128,60 +130,73 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card className="border-memBorder-primary">
-        <CardHeader>
-          <CardTitle className="text-sm">Password</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-1">
-            <Label htmlFor="settings-current-password" className="text-xs">
-              Current password
-            </Label>
-            <Input
-              id="settings-current-password"
-              type="password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
+      {!isOidcUser ? (
+        <Card className="border-memBorder-primary">
+          <CardHeader>
+            <CardTitle className="text-sm">Password</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
             <div className="space-y-1">
-              <Label htmlFor="settings-new-password" className="text-xs">
-                New password
+              <Label htmlFor="settings-current-password" className="text-xs">
+                Current password
               </Label>
               <Input
-                id="settings-new-password"
+                id="settings-current-password"
                 type="password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Min 8 characters"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
               />
             </div>
-            <div className="space-y-1">
-              <Label htmlFor="settings-confirm-password" className="text-xs">
-                Confirm new password
-              </Label>
-              <Input
-                id="settings-confirm-password"
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="settings-new-password" className="text-xs">
+                  New password
+                </Label>
+                <Input
+                  id="settings-new-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Min 8 characters"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="settings-confirm-password" className="text-xs">
+                  Confirm new password
+                </Label>
+                <Input
+                  id="settings-confirm-password"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
+              </div>
             </div>
-          </div>
-          <Button
-            onClick={handleChangePassword}
-            disabled={
-              !currentPassword ||
-              newPassword.length < 8 ||
-              !confirmPassword ||
-              savingPassword
-            }
-          >
-            {savingPassword ? "Saving..." : "Update password"}
-          </Button>
-        </CardContent>
-      </Card>
+            <Button
+              onClick={handleChangePassword}
+              disabled={
+                !currentPassword ||
+                newPassword.length < 8 ||
+                !confirmPassword ||
+                savingPassword
+              }
+            >
+              {savingPassword ? "Saving..." : "Update password"}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card className="border-memBorder-primary">
+          <CardHeader>
+            <CardTitle className="text-sm">Authentication</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-onSurface-default-secondary">
+              Signed in via {user?.auth_provider}. Password management is handled by your identity provider.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="border-memBorder-primary">
         <CardHeader>

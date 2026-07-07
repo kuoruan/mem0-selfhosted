@@ -3,11 +3,12 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import (
+    FIRST_USER_ADVISORY_LOCK_ID,
     consume_refresh_jti,
     create_access_token,
     create_refresh_token,
@@ -76,6 +77,7 @@ class UserResponse(BaseModel):
     name: str
     email: str
     role: str
+    auth_provider: str
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -96,6 +98,12 @@ def setup_status(db: Session = Depends(get_db)):
 def register(request: Request, body: RegisterRequest, db: Session = Depends(get_db)):
     """Create the first admin account. Blocked once any user exists."""
     _require_password_length(body.password)
+
+    # Serialize the first-user check across concurrent registrations so a
+    # concurrent /auth/register + OIDC first-login can't both see count==0 and
+    # both become admin. Shares FIRST_USER_ADVISORY_LOCK_ID with the OIDC
+    # callback path.
+    db.execute(text(f"SELECT pg_advisory_xact_lock({FIRST_USER_ADVISORY_LOCK_ID})"))
 
     if db.scalar(select(func.count(User.id))) > 0:
         raise HTTPException(status_code=403, detail="Registration is closed. An admin account already exists.")
@@ -129,6 +137,12 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     if user is None:
         dummy_verify_password()
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if user.password_hash is None:
+        dummy_verify_password()
+        raise HTTPException(
+            status_code=401,
+            detail=f"This account uses {user.auth_provider} authentication. Please log in via the identity provider.",
+        )
     if not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
@@ -195,6 +209,11 @@ def change_password(
     user: User = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
+    if user.password_hash is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This account uses {user.auth_provider} authentication and has no password set.",
+        )
     if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status_code=401, detail="Current password is incorrect.")
 

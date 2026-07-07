@@ -6,7 +6,8 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 import telemetry
-from auth import ADMIN_API_KEY, AUTH_DISABLED, JWT_SECRET, ensure_admin, require_admin, verify_auth
+from auth import ensure_admin, require_admin, verify_auth
+from auth_config import get_auth_config
 from bg_tasks import prune_loop
 from db import SessionLocal
 from dotenv import load_dotenv
@@ -30,6 +31,7 @@ from routers import api_keys as api_keys_router
 from routers import auth as auth_router
 from routers import compat as compat_router
 from routers import entities as entities_router
+from routers import oidc as oidc_router
 from routers import requests as requests_router
 from schemas import MessageResponse
 from server_state import (
@@ -98,21 +100,33 @@ def _warn_if_unconfigured() -> None:
     )
 
 
-if not AUTH_DISABLED and not JWT_SECRET:
+_auth_config = get_auth_config()
+
+if not _auth_config.auth_disabled and not _auth_config.jwt_secret:
     raise RuntimeError(
         "JWT_SECRET is required. Set it in .env (generate with `openssl rand -base64 48`) "
         "or set AUTH_DISABLED=true for local development only."
     )
 
-if AUTH_DISABLED:
+if _auth_config.auth_disabled:
     logging.warning("AUTH_DISABLED is enabled. Protected endpoints are open for local development only.")
-elif ADMIN_API_KEY and len(ADMIN_API_KEY) < MIN_KEY_LENGTH:
+elif _auth_config.admin_api_key and len(_auth_config.admin_api_key) < MIN_KEY_LENGTH:
     logging.warning(
         "ADMIN_API_KEY is shorter than %d characters - consider using a longer key for production.",
         MIN_KEY_LENGTH,
     )
-elif not ADMIN_API_KEY:
+elif not _auth_config.admin_api_key:
     _warn_if_unconfigured()
+
+if _auth_config.oidc and _auth_config.oidc.providers:
+    if os.environ.get("OIDC_STATE_STORE", "memory").lower() == "memory":
+        logging.warning(
+            "OIDC is enabled with the in-memory state/exchange store. "
+            "Login state is held per-process, so multi-worker (e.g. uvicorn --workers N) "
+            "or multi-replica deployments will see intermittent 'invalid_state' / 'expired' "
+            "login failures. For such deployments, implement a shared backend (Redis/DB), "
+            "select it via OIDC_STATE_STORE, and rebuild."
+        )
 
 telemetry.log_status()
 
@@ -200,6 +214,7 @@ app.add_middleware(
 
 app.include_router(auth_router.router)
 app.include_router(api_keys_router.router)
+app.include_router(oidc_router.router)
 app.include_router(compat_router.router)
 app.include_router(entities_router.router)
 app.include_router(requests_router.router)

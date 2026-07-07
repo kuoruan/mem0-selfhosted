@@ -15,6 +15,7 @@ export interface AuthUser {
   name: string;
   email: string;
   role: string;
+  auth_provider: string;
   created_at: string;
 }
 

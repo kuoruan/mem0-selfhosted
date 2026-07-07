@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict
 
+from utils.config import load_json_config, merge_config
 from mem0 import Memory
 
 _state_lock = threading.RLock()
@@ -58,61 +59,21 @@ def _save_overrides(overrides: Dict[str, Any]) -> None:
         logging.warning("Failed to persist config overrides to database", exc_info=True)
 
 
-def _merge_config(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    merged = deepcopy(base)
-
-    for key, value in updates.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_config(merged[key], value)
-        else:
-            merged[key] = value
-
-    return merged
-
-
-def _expand_env_vars(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: _expand_env_vars(item_value) for key, item_value in value.items()}
-    if isinstance(value, list):
-        return [_expand_env_vars(item_value) for item_value in value]
-    if isinstance(value, str):
-        return os.path.expandvars(value)
-    return value
-
-
-def _load_config_file(config_path: str) -> Dict[str, Any]:
-    try:
-        with open(config_path, encoding="utf-8") as config_file:
-            raw_config = config_file.read()
-    except OSError as exc:
-        raise RuntimeError(f"Failed to read mem0 config file '{config_path}': {exc}") from exc
-
-    try:
-        loaded_config = json.loads(raw_config)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid JSON in mem0 config file '{config_path}': {exc}") from exc
-
-    if not isinstance(loaded_config, dict):
-        raise RuntimeError(f"Mem0 config file '{config_path}' must be a JSON object at the root.")
-
-    return _expand_env_vars(loaded_config)
-
-
 def initialize_state(default_config: Dict[str, Any], config_path: str | None = None) -> None:
     global _current_config, _memory_instance
     with _state_lock:
         _current_config = deepcopy(default_config)
         if config_path:
             if os.path.exists(config_path):
-                file_overrides = _load_config_file(config_path)
+                file_overrides = load_json_config(config_path)
                 if file_overrides:
-                    _current_config = _merge_config(_current_config, file_overrides)
+                    _current_config = merge_config(_current_config, file_overrides)
                     logging.info("Loaded mem0 config overrides from %s", config_path)
             else:
                 logging.warning("MEM0_CONFIG_PATH set but file not found: %s", config_path)
         overrides = _load_overrides()
         if overrides:
-            _current_config = _merge_config(_current_config, overrides)
+            _current_config = merge_config(_current_config, overrides)
         _memory_instance = Memory.from_config(_current_config)
 
 
@@ -134,12 +95,12 @@ def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:
     global _current_config, _memory_instance
     with memory_scope_lock(global_lock=True):
         with _state_lock:
-            next_config = _merge_config(_current_config, updates)
+            next_config = merge_config(_current_config, updates)
             if _config_effectively_changed(_current_config, next_config):
                 _memory_instance = Memory.from_config(next_config)
             _current_config = next_config
             overrides = _load_overrides()
-            overrides = _merge_config(overrides, updates)
+            overrides = merge_config(overrides, updates)
             _save_overrides(overrides)
             return deepcopy(_current_config)
 

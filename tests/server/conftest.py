@@ -37,8 +37,13 @@ def _register_alias(mod_path: str, alias: str) -> None:
 sys.modules.setdefault("auth", MagicMock())
 
 # -- Layer 0: no bare-import deps on other server modules --------------------
+# utils.config must register before server_state, which imports it at module
+# top level; otherwise _register_alias silently swallows the ImportError and
+# leaves the server_state alias unset (breaking compat.entities/mcp_server).
 for _mod_path, _alias in [
     ("server.errors", "errors"),
+    ("server.utils", "utils"),
+    ("server.utils.config", "utils.config"),
     ("server.server_state", "server_state"),
     ("server.rate_limit", "rate_limit"),
     ("server.schemas", "schemas"),
@@ -67,6 +72,9 @@ for _mod_path, _alias in [
     ("server.memory_lock", "memory_lock"),
     ("server.db", "db"),
     ("server.models", "models"),
+    ("server.auth_config", "auth_config"),
+    ("server.oidc", "oidc"),
+    ("server.oidc_state", "oidc_state"),
 ]:
     _register_alias(_mod_path, _alias)
 
@@ -76,5 +84,7 @@ for _mod_path, _alias in [
     ("server.mcp_server", "mcp_server"),
     ("server.routers", "routers"),
     ("server.routers.compat", "routers.compat"),
+    ("server.routers.oidc", "routers.oidc"),
+    ("server.routers.auth", "routers.auth"),
 ]:
     _register_alias(_mod_path, _alias)

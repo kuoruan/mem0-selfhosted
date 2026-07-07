@@ -1,34 +1,15 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { AUTH_ENDPOINTS } from "@/utils/api-endpoints";
+import {
+  REFRESH_TOKEN_COOKIE_NAME,
+  getRefreshTokenCookieOptions,
+} from "@/lib/auth-cookie";
 import { getServerApiUrl } from "@/lib/server-api-url";
-
-const COOKIE_NAME = "mem0_refresh_token";
-
-function shouldUseSecureCookie() {
-  const dashboardUrl = process.env.DASHBOARD_URL;
-  if (!dashboardUrl) {
-    return process.env.NODE_ENV === "production";
-  }
-
-  try {
-    return new URL(dashboardUrl).protocol === "https:";
-  } catch {
-    return process.env.NODE_ENV === "production";
-  }
-}
-
-const COOKIE_OPTIONS = {
-  httpOnly: true,
-  secure: shouldUseSecureCookie(),
-  sameSite: "lax" as const,
-  path: "/",
-  maxAge: 30 * 24 * 60 * 60, // 30 days
-};
 
 export async function POST() {
   const cookieStore = await cookies();
-  const refreshToken = cookieStore.get(COOKIE_NAME)?.value;
+  const refreshToken = cookieStore.get(REFRESH_TOKEN_COOKIE_NAME)?.value;
 
   if (!refreshToken) {
     return NextResponse.json({ error: "No refresh token" }, { status: 401 });
@@ -42,13 +23,17 @@ export async function POST() {
 
   if (!res.ok) {
     // Refresh token is invalid — clear cookie
-    cookieStore.delete(COOKIE_NAME);
+    cookieStore.delete(REFRESH_TOKEN_COOKIE_NAME);
     return NextResponse.json({ error: "Refresh failed" }, { status: 401 });
   }
 
   const data = await res.json();
 
-  cookieStore.set(COOKIE_NAME, data.refresh_token, COOKIE_OPTIONS);
+  cookieStore.set(
+    REFRESH_TOKEN_COOKIE_NAME,
+    data.refresh_token,
+    getRefreshTokenCookieOptions(),
+  );
 
   return NextResponse.json({ access_token: data.access_token });
 }
@@ -64,12 +49,16 @@ export async function PUT(request: NextRequest) {
     );
   }
 
-  cookieStore.set(COOKIE_NAME, body.refresh_token, COOKIE_OPTIONS);
+  cookieStore.set(
+    REFRESH_TOKEN_COOKIE_NAME,
+    body.refresh_token,
+    getRefreshTokenCookieOptions(),
+  );
   return NextResponse.json({ ok: true });
 }
 
 export async function DELETE() {
   const cookieStore = await cookies();
-  cookieStore.delete(COOKIE_NAME);
+  cookieStore.delete(REFRESH_TOKEN_COOKIE_NAME);
   return NextResponse.json({ ok: true });
 }

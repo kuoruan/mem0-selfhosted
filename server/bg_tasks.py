@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select
 
 from db import SessionLocal
 from models import RequestLog
+from utils.config import is_truthy
 
 logger = logging.getLogger("mem0.server.bg_tasks")
 
@@ -44,9 +45,9 @@ def _get_interval_seconds() -> int:
 
 
 def _is_prune_enabled() -> bool:
-    raw = os.environ.get("REQUEST_LOG_PRUNE_ENABLED", "").strip().lower()
+    raw = os.environ.get("REQUEST_LOG_PRUNE_ENABLED", "true").strip()
     # Enabled by default; opt out by setting to "false" or "0".
-    return raw not in ("false", "0", "no")
+    return is_truthy(raw)
 
 
 def _try_advisory_lock(session) -> bool:

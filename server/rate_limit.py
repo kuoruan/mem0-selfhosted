@@ -50,7 +50,7 @@ def _parse_ip(ip_str: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
     return ipaddress.ip_address(ip_str)
 
 
-def _is_trusted_proxy(remote_ip: str | ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+def is_trusted_proxy(remote_ip: str | ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if *remote_ip* is a trusted proxy per FORWARDED_ALLOW_IPS."""
     if _ALWAYS_TRUST:
         return True
@@ -78,7 +78,7 @@ def _get_real_ip(request: Request) -> str:
     mirrors uvicorn's ``ProxyHeadersMiddleware`` logic.
     """
     remote_ip = get_remote_address(request)
-    if not _is_trusted_proxy(remote_ip):
+    if not is_trusted_proxy(remote_ip):
         return remote_ip
 
     forwarded = request.headers.get("x-forwarded-for")
@@ -104,7 +104,7 @@ def _get_real_ip(request: Request) -> str:
         except ValueError:
             logger.warning("Invalid IP in X-Forwarded-For: %s", host)
             return remote_ip
-        if not _is_trusted_proxy(addr):
+        if not is_trusted_proxy(addr):
             return str(addr)
         last_parsed_addr = addr
 

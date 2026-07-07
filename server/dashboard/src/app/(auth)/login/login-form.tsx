@@ -20,9 +20,17 @@ import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/use-auth";
 import { getErrorMessage } from "@/lib/error-message";
 import { isValidEmail } from "@/lib/validators";
+import { api } from "@/utils/api";
+import { AUTH_ENDPOINTS } from "@/utils/api-endpoints";
+import { safeRedirectPath } from "@/utils/helpers";
 
 const RESET_COMMAND =
   "make reset-admin-password EMAIL=<your-email> PASSWORD=<new-password>";
+
+interface OidcProvider {
+  name: string;
+  display_name: string;
+}
 
 export default function LoginForm() {
   const router = useRouter();
@@ -35,18 +43,55 @@ export default function LoginForm() {
   const [submitting, setSubmitting] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [oidcProviders, setOidcProviders] = useState<OidcProvider[]>([]);
+  const [oidcLoading, setOidcLoading] = useState(true);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
   useEffect(() => {
+    const urlError = searchParams.get("error");
+    if (urlError) {
+      try {
+        setError(decodeURIComponent(urlError));
+      } catch {
+        setError(urlError);
+      }
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
     if (!isLoading && user) {
-      router.push(searchParams.get("next") || "/dashboard/requests");
+      router.push(safeRedirectPath(searchParams.get("next")));
     }
   }, [user, isLoading, router, searchParams]);
 
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await api.get<{ providers: OidcProvider[] }>(AUTH_ENDPOINTS.OIDC_PROVIDERS);
+        if (active) setOidcProviders(res.data.providers ?? []);
+      } catch {
+        // OIDC not configured or endpoint unavailable — silently ignore
+      } finally {
+        if (active) setOidcLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const emailValid = isValidEmail(email);
+
+  const handleOidcLogin = (providerName: string) => {
+    const callbackNext = searchParams.get("next") || "/dashboard/requests";
+    const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8888").replace(/\/+$/, "");
+    const loginUrl = `${apiBase}${AUTH_ENDPOINTS.OIDC_LOGIN(providerName)}?next=${encodeURIComponent(callbackNext)}`;
+    window.location.href = loginUrl;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,7 +103,7 @@ export default function LoginForm() {
     setSubmitting(true);
     try {
       await login(email, password);
-      router.push(searchParams.get("next") || "/dashboard/requests");
+      router.push(safeRedirectPath(searchParams.get("next")));
     } catch (err) {
       setError(getErrorMessage(err, "Login failed"));
     } finally {
@@ -126,6 +171,33 @@ export default function LoginForm() {
                 {submitting ? "Signing in..." : "Sign in"}
               </Button>
             </form>
+            {oidcProviders.length > 0 && (
+              <>
+                <div className="flex items-center gap-3 my-1">
+                  <div className="flex-1 h-px bg-memBorder-primary" />
+                  <span className="text-xs text-onSurface-default-tertiary">or</span>
+                  <div className="flex-1 h-px bg-memBorder-primary" />
+                </div>
+                <div className="flex flex-col gap-2">
+                  {oidcProviders.map((provider) => (
+                    <Button
+                      key={provider.name}
+                      variant="outline"
+                      size="lg"
+                      className="w-full"
+                      onClick={() => handleOidcLogin(provider.name)}
+                    >
+                      Sign in with {provider.display_name}
+                    </Button>
+                  ))}
+                </div>
+              </>
+            )}
+            {oidcLoading && (
+              <div className="flex flex-col gap-2">
+                <div className="h-11 rounded-md bg-surface-default-secondary animate-pulse" />
+              </div>
+            )}
             <Dialog>
               <DialogTrigger asChild>
                 <button

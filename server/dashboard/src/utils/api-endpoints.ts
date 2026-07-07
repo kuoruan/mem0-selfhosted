@@ -6,6 +6,9 @@ export const AUTH_ENDPOINTS = {
   ME: "/auth/me",
   CHANGE_PASSWORD: "/auth/change-password",
   ONBOARDING_COMPLETE: "/auth/onboarding-complete",
+  OIDC_PROVIDERS: "/auth/oidc/providers",
+  OIDC_LOGIN: (provider: string) => `/auth/oidc/${provider}/login`,
+  OIDC_EXCHANGE: "/auth/oidc/exchange",
 } as const;
 
 export const MEMORY_ENDPOINTS = {

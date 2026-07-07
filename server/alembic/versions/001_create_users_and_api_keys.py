@@ -1,4 +1,4 @@
-"""Create users and api_keys tables
+"""Create users, api_keys, and oidc_links tables
 
 Revision ID: 001
 Revises: None
@@ -23,7 +23,9 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("name", sa.String(255), nullable=False),
         sa.Column("email", sa.String(255), nullable=False),
-        sa.Column("password_hash", sa.Text(), nullable=False),
+        # password_hash is nullable: OIDC users have no local password.
+        sa.Column("password_hash", sa.Text(), nullable=True),
+        sa.Column("auth_provider", sa.String(50), nullable=False, server_default="local"),
         sa.Column("role", sa.String(20), nullable=False, server_default="admin"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
@@ -43,7 +45,21 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
 
+    # oidc_links: IdP identity → local user mapping for OIDC login.
+    op.create_table(
+        "oidc_links",
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("provider", sa.String(100), nullable=False),
+        sa.Column("idp_issuer", sa.String(512), nullable=False),
+        sa.Column("idp_sub", sa.String(512), nullable=False),
+        sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.UniqueConstraint("idp_issuer", "idp_sub", name="uq_oidc_links_issuer_sub"),
+    )
+    op.create_index("ix_oidc_links_user_id", "oidc_links", ["user_id"])
+
 
 def downgrade() -> None:
+    op.drop_table("oidc_links")
     op.drop_table("api_keys")
     op.drop_table("users")

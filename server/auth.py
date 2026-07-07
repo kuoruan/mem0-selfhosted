@@ -1,10 +1,10 @@
-import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from db import get_db
+
+from auth_config import get_auth_config
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
@@ -13,12 +13,15 @@ from models import APIKey, RefreshTokenJti, User
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "")
+from db import get_db
+
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 30
-ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
-AUTH_DISABLED = os.environ.get("AUTH_DISABLED", "").lower() in {"1", "true", "yes", "on"}
+
+# Advisory lock ID serializing first-user admin checks across /auth/register and
+# the OIDC callback. Must differ from bg_tasks._PRUNE_ADVISORY_LOCK_ID.
+FIRST_USER_ADVISORY_LOCK_ID = 0x4F494443
 
 # Pre-computed bcrypt hash of b"dummy" (rounds=12), used only for timing-safe dummy verification.
 DUMMY_HASH: bytes = b"$2b$12$k/g9O8usX37dgo75GqFaG.nC5QjJnh5e9NhW43zoWPjoaDl21gB1q"
@@ -57,9 +60,10 @@ def verify_api_key_hash(plain_key: str, hashed: str) -> bool:
 
 
 def _get_secret() -> str:
-    if not JWT_SECRET:
+    secret = get_auth_config().jwt_secret or ""
+    if not secret:
         raise HTTPException(status_code=500, detail="JWT_SECRET is not configured.")
-    return JWT_SECRET
+    return secret
 
 
 def create_access_token(user_id: str, role: str) -> str:
@@ -186,14 +190,17 @@ async def verify_auth(
         if x_api_key is None:
             x_api_key = credentials.credentials
 
+    auth_config = get_auth_config()
+
     if x_api_key is not None:
-        if ADMIN_API_KEY and secrets.compare_digest(x_api_key, ADMIN_API_KEY):
+        admin_api_key = auth_config.admin_api_key or ""
+        if admin_api_key and secrets.compare_digest(x_api_key, admin_api_key):
             _mark_auth_type(request, "admin_api_key")
             return None
         _mark_auth_type(request, "api_key")
         return _resolve_user_from_api_key(x_api_key, db)
 
-    if AUTH_DISABLED:
+    if auth_config.auth_disabled:
         _mark_auth_type(request, "disabled")
         return None
 

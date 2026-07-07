@@ -21,10 +21,12 @@ from typing import Any
 
 import mem0
 
+from utils.config import is_truthy
+
 PROJECT_API_KEY = "phc_hgJkUVJFYtmaJqrvf6CYN67TIQ8yhXAkWzUn9AMU4yX"
 HOST = "https://us.i.posthog.com"
 
-ENABLED = os.environ.get("MEM0_TELEMETRY", "true").lower() not in {"0", "false", "no", "off"}
+ENABLED = is_truthy(os.environ.get("MEM0_TELEMETRY", "true"))
 STATE_PATH = Path(os.environ.get("MEM0_TELEMETRY_STATE_PATH", "/app/history/telemetry.json"))
 
 _lock = Lock()
