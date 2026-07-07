@@ -624,6 +624,30 @@ class TestOidcCallbackSuccess:
         stack.callback(lambda: self.app.dependency_overrides.clear())
         return stack
 
+    def test_callback_forwards_access_token_to_verify(self):
+        """The callback forwards token_response['access_token'] to verify_id_token.
+
+        Required for at_hash validation (OIDC Core §3.1.3.6): IdPs like
+        Authelia/Keycloak include at_hash in the ID token, and python-jose
+        rejects the token unless access_token is supplied.
+        """
+        mock_db = MagicMock()
+        mock_db.scalar.side_effect = [None, None, 0]
+        mock_db.get.return_value = None
+        mock_db.flush.return_value = None
+        mock_db.commit.return_value = None
+
+        claims = {"sub": "google-user-123", "email": "u@example.com", "email_verified": True, "name": "U"}
+
+        with self._setup_common_patches(mock_db, claims):
+            self.client.get(
+                "/auth/oidc/google/callback?code=auth-code&state=test-state",
+                follow_redirects=False,
+            )
+            # exchange_code_for_tokens mock returns {"access_token": "at"}; it
+            # must be threaded through to verify_id_token.
+            assert self.oidc_routes.verify_id_token.call_args.kwargs["access_token"] == "at"
+
     def test_new_user_first_oidc_login(self):
         """First OIDC login creates a new user and issues tokens.
 

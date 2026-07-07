@@ -284,6 +284,20 @@ def _sign_id_token(private_pem: str, claims: dict, kid: str = "test-kid") -> str
     return jose_jwt.encode(claims, private_pem, algorithm="RS256", headers=headers)
 
 
+def _compute_at_hash(access_token: str, alg: str = "RS256") -> str:
+    """Compute the OIDC ``at_hash`` claim value for an access_token.
+
+    Mirrors python-jose's ``_validate_at_hash``: hash the access_token with the
+    algorithm's hash function (RS256 → SHA-256), take the leftmost half of the
+    digest, and base64url-encode without padding.
+    """
+    import hashlib
+
+    hashalg = {"RS256": "sha256", "RS384": "sha384", "RS512": "sha512"}[alg]
+    digest = hashlib.new(hashalg, access_token.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest[: len(digest) // 2]).rstrip(b"=").decode("ascii")
+
+
 class TestVerifyIdToken:
     """Tests for verify_id_token()."""
 
@@ -311,6 +325,65 @@ class TestVerifyIdToken:
 
         assert result["sub"] == "user-123"
         assert result["email"] == "user@example.com"
+
+    def test_at_hash_validated_with_access_token(self):
+        """ID token carrying at_hash verifies when the matching access_token is supplied.
+
+        Regression: python-jose mandates access_token whenever at_hash is present
+        (Authelia/Keycloak/Auth0 include it). Before access_token was wired
+        through, such logins failed with "No access_token provided to compare
+        against at_hash claim".
+        """
+        private_pem, jwks = _generate_rsa_key_and_jwks("at-hash-kid")
+        access_token = "real-access-token-value"
+        claims = {
+            "iss": "https://accounts.example.com",
+            "sub": "u1",
+            "aud": "cid",
+            "exp": 9999999999,
+            "at_hash": _compute_at_hash(access_token),
+        }
+        id_token = _sign_id_token(private_pem, claims, kid="at-hash-kid")
+
+        with patch.object(oidc, "_fetch_jwks", return_value=jwks):
+            result = oidc.verify_id_token(
+                id_token=id_token,
+                client_id="cid",
+                issuer="https://accounts.example.com",
+                jwks_uri="https://accounts.example.com/jwks",
+                algorithms=["RS256"],
+                access_token=access_token,
+            )
+
+        assert result["sub"] == "u1"
+        assert result["at_hash"] == _compute_at_hash(access_token)
+
+    def test_at_hash_without_access_token_raises(self):
+        """ID token with at_hash is rejected when access_token is not forwarded.
+
+        Guards against silently bypassing at_hash validation (e.g. via
+        options={'verify_at_hash': False}); the binding between ID token and
+        access_token (OIDC Core §3.1.3.6) must stay enforced.
+        """
+        private_pem, jwks = _generate_rsa_key_and_jwks("at-hash-noat-kid")
+        claims = {
+            "iss": "https://accounts.example.com",
+            "sub": "u1",
+            "aud": "cid",
+            "exp": 9999999999,
+            "at_hash": _compute_at_hash("real-access-token-value"),
+        }
+        id_token = _sign_id_token(private_pem, claims, kid="at-hash-noat-kid")
+
+        with patch.object(oidc, "_fetch_jwks", return_value=jwks):
+            with pytest.raises(ValueError, match="No access_token provided"):
+                oidc.verify_id_token(
+                    id_token=id_token,
+                    client_id="cid",
+                    issuer="https://accounts.example.com",
+                    jwks_uri="https://accounts.example.com/jwks",
+                    algorithms=["RS256"],
+                )
 
     def test_missing_kid_raises(self):
         """ID token without 'kid' in header raises ValueError."""

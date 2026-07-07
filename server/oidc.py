@@ -140,6 +140,7 @@ def verify_id_token(
     algorithms: list[str] | None = None,
     *,
     nonce: str | None = None,
+    access_token: str | None = None,
 ) -> dict[str, Any]:
     """Verify an OIDC ID Token and return its claims.
 
@@ -149,6 +150,12 @@ def verify_id_token(
     - aud claim contains our client_id
     - exp claim is in the future
     - nonce matches the one sent in the authorization request (if provided)
+    - at_hash matches the access_token (OIDC Core §3.1.3.6) when the IdP
+      includes it. python-jose mandates access_token whenever at_hash is
+      present, so callers MUST forward the access_token from the token
+      response — otherwise tokens carrying at_hash (Authelia, Keycloak,
+      Auth0, …) are rejected with "No access_token provided to compare
+      against at_hash claim".
     """
     if algorithms is None:
         algorithms = ["RS256"]
@@ -216,6 +223,7 @@ def verify_id_token(
             algorithms=algorithms,
             audience=client_id,
             issuer=issuer,
+            access_token=access_token,
             options={"leeway": 120},  # tolerate up to 120s clock skew
         )
     except JWTError as exc:

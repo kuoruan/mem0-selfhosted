@@ -352,6 +352,10 @@ async def oidc_callback(
     if not id_token_str:
         fragment = "error=no_id_token&error_description=Identity%20provider%20did%20not%20return%20an%20ID%20token"
         return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+    # access_token is required for at_hash validation (OIDC Core §3.1.3.6)
+    # when the IdP includes that claim (Authelia, Keycloak, …). python-jose
+    # rejects the ID token if access_token is missing in that case.
+    access_token_str = token_response.get("access_token")
 
     # Verify ID token (run in thread pool to avoid blocking event loop)
     try:
@@ -363,6 +367,7 @@ async def oidc_callback(
             jwks_uri=metadata.jwks_uri,
             algorithms=metadata.id_token_signing_alg_values_supported,
             nonce=state_data.nonce,
+            access_token=access_token_str,
         )
     except ValueError as exc:
         logger.error("OIDC ID token verification failed for %s: %s", provider, exc)
