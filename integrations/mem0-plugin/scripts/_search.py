@@ -10,7 +10,9 @@ import json
 import os
 import urllib.request
 
-SEARCH_URL = "https://api.mem0.ai/v3/memories/search/"
+from _identity import resolve_api_url
+
+SEARCH_URL = f"{resolve_api_url()}/v3/memories/search/"
 SEARCH_TIMEOUT = 5
 
 

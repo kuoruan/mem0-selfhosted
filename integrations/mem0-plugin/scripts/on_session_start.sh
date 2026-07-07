@@ -76,12 +76,13 @@ import json, os, urllib.request, urllib.error
 api_key = os.environ.get('MEM0_API_KEY', '')
 user_id = os.environ.get('MEM0_RESOLVED_USER_ID', 'default')
 app_id = os.environ.get('MEM0_PROJECT_ID', '')
+api_url = os.environ.get('MEM0_API_URL', 'https://api.mem0.ai')
 global_search = os.environ.get('MEM0_GLOBAL_SEARCH', 'false') == 'true'
 
 def get_count(filters):
     body = json.dumps({'filters': filters}).encode()
     req = urllib.request.Request(
-        'https://api.mem0.ai/v3/memories/?page=1&page_size=1',
+        f'{api_url}/v3/memories/?page=1&page_size=1',
         headers={'Authorization': f'Token {api_key}', 'Content-Type': 'application/json'},
         data=body, method='POST',
     )

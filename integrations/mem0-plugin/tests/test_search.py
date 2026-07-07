@@ -175,3 +175,11 @@ def test_format_results_for_context():
     assert "[decision]" in output
     assert "Use Postgres for auth" in output
     assert "abc12345" in output
+
+
+def test_search_url_uses_custom_api_url(monkeypatch):
+    monkeypatch.setenv("MEM0_API_URL", "http://selfhosted:8888")
+    import importlib
+    import _search
+    importlib.reload(_search)
+    assert _search.SEARCH_URL.startswith("http://selfhosted:8888")

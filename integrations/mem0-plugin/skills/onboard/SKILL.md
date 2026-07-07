@@ -67,6 +67,23 @@ After the user confirms, re-run the verify command. If NOT_SET, repeat. If SET, 
 
 ## Step 2: MCP server connection
 
+The MCP server runs as a local stdio→HTTP proxy (`scripts/mcp_proxy.py`) that forwards requests to the upstream Mem0 MCP API. It requires **`uv`** (Python package runner) to be installed.
+
+**Prerequisite: verify `uv` is available**
+
+```bash
+command -v uv >/dev/null 2>&1 && echo "FOUND: $(uv --version 2>/dev/null)" || echo "MISSING: install from https://docs.astral.sh/uv/"
+```
+
+If `uv` is missing, show:
+```
+- 'uv' is required to run the MCP server. Install it:
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+  Then restart Claude Code and run /mem0:onboard again.
+```
+
+**STOP here** if `uv` is missing — the MCP server cannot start without it.
+
 First, check if MCP tools are already available using ToolSearch with query `"mem0 search_memories"`. The exact tool name varies by install method (may be `mcp__mem0__search_memories` or `mcp__plugin_mem0_mem0__search_memories`).
 
 **If MCP tools ARE found:** Print `- MCP already connected.` and proceed to Step 3.
@@ -77,9 +94,13 @@ The MCP server authenticates using the `MEM0_API_KEY` set in Step 1. No OAuth or
 
 1. Verify the API key is set (re-run the Step 1 check)
 2. Check the plugin is installed: run `/plugins` and confirm `mem0` appears
-3. Check the MCP server is listed: run `/mcp` and look for `mcp.mem0.ai`
-4. If the server shows an error, ask the user to restart Claude Code and run `/mem0:onboard` again
-5. If all checks pass but tools are still missing: "Restart Claude Code and run `/mem0:onboard` again."
+3. Check the MCP server is listed: run `/mcp` and look for the `mem0` server
+4. **Self-hosted users**: Set `MEM0_MCP_URL` to your self-hosted MCP endpoint (default: `https://mcp.mem0.ai/mcp/`). The variable is already wired in the MCP config — just export it alongside `MEM0_API_KEY`:
+   ```bash
+   export MEM0_MCP_URL="https://your-server/mcp/"
+   ```
+5. If the server shows an error, ask the user to restart Claude Code and run `/mem0:onboard` again
+6. If all checks pass but tools are still missing: "Restart Claude Code and run `/mem0:onboard` again."
 
 **STOP here** — do not proceed without MCP tools.
 

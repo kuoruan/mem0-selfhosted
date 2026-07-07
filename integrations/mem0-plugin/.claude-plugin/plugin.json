@@ -17,6 +17,20 @@
       "description": "Your Mem0 Platform API key (starts with m0-). Get one at https://app.mem0.ai/dashboard/api-keys",
       "sensitive": true,
       "required": true
+    },
+    "mcp_url": {
+      "type": "string",
+      "title": "Mem0 MCP URL",
+      "description": "Custom MCP server URL for self-hosted deployments. Leave empty to use the default (https://mcp.mem0.ai/mcp/).",
+      "sensitive": false,
+      "required": false
+    },
+    "api_url": {
+      "type": "string",
+      "title": "Mem0 API URL",
+      "description": "Custom REST API URL for self-hosted deployments. Leave empty to use the default (https://api.mem0.ai).",
+      "sensitive": false,
+      "required": false
     }
   }
 }

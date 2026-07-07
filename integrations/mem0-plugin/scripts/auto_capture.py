@@ -20,7 +20,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _identity import resolve_api_key, resolve_user_id
+from _identity import resolve_api_key, resolve_api_url, resolve_user_id
 from _project import resolve_branch, resolve_project_id
 
 log = logging.getLogger("mem0-auto-capture")
@@ -39,7 +39,7 @@ if os.environ.get("MEM0_DEBUG"):
     except OSError:
         pass
 
-API_URL = "https://api.mem0.ai"
+API_URL = resolve_api_url()
 TAIL_LINES = 200
 MAX_CONTENT_CHARS = 8000
 MIN_CONTENT_CHARS = 100

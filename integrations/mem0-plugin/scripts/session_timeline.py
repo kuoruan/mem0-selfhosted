@@ -18,10 +18,10 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _formatting import TYPE_ICONS, format_age
-from _identity import resolve_api_key, resolve_user_id
+from _identity import resolve_api_key, resolve_api_url, resolve_user_id
 from _project import resolve_project_id
 
-API_URL = "https://api.mem0.ai"
+API_URL = resolve_api_url()
 MAX_RECENT = 10
 MAX_SUMMARIES = 3
 FETCH_TIMEOUT = 5

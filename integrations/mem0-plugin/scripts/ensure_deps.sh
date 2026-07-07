@@ -9,6 +9,15 @@ VENV_DIR="${DATA_DIR}/venv"
 REQ_SRC="${PLUGIN_ROOT}/requirements.txt"
 REQ_STAMP="${DATA_DIR}/requirements.txt"
 
+# ---------------------------------------------------------------------------
+# System dependency: uv (required by mcp_proxy.py MCP server)
+# ---------------------------------------------------------------------------
+if ! command -v uv >/dev/null 2>&1; then
+  echo "mem0 plugin: 'uv' is not installed — the MCP server (mcp_proxy.py) requires it." >&2
+  echo "mem0 plugin: Install: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+  echo "mem0 plugin: Docs:   https://docs.astral.sh/uv/" >&2
+fi
+
 mkdir -p "${DATA_DIR}"
 
 LOCKDIR="${DATA_DIR}/.install-lock"

@@ -1,4 +1,4 @@
-"""Resolve mem0 identity: API key, user_id, and settings.
+"""Resolve mem0 identity: API key, URL endpoints, user_id, and settings.
 
 API key resolution (first non-empty wins):
   1. MEM0_API_KEY env var (explicit / shell profile)
@@ -7,6 +7,11 @@ API key resolution (first non-empty wins):
   4. Extract from shell profile files (~/.zshrc, ~/.bashrc, etc.)
      Desktop app doesn't inherit shell env — this covers users who
      set MEM0_API_KEY in their profile but use the Desktop app.
+
+URL resolution (MCP and REST API, same priority):
+  1. MEM0_MCP_URL / MEM0_API_URL env var
+  2. CLAUDE_PLUGIN_OPTION_MCP_URL / CLAUDE_PLUGIN_OPTION_API_URL (plugin config)
+  3. Platform default
 
 User ID resolution:
   1. MEM0_USER_ID env var (explicit override)
@@ -18,9 +23,18 @@ Settings resolution:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
+
+logger = logging.getLogger("mem0._identity")
+
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
+DEFAULT_MCP_URL = "https://mcp.mem0.ai/mcp/"
+DEFAULT_API_URL = "https://api.mem0.ai"
 
 
 def _extract_key_from_shell_profiles() -> str:
@@ -66,6 +80,51 @@ def resolve_api_key() -> str:
     if key:
         return key
     return ""
+
+
+def _is_valid_http_url(url: str) -> bool:
+    """Return True if *url* starts with http:// or https:// (case-insensitive)."""
+    return url.lower().startswith(("http://", "https://"))
+
+
+def resolve_mcp_url() -> str:
+    """Resolve MCP server URL (used by mcp_proxy.py and scripts that call MCP)."""
+    url = os.environ.get("MEM0_MCP_URL", "").strip()
+    if url:
+        if _is_valid_http_url(url):
+            return url
+        logger.warning("MEM0_MCP_URL does not start with http:// or https:// (got %r); falling back to default", url)
+        return DEFAULT_MCP_URL
+    url = os.environ.get("CLAUDE_PLUGIN_OPTION_MCP_URL", "").strip()
+    if url:
+        if _is_valid_http_url(url):
+            return url
+        logger.warning(
+            "CLAUDE_PLUGIN_OPTION_MCP_URL does not start with http:// or https:// (got %r); falling back to default",
+            url,
+        )
+        return DEFAULT_MCP_URL
+    return DEFAULT_MCP_URL
+
+
+def resolve_api_url() -> str:
+    """Resolve REST API URL for memory operations (add, search, etc.)."""
+    url = os.environ.get("MEM0_API_URL", "").strip()
+    if url:
+        if _is_valid_http_url(url):
+            return url
+        logger.warning("MEM0_API_URL does not start with http:// or https:// (got %r); falling back to default", url)
+        return DEFAULT_API_URL
+    url = os.environ.get("CLAUDE_PLUGIN_OPTION_API_URL", "").strip()
+    if url:
+        if _is_valid_http_url(url):
+            return url
+        logger.warning(
+            "CLAUDE_PLUGIN_OPTION_API_URL does not start with http:// or https:// (got %r); falling back to default",
+            url,
+        )
+        return DEFAULT_API_URL
+    return DEFAULT_API_URL
 
 
 def resolve_user_id() -> str:

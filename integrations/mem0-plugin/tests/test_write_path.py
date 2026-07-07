@@ -205,3 +205,96 @@ def test_resolve_api_key_falls_back_to_shell_profile(monkeypatch):
     monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_MEM0_API_KEY", raising=False)
     monkeypatch.setattr("_identity._extract_key_from_shell_profiles", lambda: "m0-from-profile")
     assert resolve_api_key() == "m0-from-profile"
+
+
+# ---------------------------------------------------------------------------
+# resolve_mcp_url / resolve_api_url
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_mcp_url_prefers_env_var(monkeypatch):
+    from _identity import resolve_mcp_url
+
+    monkeypatch.setenv("MEM0_MCP_URL", "http://custom:8888/mcp/")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MCP_URL", "http://plugin/mcp/")
+    assert resolve_mcp_url() == "http://custom:8888/mcp/"
+
+
+def test_resolve_mcp_url_falls_back_to_plugin_option(monkeypatch):
+    from _identity import resolve_mcp_url
+
+    monkeypatch.delenv("MEM0_MCP_URL", raising=False)
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MCP_URL", "http://plugin/mcp/")
+    assert resolve_mcp_url() == "http://plugin/mcp/"
+
+
+def test_resolve_mcp_url_default_when_unset(monkeypatch):
+    from _identity import resolve_mcp_url
+
+    monkeypatch.delenv("MEM0_MCP_URL", raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_MCP_URL", raising=False)
+    assert resolve_mcp_url() == "https://mcp.mem0.ai/mcp/"
+
+
+def test_resolve_api_url_prefers_env_var(monkeypatch):
+    from _identity import resolve_api_url
+
+    monkeypatch.setenv("MEM0_API_URL", "http://custom:8888")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_API_URL", "http://plugin/api")
+    assert resolve_api_url() == "http://custom:8888"
+
+
+def test_resolve_api_url_falls_back_to_plugin_option(monkeypatch):
+    from _identity import resolve_api_url
+
+    monkeypatch.delenv("MEM0_API_URL", raising=False)
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_API_URL", "http://plugin/api")
+    assert resolve_api_url() == "http://plugin/api"
+
+
+def test_resolve_api_url_default_when_unset(monkeypatch):
+    from _identity import resolve_api_url
+
+    monkeypatch.delenv("MEM0_API_URL", raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_API_URL", raising=False)
+    assert resolve_api_url() == "https://api.mem0.ai"
+
+
+def test_resolve_mcp_url_rejects_invalid_scheme(monkeypatch, caplog):
+    from _identity import resolve_mcp_url
+
+    monkeypatch.setenv("MEM0_MCP_URL", "ftp://bad-scheme/mcp/")
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_MCP_URL", raising=False)
+    with caplog.at_level("WARNING", logger="mem0._identity"):
+        assert resolve_mcp_url() == "https://mcp.mem0.ai/mcp/"
+    assert "does not start with http:// or https://" in caplog.text
+
+
+def test_resolve_api_url_rejects_invalid_scheme(monkeypatch, caplog):
+    from _identity import resolve_api_url
+
+    monkeypatch.setenv("MEM0_API_URL", "file:///etc/passwd")
+    monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_API_URL", raising=False)
+    with caplog.at_level("WARNING", logger="mem0._identity"):
+        assert resolve_api_url() == "https://api.mem0.ai"
+    assert "does not start with http:// or https://" in caplog.text
+
+
+def test_resolve_mcp_url_plugin_option_rejects_invalid_scheme(monkeypatch, caplog):
+    from _identity import resolve_mcp_url
+
+    monkeypatch.delenv("MEM0_MCP_URL", raising=False)
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MCP_URL", "gopher://old/mcp/")
+    with caplog.at_level("WARNING", logger="mem0._identity"):
+        assert resolve_mcp_url() == "https://mcp.mem0.ai/mcp/"
+    assert "CLAUDE_PLUGIN_OPTION_MCP_URL does not start with" in caplog.text
+
+
+def test_resolve_api_url_plugin_option_rejects_invalid_scheme(monkeypatch, caplog):
+    from _identity import resolve_api_url
+
+    monkeypatch.delenv("MEM0_API_URL", raising=False)
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_API_URL", "ws://websocket/api")
+    with caplog.at_level("WARNING", logger="mem0._identity"):
+        assert resolve_api_url() == "https://api.mem0.ai"
+    assert "CLAUDE_PLUGIN_OPTION_API_URL does not start with" in caplog.text

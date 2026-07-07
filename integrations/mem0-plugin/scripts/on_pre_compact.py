@@ -23,7 +23,7 @@ import urllib.request
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _identity import resolve_api_key, resolve_user_id
+from _identity import resolve_api_key, resolve_api_url, resolve_user_id
 from _project import resolve_branch, resolve_project_id
 
 log = logging.getLogger("mem0-capture")
@@ -42,7 +42,7 @@ if os.environ.get("MEM0_DEBUG"):
     except OSError:
         pass
 
-API_URL = "https://api.mem0.ai"
+API_URL = resolve_api_url()
 MAX_TAIL_LINES = 500
 MAX_USER_MESSAGES = 30
 MAX_BASH_COMMANDS = 20

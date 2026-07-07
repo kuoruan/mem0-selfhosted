@@ -1,9 +1,11 @@
 {
   "mcpServers": {
     "mem0": {
-      "serverUrl": "https://mcp.mem0.ai/mcp/",
-      "headers": {
-        "Authorization": "Token ${MEM0_API_KEY}"
+      "command": "uv",
+      "args": ["run", "${extensionPath}/scripts/mcp_proxy.py"],
+      "env": {
+        "MEM0_API_KEY": "${MEM0_API_KEY}",
+        "MEM0_MCP_URL": "${MEM0_MCP_URL}"
       }
     }
   }

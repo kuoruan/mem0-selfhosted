@@ -30,10 +30,10 @@ from _chunking import (
     split_by_headers,
     split_by_hr_or_headers,
 )
-from _identity import resolve_api_key, resolve_user_id
+from _identity import resolve_api_key, resolve_api_url, resolve_user_id
 from _project import resolve_branch, resolve_project_id
 
-API_URL = "https://api.mem0.ai"
+API_URL = resolve_api_url()
 HASH_STORE = os.path.expanduser("~/.mem0/import_hashes.json")
 
 

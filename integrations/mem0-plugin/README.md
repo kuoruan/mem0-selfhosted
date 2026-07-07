@@ -174,6 +174,21 @@ This installs the MCP server, lifecycle hooks, and shared scripts.
 
 See [Antigravity integration docs](https://docs.mem0.ai/integrations/antigravity) for full details.
 
+## Self-hosted Mem0 server
+
+`scripts/mcp_proxy.py` is a local stdio MCP server that proxies every request to the upstream at `MEM0_MCP_URL` (default: `https://mcp.mem0.ai/mcp/`). To point it at a self-hosted server:
+
+1. **`MEM0_MCP_URL`** — set to your server's MCP endpoint:
+   ```bash
+   export MEM0_MCP_URL=http://localhost:8888/mcp/
+   ```
+2. **`MEM0_API_KEY`** — the proxy forwards it as `Authorization: Token <key>`. Leave unset if the server requires no authentication.
+3. **Restart** the editor so the proxy process re-reads the env.
+
+The proxy mirrors the upstream's server name, version, and capabilities (tools, prompts, resources, resource templates). Both normal and error responses are passed through unchanged. Only capability categories advertised by the upstream are registered locally.
+
+> **`uv` prerequisite:** The proxy runs via `uv run`, so every editor needs `uv` on PATH — install it once with `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+
 ## Post-Installation: Run `/mem0:onboard`
 
 After installing, start a new session and run:
@@ -227,7 +242,7 @@ The plugin includes 17 skills accessible via `/mem0:` commands:
 | Lifecycle Hooks | Yes | No | Opt-in | No | Yes | No | Yes |
 | Mem0 SDK Skill | Yes | No | Yes | No | Yes | No | Yes |
 
-- **MCP Server** — Connects to the Mem0 remote MCP server (`mcp.mem0.ai`), providing tools to add, search, update, and delete memories. No local dependencies required.
+- **MCP Server** — A local stdio proxy (`scripts/mcp_proxy.py`, launched via `uv run`) that forwards every request to `MEM0_MCP_URL` (default the Mem0 platform, `https://mcp.mem0.ai/mcp/`), providing tools to add, search, update, and delete memories. Set `MEM0_MCP_URL` to point at a self-hosted server. Requires `uv` on PATH (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
 - **Lifecycle Hooks** — Automatic memory capture at key points. Claude Code, OpenCode, and Antigravity wire hooks natively when the full plugin is installed. Codex hooks are opt-in via a one-time installer (`scripts/install_codex_hooks.py`).
 - **Mem0 SDK Skill** — Guides the AI on how to integrate the Mem0 SDK (Python & TypeScript) into your applications.
 
@@ -243,7 +258,7 @@ When the plugin updates (new version pulled from the marketplace, or a fresh loc
 
 Your `MEM0_API_KEY` doesn't need to be re-entered — the auth header is re-read from your environment on the new session. The plugin's MCP config uses `${MEM0_API_KEY}` interpolation at session start, not at install time, so as long as the env var is set persistently (in your shell profile or `~/.claude/settings.json` `env` block), reconnection is automatic on restart.
 
-If reconnection still fails after a restart, check that `MEM0_API_KEY` is reachable in the new shell (`echo $MEM0_API_KEY`) and confirm you're using a key that starts with `m0-` (from https://app.mem0.ai/dashboard/api-keys, not a legacy token).
+If reconnection still fails after a restart, check that `MEM0_API_KEY` is reachable in the new shell (`echo $MEM0_API_KEY`) and confirm the key is valid for the server the proxy points at: a platform key starting with `m0-` (from https://app.mem0.ai/dashboard/api-keys) for the default `MEM0_MCP_URL`, or a self-host key (`m0sk_…` / `ADMIN_API_KEY`) if `MEM0_MCP_URL` points at your own server.
 
 ## Coding-tuned categories (automatic)
 

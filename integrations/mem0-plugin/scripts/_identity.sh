@@ -45,6 +45,18 @@ if [ -z "${MEM0_API_KEY:-}" ]; then
   done
 fi
 
+# Resolve MCP URL: env var > userConfig (no default — proxy handles its own default)
+if [ -z "${MEM0_MCP_URL:-}" ] && [ -n "${CLAUDE_PLUGIN_OPTION_MCP_URL:-}" ]; then
+  MEM0_MCP_URL="$CLAUDE_PLUGIN_OPTION_MCP_URL"
+  export MEM0_MCP_URL
+fi
+
+# Resolve REST API URL: env var > userConfig (no default — scripts handle their own default)
+if [ -z "${MEM0_API_URL:-}" ] && [ -n "${CLAUDE_PLUGIN_OPTION_API_URL:-}" ]; then
+  MEM0_API_URL="$CLAUDE_PLUGIN_OPTION_API_URL"
+  export MEM0_API_URL
+fi
+
 _mem0_resolve_identity() {
   if [ -n "${MEM0_USER_ID:-}" ]; then
     printf '%s' "$MEM0_USER_ID"

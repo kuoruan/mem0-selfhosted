@@ -22,7 +22,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _chunking import filter_and_truncate, split_by_headers
-from _identity import resolve_api_key, resolve_user_id
+from _identity import resolve_api_key, resolve_api_url, resolve_user_id
 from _project import resolve_branch, resolve_project_id, save_project_mapping
 
 log = logging.getLogger("mem0-auto-import")
@@ -41,7 +41,7 @@ if os.environ.get("MEM0_DEBUG"):
     except OSError:
         pass
 
-API_URL = "https://api.mem0.ai"
+API_URL = resolve_api_url()
 MAX_FILE_SIZE = 100_000  # skip files over 100 KB
 TARGET_FILES = ["CLAUDE.md", "AGENTS.md", ".cursorrules", ".windsurfrules", "mem0.md"]
 HASH_STORE = os.path.expanduser("~/.mem0/file_hashes.json")
