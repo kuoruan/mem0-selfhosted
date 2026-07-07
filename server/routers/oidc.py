@@ -11,13 +11,12 @@ All routes are unauthenticated (public).
 import asyncio
 import logging
 import os
-import re
 import secrets
 from datetime import datetime, timezone
 from urllib.parse import quote, urlencode, urlparse
 
 from auth import FIRST_USER_ADVISORY_LOCK_ID, create_access_token, create_refresh_token
-from auth_config import get_auth_config
+from auth_config import OIDCProviderConfig, get_auth_config
 from db import get_db
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -25,9 +24,6 @@ from models import OidcLink, User
 from oidc import (
     discover_provider,
     exchange_code_for_tokens,
-    generate_code_challenge,
-    generate_code_verifier,
-    generate_nonce,
     verify_id_token,
 )
 from oidc_state import OidcStateData, get_exchange_store, get_state_store
@@ -37,7 +33,8 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from utils.config import is_truthy
-from utils.helpers import is_http_url
+from utils.helpers import is_http_url, is_safe_redirect, sanitize_for_log
+from utils.pkce import generate_code_challenge, generate_code_verifier, generate_nonce
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +59,6 @@ if _SERVER_URL and not is_http_url(_SERVER_URL):
 # Hostname of the configured DASHBOARD_URL, used to gate X-Forwarded-Host trust
 # so an attacker cannot redirect the OIDC callback to a foreign origin.
 _DASHBOARD_HOST = (urlparse(DASHBOARD_URL).hostname or "").lower()
-
-
-def _sanitize_provider(name: str) -> str:
-    """Strip log-injection characters from a provider path parameter.
-
-    ``provider`` is an unvalidated URL path segment; before it reaches a log
-    line it is reduced to ``[A-Za-z0-9_.-]`` so newlines/control chars cannot
-    forge log entries.
-    """
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
 
 
 def _forwarded_host_matches_dashboard(candidate: str) -> bool:
@@ -115,29 +102,6 @@ def _get_oidc_config():
     return config.oidc
 
 
-def _is_safe_redirect(url: str | None) -> bool:
-    """Return True if *url* is a safe relative redirect target.
-
-    Only relative paths (no scheme, no netloc) are allowed.
-    """
-    if not url:
-        return False
-    # Block whitespace/control characters which some browsers normalize, enabling open redirect
-    if any(c.isspace() for c in url):
-        return False
-    # Block backslashes: browsers normalize \ to /, enabling open redirect
-    if "\\" in url:
-        return False
-    parsed = urlparse(url)
-    # Must be a relative path: no scheme, no netloc
-    if parsed.scheme or parsed.netloc:
-        return False
-    # Must start with /
-    if not url.startswith("/"):
-        return False
-    return True
-
-
 def _build_redirect_uri(request: Request, provider: str) -> str:
     """Build the redirect_uri for the OIDC callback.
 
@@ -163,7 +127,7 @@ def _build_redirect_uri(request: Request, provider: str) -> str:
                 else:
                     logger.warning(
                         "Rejecting X-Forwarded-Host %s: does not match DASHBOARD_URL host %s",
-                        _sanitize_provider(candidate),
+                        sanitize_for_log(candidate),
                         _DASHBOARD_HOST,
                     )
                     # fall back to request.url.netloc (already set above)
@@ -185,6 +149,172 @@ def _make_placeholder_email(idp_sub: str, provider: str) -> str:
     """
     clean_sub = "".join(c if c.isalnum() or c in ".-_" else "_" for c in idp_sub[:64])
     return f"{clean_sub}-{secrets.token_hex(4)}@oidc.{provider}"
+
+
+def _callback_error_redirect(error: str, description: str = "") -> RedirectResponse:
+    """Build a 302 to the dashboard callback carrying an OIDC error in the fragment.
+
+    Centralizes the ``#error=...&error_description=...`` redirect used at every
+    failure point of the OIDC callback. ``description`` is URL-encoded and capped
+    at 200 chars here, so call sites stay readable plain text.
+    """
+    fragment = f"error={quote(error, safe='')}"
+    if description:
+        fragment += f"&error_description={quote(description[:200], safe='')}"
+    return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+
+
+class OidcCallbackError(Exception):
+    """Recoverable OIDC callback failure carrying a dashboard error code + description.
+
+    Raised by callback helpers (e.g. :func:`_find_or_create_user`) so the caller can
+    translate the failure into a single ``_callback_error_redirect`` rather than each
+    helper having to know about HTTP responses.
+    """
+
+    def __init__(self, error: str, description: str = "") -> None:
+        self.error = error
+        self.description = description
+        super().__init__(error)
+
+
+def _find_or_create_user(
+    db: Session,
+    claims: dict,
+    *,
+    provider: str,
+    idp_issuer: str,
+    provider_config: OIDCProviderConfig,
+    idp_sub: str,
+) -> User:
+    """Find the local user linked to this OIDC identity, or create/link one.
+
+    Security invariants (see inline comments): two OIDC identities never merge by
+    email — a recycled IdP email cannot take over an existing OIDC account. The
+    user is added and flushed (so ``user.id`` is populated); the caller owns the
+    commit and handles :class:`IntegrityError` from concurrent creation. Raises
+    :class:`OidcCallbackError` for the unrecoverable "link exists but user gone" case.
+    """
+    oidc_link = db.scalar(select(OidcLink).where(OidcLink.idp_issuer == idp_issuer, OidcLink.idp_sub == idp_sub))
+
+    if oidc_link:
+        user = db.get(User, oidc_link.user_id)
+        if not user:
+            logger.error("OIDC link exists but user %s not found", oidc_link.user_id)
+            raise OidcCallbackError("user_not_found", "Linked user account not found")
+
+        # Sync real email: when the IdP returns a verified email that differs,
+        # update the local account so it stays aligned with the IdP and any
+        # stale address is released. A recycled IdP email can otherwise be
+        # abused via auto-link to shadow this account.
+        claims_email = claims.get("email")
+        if (
+            claims_email
+            and is_truthy(claims.get("email_verified"))
+            and user.email != claims_email
+        ):
+            collision = db.scalar(
+                select(User).where(func.lower(User.email) == claims_email.lower(), User.id != user.id)
+            )
+            if not collision:
+                logger.info("Syncing email for user %s: %s → %s", user.id, user.email, claims_email)
+                user.email = claims_email
+            else:
+                # Verified email is owned by another local account; fall back
+                # to a placeholder so the stale address is released and cannot
+                # be exploited via auto-link if the IdP recycles it.
+                placeholder = _make_placeholder_email(idp_sub, provider)
+                logger.warning(
+                    "Email %s for user %s already owned by user %s; reverting to placeholder",
+                    claims_email,
+                    user.id,
+                    collision.id,
+                )
+                user.email = placeholder
+        return user
+
+    # New OIDC identity — link to an existing local account ONLY when that
+    # account has a password_hash (a local credential being upgraded to
+    # also accept OIDC). Two OIDC identities must never merge by email: a
+    # recycled IdP email would otherwise let a fresh sub take over the
+    # original owner's existing OIDC account. The ``auth_provider``
+    # equality check is intentionally NOT used — it does not defend
+    # against same-IdP email recycling.
+    email_verified = is_truthy(claims.get("email_verified"))
+    claims_email = claims.get("email")
+
+    existing_user = None
+    candidate = None
+    if claims_email and email_verified:
+        candidate = db.scalar(select(User).where(func.lower(User.email) == claims_email.lower()))
+        if candidate is not None and candidate.password_hash is not None:
+            existing_user = candidate
+
+    if existing_user:
+        # Link the existing local (password) account to this OIDC identity
+        db.add(
+            OidcLink(
+                provider=provider,
+                idp_issuer=idp_issuer,
+                idp_sub=idp_sub,
+                user_id=existing_user.id,
+            )
+        )
+        logger.info("Linked existing user %s to OIDC provider %s", existing_user.id, provider)
+        return existing_user
+
+    # No existing account to link — create a new user. Use the IdP's verified
+    # email only when no other account already owns it (otherwise the unique
+    # constraint would fire and, worse, we'd shadow another OIDC account).
+    # Otherwise fall back to a placeholder. Reuse the candidate lookup from the
+    # auto-link check above (same email query in this transaction) instead of
+    # issuing a duplicate.
+    collision = candidate
+    if claims_email and email_verified and not collision:
+        email = claims_email
+    else:
+        if claims_email and not email_verified:
+            logger.warning("Using placeholder email: email_verified is False for %s", claims_email)
+        elif claims_email and email_verified and collision:
+            logger.warning(
+                "Using placeholder email: verified email %s already in use by user %s",
+                claims_email,
+                collision.id,
+            )
+        email = _make_placeholder_email(idp_sub, provider)
+
+    configured = provider_config.username_claim
+    if configured:
+        _claim_list = configured if isinstance(configured, list) else [configured]
+        name = next((claims.get(c) for c in _claim_list if claims.get(c)), None)
+    else:
+        name = claims.get("name") or claims.get("preferred_username")
+    name = name or email.split("@")[0]
+
+    # First user gets admin role; subsequent users get member.
+    # Serialize concurrent first-user checks with pg_advisory_xact_lock.
+    db.execute(text(f"SELECT pg_advisory_xact_lock({FIRST_USER_ADVISORY_LOCK_ID})"))
+    is_first_user = db.scalar(select(func.count(User.id)).select_from(User)) == 0
+    user = User(
+        name=name,
+        email=email,
+        password_hash=None,
+        auth_provider=provider,
+        role="admin" if is_first_user else "member",
+    )
+    db.add(user)
+    db.flush()  # get user.id
+
+    db.add(
+        OidcLink(
+            provider=provider,
+            idp_issuer=idp_issuer,
+            idp_sub=idp_sub,
+            user_id=user.id,
+        )
+    )
+    logger.info("Created new user %s via OIDC provider %s", user.id, provider)
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +342,7 @@ async def oidc_login(provider: str, request: Request, next: str | None = None):
     Accepts an optional `next` query parameter for post-login redirect.
     """
     # Validate next parameter to prevent open redirect
-    if next and not _is_safe_redirect(next):
+    if next and not is_safe_redirect(next):
         raise HTTPException(status_code=400, detail="Invalid redirect URL. Only relative paths are allowed.")
 
     oidc_config = _get_oidc_config()
@@ -286,18 +416,14 @@ async def oidc_callback(
     if error:
         logger.warning(
             "OIDC callback error from %s: %s (%s)",
-            _sanitize_provider(provider),
+            sanitize_for_log(provider),
             error,
             error_description,
         )
-        fragment = f"error={quote(error, safe='')}"
-        if error_description:
-            fragment += f"&error_description={quote(str(error_description)[:200], safe='')}"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect(error, str(error_description or ""))
 
     if not code or not state:
-        fragment = "error=invalid_response&error_description=Missing%20code%20or%20state%20parameter"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("invalid_response", "Missing code or state parameter")
 
     # Retrieve and atomically consume state
     store = get_state_store()
@@ -305,31 +431,27 @@ async def oidc_callback(
     if not state_data:
         logger.warning(
             "OIDC callback with invalid or expired state for provider %s",
-            _sanitize_provider(provider),
+            sanitize_for_log(provider),
         )
-        fragment = "error=invalid_state&error_description=Session%20expired%2C%20please%20try%20again"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("invalid_state", "Session expired, please try again")
 
     # Validate that the provider matches
     if state_data.provider != provider:
         logger.warning("OIDC callback provider mismatch: expected %s, got %s", state_data.provider, provider)
-        fragment = "error=provider_mismatch&error_description=Provider%20mismatch%2C%20please%20try%20again"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("provider_mismatch", "Provider mismatch, please try again")
 
     # Get provider config
     oidc_config = _get_oidc_config()
     provider_config = oidc_config.get_provider(provider)
     if not provider_config:
-        fragment = "error=unknown_provider&error_description=Provider%20not%20configured"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("unknown_provider", "Provider not configured")
 
     # Discover provider endpoints (run in thread pool to avoid blocking event loop)
     try:
         metadata = await asyncio.to_thread(discover_provider, provider_config.issuer_url)
     except Exception as exc:
         logger.error("OIDC discovery failed during callback for %s: %s", provider, exc)
-        fragment = "error=discovery_failed&error_description=Failed%20to%20contact%20identity%20provider"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("discovery_failed", "Failed to contact identity provider")
 
     # Exchange code for tokens (run in thread pool to avoid blocking event loop)
     redirect_uri = state_data.redirect_uri or _build_redirect_uri(request, provider)
@@ -345,13 +467,11 @@ async def oidc_callback(
         )
     except Exception as exc:
         logger.error("OIDC token exchange failed for %s: %s", provider, exc)
-        fragment = "error=token_exchange_failed&error_description=Token%20exchange%20failed"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("token_exchange_failed", "Token exchange failed")
 
     id_token_str = token_response.get("id_token")
     if not id_token_str:
-        fragment = "error=no_id_token&error_description=Identity%20provider%20did%20not%20return%20an%20ID%20token"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("no_id_token", "Identity provider did not return an ID token")
     # access_token is required for at_hash validation (OIDC Core §3.1.3.6)
     # when the IdP includes that claim (Authelia, Keycloak, …). python-jose
     # rejects the ID token if access_token is missing in that case.
@@ -371,137 +491,28 @@ async def oidc_callback(
         )
     except ValueError as exc:
         logger.error("OIDC ID token verification failed for %s: %s", provider, exc)
-        fragment = "error=token_verification_failed&error_description=ID%20token%20verification%20failed"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("token_verification_failed", "ID token verification failed")
 
     idp_sub = claims.get("sub")
     if not idp_sub:
-        fragment = "error=missing_sub&error_description=ID%20token%20missing%20'sub'%20claim"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("missing_sub", "ID token missing 'sub' claim")
     idp_sub = str(idp_sub)
 
-    # Find or create local user
+    # Find or create local user. Raises OidcCallbackError on the rare
+    # "link exists but user deleted" case; IntegrityError from concurrent
+    # creation surfaces at the commit below.
     idp_issuer = metadata.issuer
-    oidc_link = db.scalar(select(OidcLink).where(OidcLink.idp_issuer == idp_issuer, OidcLink.idp_sub == idp_sub))
-
-    if oidc_link:
-        # Existing user — look up
-        user = db.get(User, oidc_link.user_id)
-        if not user:
-            logger.error("OIDC link exists but user %s not found", oidc_link.user_id)
-            fragment = "error=user_not_found&error_description=Linked%20user%20account%20not%20found"
-            return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
-
-        # Sync real email: when the IdP returns a verified email that differs,
-        # update the local account so it stays aligned with the IdP and any
-        # stale address is released. A recycled IdP email can otherwise be
-        # abused via auto-link to shadow this account.
-        claims_email = claims.get("email")
-        if (
-            claims_email
-            and is_truthy(claims.get("email_verified"))
-            and user.email != claims_email
-        ):
-            collision = db.scalar(
-                select(User).where(func.lower(User.email) == claims_email.lower(), User.id != user.id)
-            )
-            if not collision:
-                logger.info("Syncing email for user %s: %s → %s", user.id, user.email, claims_email)
-                user.email = claims_email
-            else:
-                # Verified email is owned by another local account; fall back
-                # to a placeholder so the stale address is released and cannot
-                # be exploited via auto-link if the IdP recycles it.
-                placeholder = _make_placeholder_email(idp_sub, provider)
-                logger.warning(
-                    "Email %s for user %s already owned by user %s; reverting to placeholder",
-                    claims_email,
-                    user.id,
-                    collision.id,
-                )
-                user.email = placeholder
-
-    else:
-        # New OIDC identity — link to an existing local account ONLY when that
-        # account has a password_hash (a local credential being upgraded to
-        # also accept OIDC). Two OIDC identities must never merge by email: a
-        # recycled IdP email would otherwise let a fresh sub take over the
-        # original owner's existing OIDC account. The ``auth_provider``
-        # equality check is intentionally NOT used — it does not defend
-        # against same-IdP email recycling.
-        email_verified = is_truthy(claims.get("email_verified"))
-        claims_email = claims.get("email")
-
-        existing_user = None
-        candidate = None
-        if claims_email and email_verified:
-            candidate = db.scalar(select(User).where(func.lower(User.email) == claims_email.lower()))
-            if candidate is not None and candidate.password_hash is not None:
-                existing_user = candidate
-
-        if existing_user:
-            # Link the existing local (password) account to this OIDC identity
-            oidc_link = OidcLink(
-                provider=provider,
-                idp_issuer=idp_issuer,
-                idp_sub=idp_sub,
-                user_id=existing_user.id,
-            )
-            db.add(oidc_link)
-            user = existing_user
-            logger.info("Linked existing user %s to OIDC provider %s", user.id, provider)
-
-        if not existing_user:
-            # Pick the email for the new user. Use the IdP's verified email
-            # only when no other account already owns it (otherwise the unique
-            # constraint would fire and, worse, we'd shadow another OIDC
-            # account). Otherwise fall back to a placeholder.
-            # Reuse the candidate lookup from the auto-link check above (same
-            # email query in this transaction) instead of issuing a duplicate.
-            collision = candidate
-            if claims_email and email_verified and not collision:
-                email = claims_email
-            else:
-                if claims_email and not email_verified:
-                    logger.warning("Using placeholder email: email_verified is False for %s", claims_email)
-                elif claims_email and email_verified and collision:
-                    logger.warning(
-                        "Using placeholder email: verified email %s already in use by user %s",
-                        claims_email,
-                        collision.id,
-                    )
-                email = _make_placeholder_email(idp_sub, provider)
-
-            configured = provider_config.username_claim
-            if configured:
-                _claim_list = configured if isinstance(configured, list) else [configured]
-                name = next((claims.get(c) for c in _claim_list if claims.get(c)), None)
-            else:
-                name = claims.get("name") or claims.get("preferred_username")
-            name = name or email.split("@")[0]
-
-            # First user gets admin role; subsequent users get member
-            # Serialize concurrent first-user checks with pg_advisory_xact_lock.
-            db.execute(text(f"SELECT pg_advisory_xact_lock({FIRST_USER_ADVISORY_LOCK_ID})"))
-            is_first_user = db.scalar(select(func.count(User.id)).select_from(User)) == 0
-            user = User(
-                name=name,
-                email=email,
-                password_hash=None,
-                auth_provider=provider,
-                role="admin" if is_first_user else "member",
-            )
-            db.add(user)
-            db.flush()  # get user.id
-
-            oidc_link = OidcLink(
-                provider=provider,
-                idp_issuer=idp_issuer,
-                idp_sub=idp_sub,
-                user_id=user.id,
-            )
-            db.add(oidc_link)
-            logger.info("Created new user %s via OIDC provider %s", user.id, provider)
+    try:
+        user = _find_or_create_user(
+            db,
+            claims,
+            provider=provider,
+            idp_issuer=idp_issuer,
+            provider_config=provider_config,
+            idp_sub=idp_sub,
+        )
+    except OidcCallbackError as exc:
+        return _callback_error_redirect(exc.error, exc.description)
 
     # Update last login & commit — wrap in try/except for concurrent conflicts
     user.last_login_at = datetime.now(timezone.utc)
@@ -510,8 +521,7 @@ async def oidc_callback(
     except IntegrityError as exc:
         db.rollback()
         logger.error("OIDC user creation conflict for %s: %s", provider, exc)
-        fragment = "error=user_creation_conflict&error_description=Account%20creation%20conflict%2C%20please%20retry"
-        return RedirectResponse(url=f"{DASHBOARD_URL}/auth/callback#{fragment}", status_code=302)
+        return _callback_error_redirect("user_creation_conflict", "Account creation conflict, please retry")
 
     # Issue local tokens
     access_token = create_access_token(str(user.id), user.role)

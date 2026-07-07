@@ -24,7 +24,7 @@ from server.oidc_state import MemoryOidcStateStore, OidcStateData
 
 
 # ============================================================================
-# Test _is_safe_redirect
+# Test is_safe_redirect
 # ============================================================================
 
 
@@ -32,69 +32,69 @@ class TestIsSafeRedirect:
     """Test the redirect URL validation helper."""
 
     @pytest.fixture(autouse=True)
-    def _import_oidc_router(self):
-        """Import the router module to get _is_safe_redirect."""
-        self.oidc_routes = importlib.import_module("server.routers.oidc")
+    def _import_helpers(self):
+        """Import utils.helpers for is_safe_redirect."""
+        self.helpers = importlib.import_module("server.utils.helpers")
 
     def test_relative_path_allowed(self):
-        assert self.oidc_routes._is_safe_redirect("/dashboard")
+        assert self.helpers.is_safe_redirect("/dashboard")
 
     def test_relative_path_with_query(self):
-        assert self.oidc_routes._is_safe_redirect("/dashboard?tab=settings")
+        assert self.helpers.is_safe_redirect("/dashboard?tab=settings")
 
     def test_absolute_url_blocked(self):
-        assert not self.oidc_routes._is_safe_redirect("https://evil.com")
+        assert not self.helpers.is_safe_redirect("https://evil.com")
 
     def test_protocol_relative_blocked(self):
-        assert not self.oidc_routes._is_safe_redirect("//evil.com")
+        assert not self.helpers.is_safe_redirect("//evil.com")
 
     def test_schemaless_url_blocked(self):
-        assert not self.oidc_routes._is_safe_redirect("//evil.com/path")
+        assert not self.helpers.is_safe_redirect("//evil.com/path")
 
     def test_none_returns_false(self):
-        assert not self.oidc_routes._is_safe_redirect(None)
+        assert not self.helpers.is_safe_redirect(None)
 
     def test_empty_string_returns_false(self):
-        assert not self.oidc_routes._is_safe_redirect("")
+        assert not self.helpers.is_safe_redirect("")
 
     def test_path_without_slash_blocked(self):
-        assert not self.oidc_routes._is_safe_redirect("relative/path")
+        assert not self.helpers.is_safe_redirect("relative/path")
 
     # -- Backslash-based open redirect (PR #18 Issue #1) --
 
     def test_backslash_before_host(self):
         r"""/\evil.com gets normalized to //evil.com by browsers."""
-        assert not self.oidc_routes._is_safe_redirect("/\\evil.com")
+        assert not self.helpers.is_safe_redirect("/\\evil.com")
 
     def test_mixed_backslash_forward_slash(self):
         r"""\/evil.com also gets normalized to //evil.com."""
-        assert not self.oidc_routes._is_safe_redirect("/\\/evil.com")
+        assert not self.helpers.is_safe_redirect("/\\/evil.com")
 
     def test_backslash_in_path(self):
         r"""Paths containing backslash should be rejected."""
-        assert not self.oidc_routes._is_safe_redirect("/dashboard\\@evil.com")
+        assert not self.helpers.is_safe_redirect("/dashboard\\@evil.com")
 
     def test_double_backslash(self):
         r"""\\evil.com should be rejected."""
-        assert not self.oidc_routes._is_safe_redirect("\\\\evil.com")
+        assert not self.helpers.is_safe_redirect("\\\\evil.com")
 
     def test_backslash_at_start(self):
         r"""\\evil.com should be rejected."""
-        assert not self.oidc_routes._is_safe_redirect("\\evil.com")
+        assert not self.helpers.is_safe_redirect("\\evil.com")
 
     # -- Whitespace open redirect (Issue #36) --
 
     def test_tab_in_path(self):
         r"""/\tevil.com — tab should be rejected."""
-        assert not self.oidc_routes._is_safe_redirect("/\tevil.com")
+        assert not self.helpers.is_safe_redirect("/\tevil.com")
 
     def test_newline_in_path(self):
         r"""/\nevil.com — newline should be rejected."""
-        assert not self.oidc_routes._is_safe_redirect("/\nevil.com")
+        assert not self.helpers.is_safe_redirect("/\nevil.com")
 
     def test_carriage_return_in_path(self):
         r"""/\revil.com — CR should be rejected."""
-        assert not self.oidc_routes._is_safe_redirect("/\revil.com")
+        assert not self.helpers.is_safe_redirect("/\revil.com")
 
 
 # ============================================================================

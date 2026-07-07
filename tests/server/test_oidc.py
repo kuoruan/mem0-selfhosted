@@ -21,6 +21,7 @@ pytest.importorskip("httpx", reason="httpx not installed")
 
 # Load the real oidc module by its full path (not relying on conftest aliases).
 oidc = importlib.import_module("server.oidc")
+pkce = importlib.import_module("server.utils.pkce")
 
 
 # ============================================================================
@@ -32,48 +33,48 @@ class TestPkce:
     """Tests for PKCE (RFC 7636) helpers."""
 
     def test_code_verifier_length(self):
-        v = oidc.generate_code_verifier()
+        v = pkce.generate_code_verifier()
         # token_urlsafe(64) → ceil(64*6/8) = 48 bytes → 64 base64url chars
         assert 43 <= len(v) <= 128
 
     def test_code_verifier_is_urlsafe(self):
-        v = oidc.generate_code_verifier()
+        v = pkce.generate_code_verifier()
         # Only unreserved characters: A-Z a-z 0-9 - _
         assert all(c.isalnum() or c in "-_" for c in v)
 
     def test_code_verifier_is_random(self):
-        a = oidc.generate_code_verifier()
-        b = oidc.generate_code_verifier()
+        a = pkce.generate_code_verifier()
+        b = pkce.generate_code_verifier()
         assert a != b
 
     def test_nonce_is_random(self):
-        a = oidc.generate_nonce()
-        b = oidc.generate_nonce()
+        a = pkce.generate_nonce()
+        b = pkce.generate_nonce()
         assert a != b
         assert len(a) > 0
 
     def test_code_challenge_no_padding(self):
-        verifier = oidc.generate_code_verifier()
-        challenge = oidc.generate_code_challenge(verifier)
+        verifier = pkce.generate_code_verifier()
+        challenge = pkce.generate_code_challenge(verifier)
         # S256 code_challenge must NOT end with '=' (RFC 7636 §4.2)
         assert not challenge.endswith("=")
 
     def test_code_challenge_is_base64url(self):
         verifier = "test-verifier-for-pkce-testing-12345"
-        challenge = oidc.generate_code_challenge(verifier)
+        challenge = pkce.generate_code_challenge(verifier)
         # Should be valid base64url (decode then encode gives same string)
         decoded = base64.urlsafe_b64decode(challenge + "===")
         assert len(decoded) == 32  # SHA-256 digest is exactly 32 bytes
 
     def test_code_challenge_deterministic(self):
         verifier = "fixed-verifier-value"
-        a = oidc.generate_code_challenge(verifier)
-        b = oidc.generate_code_challenge(verifier)
+        a = pkce.generate_code_challenge(verifier)
+        b = pkce.generate_code_challenge(verifier)
         assert a == b
 
     def test_code_challenge_different_for_different_verifiers(self):
-        a = oidc.generate_code_challenge("verifier-a")
-        b = oidc.generate_code_challenge("verifier-b")
+        a = pkce.generate_code_challenge("verifier-a")
+        b = pkce.generate_code_challenge("verifier-b")
         assert a != b
 
 

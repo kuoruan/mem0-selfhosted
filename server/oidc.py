@@ -4,14 +4,12 @@ Handles:
 - Provider metadata discovery via /.well-known/openid-configuration
 - JWKS public key fetching and caching
 - ID Token signature and claims verification
-- PKCE code_verifier / code_challenge generation
+
+PKCE helpers (code_verifier / code_challenge / nonce) live in ``utils.pkce``.
 """
 
-import base64
-import hashlib
 import logging
 import os
-import secrets
 import threading
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,27 +21,6 @@ from jose import JWTError, jwt
 from utils.config import is_truthy
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# PKCE helpers
-# ---------------------------------------------------------------------------
-
-
-def generate_code_verifier() -> str:
-    """Generate a code_verifier per RFC 7636 §4.1 (43–128 chars, unreserved)."""
-    return secrets.token_urlsafe(64)
-
-
-def generate_nonce() -> str:
-    """Generate a random nonce for OIDC replay-protection."""
-    return secrets.token_urlsafe(32)
-
-
-def generate_code_challenge(verifier: str) -> str:
-    """S256 code_challenge per RFC 7636 §4.2."""
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-
 
 # ---------------------------------------------------------------------------
 # Provider metadata discovery
