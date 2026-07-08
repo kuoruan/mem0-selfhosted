@@ -1,10 +1,10 @@
 import uuid
 from datetime import datetime
 
-from auth import require_admin
+from auth import require_auth
 from db import get_db
 from fastapi import APIRouter, Depends, Query
-from models import RequestLog
+from models import RequestLog, User
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,18 +29,18 @@ API_KEY_AUTH_TYPES = ("api_key", "admin_api_key")
 
 @router.get("", response_model=list[RequestLogItem])
 def list_requests(
-    _auth=Depends(require_admin),
+    user: User = Depends(require_auth),
     db: Session = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=200),
 ):
-    logs = (
-        db.execute(
-            select(RequestLog)
-            .where(RequestLog.auth_type.in_(API_KEY_AUTH_TYPES))
-            .order_by(RequestLog.created_at.desc())
-            .limit(limit)
-        )
-        .scalars()
-        .all()
+    query = (
+        select(RequestLog)
+        .where(RequestLog.auth_type.in_(API_KEY_AUTH_TYPES))
+        .order_by(RequestLog.created_at.desc())
+        .limit(limit)
     )
+    if user.role != "admin":
+        query = query.where(RequestLog.user_id == user.id)
+
+    logs = db.execute(query).scalars().all()
     return logs

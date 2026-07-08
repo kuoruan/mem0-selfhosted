@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useSelector } from "react-redux";
 import { RootState } from "@/store/store";
+import { useAuth } from "@/hooks/use-auth";
 import { Badge } from "@/components/ui/badge";
 import {
   Collapsible,
@@ -44,6 +45,7 @@ export function MainNav({
   const isSidebarCollapsed = useSelector(
     (state: RootState) => state.layout.isSidebarCollapsed,
   );
+  const { isAdmin } = useAuth();
   const [isCloudOpen, setIsCloudOpen] = React.useState(true);
 
   return (
@@ -208,6 +210,7 @@ export function MainNav({
                     url: "/dashboard/configuration",
                     icon: Wrench,
                     active: pathname === "/dashboard/configuration",
+                    adminOnly: true,
                   },
                   {
                     title: "Settings",
@@ -215,7 +218,9 @@ export function MainNav({
                     icon: Settings,
                     active: pathname === "/dashboard/settings",
                   },
-                ].map((item) => (
+                ]
+                  .filter((item) => !item.adminOnly || isAdmin)
+                  .map((item) => (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton
                       asChild

@@ -143,6 +143,14 @@ def _mark_auth_type(request: Request, auth_type: str) -> None:
     request.state.auth_type = auth_type
 
 
+def _mark_user(request: Request, user: User) -> None:
+    """Stash user identity on request.state for downstream consumers (middleware, etc.).
+
+    Currently sets ``user_id``; extend with additional fields (role, etc.) as needed.
+    """
+    request.state.user_id = str(user.id)
+
+
 def _get_default_user(db: Session) -> User | None:
     return db.scalar(select(User).order_by(User.created_at.asc()))
 
@@ -185,7 +193,9 @@ async def verify_auth(
     if credentials is not None:
         if _is_jwt(credentials.credentials):
             _mark_auth_type(request, "bearer")
-            return _resolve_user_from_jwt(credentials.credentials, db)
+            user = _resolve_user_from_jwt(credentials.credentials, db)
+            _mark_user(request, user)
+            return user
         # Not a JWT — try as API key below
         if x_api_key is None:
             x_api_key = credentials.credentials
@@ -198,7 +208,9 @@ async def verify_auth(
             _mark_auth_type(request, "admin_api_key")
             return None
         _mark_auth_type(request, "api_key")
-        return _resolve_user_from_api_key(x_api_key, db)
+        user = _resolve_user_from_api_key(x_api_key, db)
+        _mark_user(request, user)
+        return user
 
     if auth_config.auth_disabled:
         _mark_auth_type(request, "disabled")
@@ -221,6 +233,10 @@ async def require_auth(
         if getattr(request.state, "auth_type", "none") in {"admin_api_key", "disabled"}:
             default_user = _get_default_user(db)
             if default_user is not None:
+                # System bypass (ADMIN_API_KEY / AUTH_DISABLED) has no real caller.
+                # Leave request.state.user_id unset so request_logs.user_id stays
+                # NULL — matches require_admin's _BOOTSTRAP_ADMIN path and keeps
+                # audit attribution honest (don't pin system calls to default_user).
                 return default_user
         raise HTTPException(status_code=401, detail="Authentication required.")
     return user

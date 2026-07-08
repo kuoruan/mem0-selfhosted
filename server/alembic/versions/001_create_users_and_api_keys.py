@@ -26,7 +26,7 @@ def upgrade() -> None:
         # password_hash is nullable: OIDC users have no local password.
         sa.Column("password_hash", sa.Text(), nullable=True),
         sa.Column("auth_provider", sa.String(50), nullable=False, server_default="local"),
-        sa.Column("role", sa.String(20), nullable=False, server_default="admin"),
+        sa.Column("role", sa.String(20), nullable=False, server_default="member"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint("email"),

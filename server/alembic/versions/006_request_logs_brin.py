@@ -8,6 +8,7 @@ Create Date: 2026-04-21
 
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "006"
@@ -20,7 +21,26 @@ def upgrade() -> None:
     op.drop_index("ix_request_logs_created_at", table_name="request_logs")
     op.execute("CREATE INDEX ix_request_logs_created_at ON request_logs USING BRIN (created_at)")
 
+    # Track which dashboard user issued each request (nullable for legacy / unauthenticated rows).
+    op.add_column(
+        "request_logs",
+        sa.Column("user_id", sa.Uuid(), nullable=True),
+    )
+    op.create_foreign_key(
+        "fk_request_logs_user_id",
+        "request_logs",
+        "users",
+        ["user_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+    op.create_index("ix_request_logs_user_id", "request_logs", ["user_id"])
+
 
 def downgrade() -> None:
+    op.drop_index("ix_request_logs_user_id", table_name="request_logs")
+    op.drop_constraint("fk_request_logs_user_id", "request_logs", type_="foreignkey")
+    op.drop_column("request_logs", "user_id")
+
     op.drop_index("ix_request_logs_created_at", table_name="request_logs")
     op.create_index("ix_request_logs_created_at", "request_logs", ["created_at"])
