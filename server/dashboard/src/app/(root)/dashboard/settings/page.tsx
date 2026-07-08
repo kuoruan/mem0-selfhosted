@@ -36,15 +36,16 @@ export default function SettingsPage() {
   }, [user]);
 
   const profileDirty =
-    user !== null && (name !== user.name || email !== user.email);
-  const profileValid = name.trim().length > 0 && email.trim().length > 0;
+    user !== null &&
+    (name !== user.name || (!isOidcUser && email !== user.email));
+  const profileValid = name.trim().length > 0 && (isOidcUser || email.trim().length > 0);
 
   const handleSaveProfile = async () => {
     setSavingProfile(true);
     try {
       await api.patch(AUTH_ENDPOINTS.ME, {
         name: name.trim(),
-        email: email.trim(),
+        ...(!isOidcUser && { email: email.trim() }),
       });
       await refreshUser();
       toast({ title: "Profile updated", variant: "success" });
@@ -118,7 +119,13 @@ export default function SettingsPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                disabled={isOidcUser}
               />
+              {isOidcUser && (
+                <p className="text-xs text-onSurface-default-tertiary">
+                  Email is managed by your identity provider.
+                </p>
+              )}
             </div>
           </div>
           <Button

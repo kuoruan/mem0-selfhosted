@@ -193,6 +193,11 @@ def update_me(
         user.name = body.name.strip()
 
     if body.email is not None and body.email != user.email:
+        if user.password_hash is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Email is managed by your identity provider and cannot be changed here.",
+            )
         collision = db.scalar(select(User).where(User.email == body.email, User.id != user.id))
         if collision is not None:
             raise HTTPException(status_code=409, detail="Email is already in use.")

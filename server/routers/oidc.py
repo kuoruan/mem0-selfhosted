@@ -202,6 +202,32 @@ def _find_or_create_user(
         if not user:
             logger.error("OIDC link exists but user %s not found", oidc_link.user_id)
             raise OidcCallbackError("user_not_found", "Linked user account not found")
+
+        # Sync email for pure-OIDC users (no local password). The IdP is the
+        # sole authority for email; mem0 does not allow these users to edit
+        # their email via PATCH /auth/me.
+        if user.password_hash is None:
+            claims_email = claims.get("email")
+            if (
+                claims_email
+                and is_truthy(claims.get("email_verified"))
+                and user.email != claims_email
+            ):
+                collision = db.scalar(
+                    select(User).where(func.lower(User.email) == claims_email.lower(), User.id != user.id)
+                )
+                if not collision:
+                    logger.info("Syncing email for OIDC user %s: %s → %s", user.id, user.email, claims_email)
+                    user.email = claims_email
+                else:
+                    logger.warning(
+                        "OIDC user %s email %s now in use by user %s, keeping current email %s",
+                        user.id,
+                        claims_email,
+                        collision.id,
+                        user.email,
+                    )
+
         return user
 
     # New OIDC identity — link to an existing local account ONLY when that
