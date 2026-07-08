@@ -202,35 +202,6 @@ def _find_or_create_user(
         if not user:
             logger.error("OIDC link exists but user %s not found", oidc_link.user_id)
             raise OidcCallbackError("user_not_found", "Linked user account not found")
-
-        # Sync real email: when the IdP returns a verified email that differs,
-        # update the local account so it stays aligned with the IdP and any
-        # stale address is released. A recycled IdP email can otherwise be
-        # abused via auto-link to shadow this account.
-        claims_email = claims.get("email")
-        if (
-            claims_email
-            and is_truthy(claims.get("email_verified"))
-            and user.email != claims_email
-        ):
-            collision = db.scalar(
-                select(User).where(func.lower(User.email) == claims_email.lower(), User.id != user.id)
-            )
-            if not collision:
-                logger.info("Syncing email for user %s: %s → %s", user.id, user.email, claims_email)
-                user.email = claims_email
-            else:
-                # Verified email is owned by another local account; fall back
-                # to a placeholder so the stale address is released and cannot
-                # be exploited via auto-link if the IdP recycles it.
-                placeholder = _make_placeholder_email(idp_sub, provider)
-                logger.warning(
-                    "Email %s for user %s already owned by user %s; reverting to placeholder",
-                    claims_email,
-                    user.id,
-                    collision.id,
-                )
-                user.email = placeholder
         return user
 
     # New OIDC identity — link to an existing local account ONLY when that
