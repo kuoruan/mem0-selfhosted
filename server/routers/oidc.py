@@ -9,6 +9,7 @@ All routes are unauthenticated (public).
 """
 
 import asyncio
+import hashlib
 import logging
 import os
 import secrets
@@ -143,12 +144,11 @@ def _make_placeholder_email(idp_sub: str, provider: str) -> str:
 
     Used when the IdP's real email can't be trusted onto the local account —
     either because it is unverified, or because another local account already
-    owns it. The random suffix ensures successive calls produce distinct
-    addresses so the ``users.email`` unique index is never violated, even when
-    a stale address is released after an IdP recycles it.
+    owns it. Uses a SHA-256 digest of ``idp_sub`` (16 hex chars) to keep the
+    local part short and avoid exposing the raw sub.
     """
-    clean_sub = "".join(c if c.isalnum() or c in ".-_" else "_" for c in idp_sub[:64])
-    return f"{clean_sub}-{secrets.token_hex(4)}@oidc.{provider}"
+    digest = hashlib.sha256(idp_sub.encode()).hexdigest()[:8]
+    return f"{digest}-{secrets.token_hex(2)}@oidc.{provider}"
 
 
 def _callback_error_redirect(error: str, description: str = "") -> RedirectResponse:
