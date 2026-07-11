@@ -19,32 +19,54 @@ KNOWN_CLIENTS: dict[str, tuple[str, ...]] = {
     # --- AI coding agents & CLI tools ---
     "claude-code": ("claude-code", "claudecode", "claude-cli"),  # Anthropic – terminal agent
     "codex": ("codex",),  # OpenAI – coding agent
+    "opencode": ("opencode",),  # sst – open-source terminal agent
+    "gemini-cli": ("gemini-cli",),  # Google – terminal agent
+    "grok-cli": ("grok-cli", "grokcli"),  # xAI – terminal agent
     "aider": ("aider",),  # open-source CLI agent
+    "goose": ("goose",),  # Block – open-source agent
+    "warp": ("warp",),  # Warp Inc. – AI terminal agent
+    "amp": ("ampcode", "amp-cli", "sourcegraph-amp"),  # Sourcegraph – Amp agent
+    "openhands": ("openhands", "opendevin"),  # OS – autonomous agent (formerly OpenDevin)
     "devin": ("devin",),  # Cognition – autonomous agent
     # --- AI IDEs & editors ---
     "cursor": ("cursor",),  # Cursor Inc. – agent-first IDE
     "windsurf": ("windsurf", "codeium"),  # Codeium – AI IDE
+    "kiro": ("kiro",),  # AWS – agentic IDE
     "trae": ("trae",),  # ByteDance – AI IDE
     "zed": ("zed",),  # Zed Industries – fast editor with AI
+    "xcode-ai": ("xcode", "swift-assist"),  # Apple – Xcode AI Assistant / Swift Assist
+    "antigravity": ("antigravity",),  # Google – agentic IDE (Gemini)
     "replit": ("replit",),  # Replit – cloud IDE + agent
+    "bolt": ("bolt", "bolt.new", "boltnew"),  # StackBlitz – in-browser app builder
+    "lovable": ("lovable",),  # Lovable – AI app builder
+    "v0": ("v0.dev", "v0dev"),  # Vercel – UI/app generator
+    "idx": ("project-idx", "projectidx"),  # Google – cloud IDE (Project IDX)
     # --- IDE extensions & plugins ---
     "copilot": ("copilot", "github-copilot"),  # GitHub/Microsoft – IDE assistant
     "cline": ("cline",),  # open-source VS Code agent
     "continue": ("continue",),  # Continue – open-source autocomplete
     "roo-code": ("roo-code", "roo-code-"),  # Roo Code – VS Code extension
+    "kilo-code": ("kilo-code",),  # Kilo Code – VS Code extension / CLI
     "cody": ("cody", "sourcegraph"),  # Sourcegraph – code intelligence
     "augment": ("augment",),  # Augment Code – coding assistant
-    "amazon-q": ("amazon-q", "amazonq"),  # AWS – IDE assistant
+    "amazon-q": ("amazon-q", "amazonq", "codewhisperer"),  # AWS – IDE assistant (formerly CodeWhisperer)
+    "gemini-code-assist": ("gemini-code-assist", "duet-ai", "duetai"),  # Google – IDE assistant (formerly Duet AI)
     "tabnine": ("tabnine",),  # Tabnine – code completion
-    "supermaven": ("supermaven",),  # Supermaven – fast completion
     "pearai": ("pearai",),  # PearAI – open-source AI editor
     "jetbrains-ai": ("junie", "jetbrains-ai"),  # JetBrains – AI assistant
+    "deepcode": ("deepcode", "snyk-code", "snykcode"),  # Snyk – AI code analysis (formerly DeepCode)
     # --- China-based AI coding tools ---
     "lingma": ("lingma", "tongyi"),  # Alibaba – 通义灵码
+    "qwen-code": ("qwen-code",),  # Alibaba – Qwen Code CLI
+    "qoder": ("qoder",),  # Alibaba (AIDC) – Qoder 代理编程平台
     "comate": ("comate",),  # Baidu – 文心快码
     "codebuddy": ("codebuddy",),  # Tencent – CodeBuddy
     "codegeex": ("codegeex",),  # Zhipu AI – CodeGeeX
+    "zcode": ("zcode",),  # Z.ai (Zhipu) – GLM coding agent
     "marscode": ("marscode",),  # ByteDance – 豆包 MarsCode
+    "iflycode": ("iflycode", "iflytek"),  # iFlytek – 讯飞智码
+    "yucoder": ("yucoder", "youdao"),  # NetEase Youdao – 网易有道 YuCoder
+    "kimi-cli": ("kimi-cli", "kimi-code"),  # Moonshot – Kimi Code CLI
 }
 
 
