@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Sheet,
@@ -27,24 +26,24 @@ import type {
   Entity,
   EntityPermission,
   EntityPermissionLevel,
-  User,
 } from "@/types/api";
+import UserSelect from "@/components/shared/user-select";
 
 const PERMISSION_LEVELS: EntityPermissionLevel[] = ["read", "write", "admin"];
+
+interface ManagePermissionsSheetProps {
+  entity: Entity | null;
+  open: boolean;
+  onClose: () => void;
+  isAdmin: boolean;
+}
 
 export default function ManagePermissionsSheet({
   entity,
   open,
   onClose,
-  users,
   isAdmin,
-}: {
-  entity: Entity | null;
-  open: boolean;
-  onClose: () => void;
-  users: User[];
-  isAdmin: boolean;
-}) {
+}: ManagePermissionsSheetProps) {
   const [permissions, setPermissions] = useState<EntityPermission[]>([]);
   const [loading, setLoading] = useState(false);
   const [grantUserId, setGrantUserId] = useState("");
@@ -143,27 +142,12 @@ export default function ManagePermissionsSheet({
           <div className="space-y-2">
             <Label className="text-xs">Grant access</Label>
             <div className="flex gap-2">
-              {isAdmin ? (
-                <Select value={grantUserId} onValueChange={setGrantUserId}>
-                  <SelectTrigger className="flex-1">
-                    <SelectValue placeholder="Select a user" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {users.map((u) => (
-                      <SelectItem key={u.id} value={u.id}>
-                        {u.name} ({u.email})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  placeholder="User UUID"
-                  value={grantUserId}
-                  onChange={(e) => setGrantUserId(e.target.value)}
-                  className="flex-1"
-                />
-              )}
+              <UserSelect
+                value={grantUserId}
+                onChange={setGrantUserId}
+                isAdmin={isAdmin}
+                className="flex-1"
+              />
               <Select
                 value={grantLevel}
                 onValueChange={(v) => setGrantLevel(v as EntityPermissionLevel)}
