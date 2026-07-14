@@ -1,6 +1,7 @@
 """General-purpose helper utilities for the mem0 server."""
 
 import re
+from typing import Any
 from urllib.parse import urlparse
 
 
@@ -41,3 +42,25 @@ def sanitize_for_log(value: str) -> str:
     path segment) are replaced with ``_`` before reaching a log line.
     """
     return re.sub(r"[^A-Za-z0-9_.-]", "_", value)
+
+
+def normalize_results(raw: Any) -> list[Any]:
+    """Normalise SDK / vector-store output to a plain ``list``.
+
+    Accepts ``{"results": [...]}``, a bare ``list``, or anything else
+    (returned as an empty list).
+    """
+    if isinstance(raw, dict) and "results" in raw and isinstance(raw["results"], list):
+        return raw["results"]
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
+def unwrap_result(raw: Any) -> Any:
+    """Unwrap a single result from ``mem.get()``: the first element if *raw* is a
+    non-empty list, otherwise *raw* itself.
+    """
+    if isinstance(raw, list) and raw:
+        return raw[0]
+    return raw

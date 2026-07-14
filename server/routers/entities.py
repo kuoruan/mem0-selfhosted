@@ -1,47 +1,523 @@
+import logging
+import uuid
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from auth import require_admin, verify_auth
-from compat.entities import aggregate_entity_buckets, iter_payloads
+from auth import is_bootstrap_admin, verify_auth
+from db import get_db
+from entity import EntityType, is_scoped_entity_type
+from entity_permissions import (
+    check_entity_delete_permission,
+    check_entity_permission,
+    collect_user_children,
+    count_memories_for_entity,
+    create_app_entity,
+    ensure_entity_owner,
+    entity_filter_params,
+    entity_parent_user_id,
+    get_entity_or_none,
+    get_visible_entities,
+    grant_entity_permission,
+    list_entity_permissions,
+    list_memory_ids_for_params,
+    resolve_operator,
+    revoke_entity_permission,
+    transfer_entity_owner,
+    validate_bulk_admin_operation,
+)
 from errors import upstream_error
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from memory_lock import run_memory_write
+from models import Entity, EntityPermission, User
 from pydantic import BaseModel
-from schemas import MessageResponse
+from schemas import MessageResponse, UserInfo
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/entities", tags=["entities"])
 
-SCAN_LIMIT = 10_000
+logger = logging.getLogger(__name__)
 
-EntityType = Literal["user", "agent", "app", "run"]
-TYPE_TO_FIELD: dict[EntityType, str] = {"user": "user_id", "agent": "agent_id", "app": "app_id", "run": "run_id"}
+PermissionType = Literal["read", "write", "admin"]
 
 
-class Entity(BaseModel):
+# --------------------------------------------------------------------------- #
+# Response / input models
+# --------------------------------------------------------------------------- #
+class ParentEntityInfo(BaseModel):
+    """Minimal parent entity reference for agent/run entities."""
+
     id: str
     type: EntityType
-    total_memories: int
+    name: Optional[str] = None
+
+
+class EntityResponse(BaseModel):
+    """Entity summary. ``id`` is the external identifier; ``name`` is the display name."""
+
+    id: str
+    type: EntityType
+    name: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    owner: Optional[UserInfo] = None
+    parent: Optional[ParentEntityInfo] = None
+    is_owner: bool = False
 
 
-@router.get("", response_model=list[Entity])
-def list_entities(_auth=Depends(verify_auth)):
-    buckets = aggregate_entity_buckets(iter_payloads(limit=SCAN_LIMIT), TYPE_TO_FIELD)
+class EntityPermissionResponse(BaseModel):
+    id: str
+    user: UserInfo
+    permission: PermissionType
+    granted_by: Optional[UserInfo] = None
+    created_at: datetime
+
+
+class CreateEntityInput(BaseModel):
+    type: EntityType
+    id: str
+    owner_user_id: Optional[str] = None  # admin only, for app creation
+
+
+class GrantPermissionInput(BaseModel):
+    user_id: str
+    permission: PermissionType
+
+
+class TransferOwnerInput(BaseModel):
+    user_id: str
+
+
+def _user_info(user_id: uuid.UUID, db: Session) -> UserInfo:
+    user = db.get(User, user_id)
+    if user is not None:
+        return UserInfo(id=str(user.id), name=user.name, email=user.email)
+    return UserInfo(id=str(user_id), name="Unknown", email="")
+
+
+def _user_info_batch(user_ids: set[uuid.UUID], db: Session) -> dict[uuid.UUID, UserInfo]:
+    """Batch-fetch users for populating permission/entity responses."""
+    if not user_ids:
+        return {}
+    users = {
+        u.id: UserInfo(id=str(u.id), name=u.name, email=u.email)
+        for u in db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()
+    }
+    for uid in user_ids:
+        if uid not in users:
+            users[uid] = UserInfo(id=str(uid), name="Unknown", email="")
+    return users
+
+
+def _entity_to_response(entity: Entity, operator_id: uuid.UUID, db: Session) -> EntityResponse:
+    parent: Optional[ParentEntityInfo] = None
+    if entity.parent_pk is not None:
+        parent_entity = db.get(Entity, entity.parent_pk)
+        if parent_entity is not None:
+            parent = ParentEntityInfo(
+                id=parent_entity.id,
+                type=parent_entity.type,
+                name=parent_entity.name,
+            )
+
+    owner: Optional[UserInfo] = None
+    if entity.owner_user_id is not None:
+        owner = _user_info(entity.owner_user_id, db)
+
+    return EntityResponse(
+        id=entity.id,
+        type=entity.type,
+        name=entity.name,
+        created_at=entity.created_at,
+        updated_at=entity.updated_at,
+        owner=owner,
+        parent=parent,
+        is_owner=entity.owner_user_id == operator_id,
+    )
+
+
+def _entities_to_response_batch(
+    entities: list[Entity], operator_id: uuid.UUID, db: Session
+) -> list[EntityResponse]:
+    """Batch-resolve parent entities and owner users in one query each."""
+    # Collect parent PKs and owner user IDs
+    parent_pks: set[uuid.UUID] = set()
+    owner_ids: set[uuid.UUID] = set()
+    for e in entities:
+        if e.parent_pk is not None:
+            parent_pks.add(e.parent_pk)
+        if e.owner_user_id is not None:
+            owner_ids.add(e.owner_user_id)
+
+    # Batch-fetch parents
+    parents: dict[uuid.UUID, Entity] = {}
+    if parent_pks:
+        parents = {
+            p.pk: p
+            for p in db.execute(
+                select(Entity).where(Entity.pk.in_(parent_pks))
+            ).scalars().all()
+        }
+
+    # Batch-fetch owners
+    owners = _user_info_batch(owner_ids, db)
+
+    # Build responses
+    result: list[EntityResponse] = []
+    for entity in entities:
+        parent: Optional[ParentEntityInfo] = None
+        if entity.parent_pk is not None:
+            parent_entity = parents.get(entity.parent_pk)
+            if parent_entity is not None:
+                parent = ParentEntityInfo(
+                    id=parent_entity.id,
+                    type=parent_entity.type,
+                    name=parent_entity.name,
+                )
+        result.append(EntityResponse(
+            id=entity.id,
+            type=entity.type,
+            name=entity.name,
+            created_at=entity.created_at,
+            updated_at=entity.updated_at,
+            owner=owners.get(entity.owner_user_id) if entity.owner_user_id else None,
+            parent=parent,
+            is_owner=entity.owner_user_id == operator_id,
+        ))
+    return result
+
+
+def _permission_to_response(perm: EntityPermission, db: Session) -> EntityPermissionResponse:
+    granted_by: Optional[UserInfo] = None
+    if perm.granted_by is not None:
+        granted_by = _user_info(perm.granted_by, db)
+
+    return EntityPermissionResponse(
+        id=str(perm.id),
+        user=_user_info(perm.user_id, db),
+        permission=perm.permission,
+        granted_by=granted_by,
+        created_at=perm.created_at,
+    )
+
+
+def _permissions_to_response_batch(
+    perms: list[EntityPermission], db: Session
+) -> list[EntityPermissionResponse]:
+    """Batch-resolve all user references in one query instead of N+1."""
+    user_ids: set[uuid.UUID] = set()
+    for p in perms:
+        if p.user_id is not None:
+            user_ids.add(p.user_id)
+        if p.granted_by is not None:
+            user_ids.add(p.granted_by)
+    users = _user_info_batch(user_ids, db)
 
     return [
-        Entity(id=entity_id, type=entity_type, **data)
-        for (entity_type, entity_id), data in sorted(buckets.items(), key=lambda item: (item[0][0], item[0][1]))
+        EntityPermissionResponse(
+            id=str(p.id),
+            user=users[p.user_id],
+            permission=p.permission,
+            granted_by=users.get(p.granted_by) if p.granted_by else None,
+            created_at=p.created_at,
+        )
+        for p in perms
     ]
+
+def _parse_uuid(value: str, *, label: str = "UUID") -> uuid.UUID:
+    """Parse a UUID string, raising 400 on invalid input."""
+    try:
+        return uuid.UUID(value)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail=f"Invalid {label}: '{value}'.")
+
+
+# --------------------------------------------------------------------------- #
+# List / create
+# --------------------------------------------------------------------------- #
+@router.get("", response_model=list[EntityResponse])
+def list_entities(
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, is_admin = resolve_operator(request, auth, db)
+    entities = get_visible_entities(operator.id, db, bypass=is_admin)
+    return _entities_to_response_batch(entities, operator.id, db)
+
+
+@router.post("", response_model=EntityResponse, status_code=201)
+def create_entity(
+    body: CreateEntityInput,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, is_admin = resolve_operator(request, auth, db)
+
+    if is_scoped_entity_type(body.type):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Entity type '{body.type}' cannot be manually created. It is auto-created on first write.",
+        )
+
+    # user: UI-created, entity_id cannot contain ':'
+    if body.type == "user":
+        if ":" in body.id:
+            raise HTTPException(
+                status_code=400,
+                detail="User entity_id cannot contain ':'. Sub-namespaces are created automatically on write.",
+            )
+        if is_bootstrap_admin(operator.id):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot create a user entity without a real owner.",
+            )
+        entity = ensure_entity_owner(body.type, body.id, operator.id, db, bypass=is_admin)
+        if entity.owner_user_id != operator.id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Entity '{body.type}/{body.id}' is already owned by another user.",
+            )
+        db.commit()
+        return _entity_to_response(entity, operator.id, db)
+
+    # app: admin only, must specify owner_user_id
+    if body.type == "app":
+        if not is_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Only administrators can create app entities.",
+            )
+        if body.owner_user_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="owner_user_id is required when creating an app entity.",
+            )
+        owner_id = _parse_uuid(body.owner_user_id, label="owner_user_id")
+        entity = create_app_entity(body.id, owner_id, db)
+        return _entity_to_response(entity, operator.id, db)
+
+    raise HTTPException(status_code=400, detail=f"Unknown entity type: '{body.type}'.")
+
+
+@router.get("/{entity_type}/{entity_id}/count", summary="Count entity memories in real-time")
+def count_entity_memories(
+    entity_type: EntityType,
+    entity_id: str,
+    request: Request,
+    namespace: str | None = None,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    """Return the current memory count for this entity by scanning the vector store.
+
+    For agent/run entities (unique per parent user), ``namespace`` scopes the
+    count to a specific user namespace (e.g. ``"<uuid>"`` or ``"<uuid>:laptop"``).
+    Non-admins are always scoped to their own namespace; admins may pass
+    ``namespace`` to count another user's entity. Bootstrap admin without
+    ``namespace`` returns a global count across all users.
+    """
+    operator, is_admin = resolve_operator(request, auth, db)
+
+    # Bootstrap admin without namespace: global count across all users.
+    if is_bootstrap_admin(operator.id) and not namespace:
+        count = count_memories_for_entity(entity_type, entity_id, parent_user_id=None)
+        return {"total_memories": count}
+
+    # Resolve the parent entity id for scoped agent/run lookup.
+    if is_admin and namespace is not None:
+        parent_entity_id = namespace
+    else:
+        parent_entity_id = namespace or str(operator.id)
+
+    entity = get_entity_or_none(
+        entity_type, entity_id, db,
+        parent_entity_id=parent_entity_id,
+    )
+    if entity is None:
+        raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
+    # For agent/run: resolve the parent namespace to scope both the permission
+    # check and the vector store query (agent/run are unique per parent, not globally).
+    scoped_namespace = entity_parent_user_id(entity, db)
+    if not check_entity_permission(
+        entity_type, entity_id, operator.id, "read", db,
+        bypass=is_admin, parent_entity_id=scoped_namespace,
+    ):
+        raise HTTPException(status_code=403, detail="You do not have read permission for this entity.")
+    count = count_memories_for_entity(entity_type, entity_id, parent_user_id=scoped_namespace)
+    return {"total_memories": count}
+
+
+@router.get("/{entity_type}/{entity_id}/permissions", response_model=list[EntityPermissionResponse])
+def list_permissions(
+    entity_type: EntityType,
+    entity_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, is_admin = resolve_operator(request, auth, db)
+    perms = list_entity_permissions(
+        entity_type,
+        entity_id,
+        operator_id=operator.id,
+        bypass=is_admin,
+        db=db,
+    )
+    return _permissions_to_response_batch(perms, db)
+
+
+@router.post("/{entity_type}/{entity_id}/permissions", response_model=EntityPermissionResponse)
+def grant_permission(
+    entity_type: EntityType,
+    entity_id: str,
+    body: GrantPermissionInput,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, is_admin = resolve_operator(request, auth, db)
+    grantee_id = _parse_uuid(body.user_id, label="user_id")
+    perm = grant_entity_permission(
+        entity_type,
+        entity_id,
+        grantee_id,
+        body.permission,
+        operator_id=operator.id,
+        bypass=is_admin,
+        db=db,
+    )
+    return _permission_to_response(perm, db)
+
+
+@router.delete("/{entity_type}/{entity_id}/permissions/{user_id}", response_model=MessageResponse)
+def revoke_permission(
+    entity_type: EntityType,
+    entity_id: str,
+    user_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, is_admin = resolve_operator(request, auth, db)
+    grantee_id = _parse_uuid(user_id, label="user_id")
+    revoke_entity_permission(
+        entity_type,
+        entity_id,
+        grantee_id,
+        operator_id=operator.id,
+        bypass=is_admin,
+        db=db,
+    )
+    return MessageResponse(message="Permission revoked")
+
+
+# --------------------------------------------------------------------------- #
+# Transfer / delete
+# --------------------------------------------------------------------------- #
+@router.post("/{entity_type}/{entity_id}/transfer-owner", response_model=EntityResponse)
+def transfer_owner_endpoint(
+    entity_type: EntityType,
+    entity_id: str,
+    body: TransferOwnerInput,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, is_admin = resolve_operator(request, auth, db)
+    new_owner_id = _parse_uuid(body.user_id, label="user_id")
+    entity = transfer_entity_owner(
+        entity_type,
+        entity_id,
+        new_owner_id,
+        operator_id=operator.id,
+        bypass=is_admin,
+        db=db,
+    )
+    return _entity_to_response(entity, operator.id, db)
 
 
 @router.delete("/{entity_type}/{entity_id}", response_model=MessageResponse)
-def delete_entity(entity_type: EntityType, entity_id: str, _auth=Depends(require_admin)):
+def delete_entity(
+    entity_type: EntityType,
+    entity_id: str,
+    request: Request,
+    namespace: str | None = None,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    """Delete an entity namespace: prescan matched memories, verify owner permission,
+    clear the vector store, then drop the DB row (cascades entity_permissions).
+
+    For agent/run entities (unique per parent user), ``namespace`` scopes the
+    lookup to a specific user namespace (e.g. ``"<uuid>"`` or ``"<uuid>:laptop"``).
+    Non-admins are always scoped to their own namespace; admins may pass
+    ``namespace`` to delete another user's entity. Bootstrap admin without
+    ``namespace`` matches any entity of that type/name.
+    """
+    operator, is_admin = resolve_operator(request, auth, db)
+
+    if is_admin and namespace is not None:
+        parent_entity_id = namespace
+    elif is_bootstrap_admin(operator.id):
+        parent_entity_id = namespace  # None → unscoped, or explicit scope
+    else:
+        parent_entity_id = namespace or str(operator.id)
+
+    entity = check_entity_delete_permission(
+        entity_type, entity_id, operator.id, is_admin, db,
+        parent_entity_id=parent_entity_id,
+    )
+
+    # For user entities: guard against child namespaces, cascade-delete for admins.
+    if entity_type == "user":
+        children = collect_user_children(entity, db)
+        if children and not is_admin:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete 'user/{entity_id}' because it has sub-namespaces or agent/run entities. Delete them first.",
+            )
+        # Admin: cascade-delete child memories + entity rows. agent/run children
+        # must be scoped by their parent user_id so a same-named agent/run owned
+        # by another user is not swept into the deletion.
+        for child in children:
+            child_params: dict[str, Any] = entity_filter_params(child, db)
+            try:
+                run_memory_write(
+                    lambda m, dp=child_params: m.delete_all(**dp),
+                    child_params,
+                )
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("delete_entity: child vector-store delete failed for %s/%s", child.type, child.id)
+                raise upstream_error()
+            db.delete(child)
+
+    # For agent/run: scope the vector-store scan by parent user_id to avoid
+    # matching other users' memories with the same agent/run id.
+    delete_params: dict[str, Any] = entity_filter_params(entity, db)
+
+    def _delete_all(memory):
+        memory_ids = list_memory_ids_for_params(delete_params)
+        validate_bulk_admin_operation(memory_ids, operator.id, db, bypass=is_admin)
+        memory.delete_all(**delete_params)
+
     try:
-        run_memory_write(
-            lambda memory: memory.delete_all(**{TYPE_TO_FIELD[entity_type]: entity_id}),
-            {TYPE_TO_FIELD[entity_type]: entity_id},
-        )
+        run_memory_write(_delete_all, delete_params)
+    except HTTPException:
+        raise
     except Exception:
+        logger.exception("delete_entity: vector-store delete failed for %s/%s", entity_type, entity_id)
         raise upstream_error()
+
+    # NOTE: vector-store deletions above are irreversible. If db.commit() fails
+    # (e.g. connection lost), memories are already gone but entity rows survive
+    # in the DB — the namespace is occupied without data. The scope lock
+    # acquired by run_memory_write prevents concurrent writes during the
+    # deletion, but the two storage backends (vector store + RDB) are not
+    # transactional with each other.
+    db.delete(entity)
+    db.commit()
     return MessageResponse(message="Entity deleted")

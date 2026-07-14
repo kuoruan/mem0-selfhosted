@@ -261,6 +261,43 @@ _BOOTSTRAP_ADMIN = User(
 )
 
 
+def is_bootstrap_admin(user_id: uuid.UUID | User | None) -> bool:
+    """True when the operator is the admin_api_key bypass (not a real users-table row).
+
+    Accepts either a full :class:`User` or just its ``id`` so callers that only
+    have an ``operator_id`` (e.g. ``grant_entity_permission``) can reuse the same
+    check instead of re-deriving ``operator_id == _BOOTSTRAP_ADMIN.id`` inline.
+    """
+    if user_id is None:
+        return False
+    uid = user_id.id if isinstance(user_id, User) else user_id
+    return uid == _BOOTSTRAP_ADMIN.id
+
+
+def determine_user(
+    user: User | None,
+    auth_type: str,
+    db: Session,
+) -> tuple[User, bool] | None:
+    """Determine the acting user and whether they have the admin bypass.
+
+    Returns ``(user, is_admin)`` or ``None`` (callers raise the appropriate
+    exception — HTTPException for FastAPI, ValueError for MCP). Normalizes the
+    three auth states (authenticated real user / admin_api_key bypass /
+    AUTH_DISABLED default user) into one uniform principal.
+    """
+    if user is not None:
+        return user, user.role == "admin"
+    if auth_type == "admin_api_key":
+        return _BOOTSTRAP_ADMIN, True
+    if auth_type == "disabled":
+        default_user = _get_default_user(db)
+        if default_user is None:
+            return None
+        return default_user, default_user.role == "admin"
+    return None
+
+
 async def require_admin(
     request: Request,
     user: User | None = Depends(verify_auth),

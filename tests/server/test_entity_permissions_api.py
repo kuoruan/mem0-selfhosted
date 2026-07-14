@@ -1,0 +1,198 @@
+"""Integration tests for the entity-permission bootstrap (admin_api_key) path.
+
+Supplements ``test_entity_permissions.py`` (which unit-tests the multi-user core
+logic with SQLite) with REST-level coverage of the ``admin_api_key`` identity:
+unclaimed writes, the unclaimed-not-listed-until-recount rule, recount surfacing
+``owner_id=NULL`` rows, the bootstrap-cannot-create-entity guard, and admin
+bypass on read/search.
+
+The mem0 Memory instance is mocked; the relational DB (entities table) is the
+real server DB (Postgres in the Docker test env). Multi-user (JWT) scenarios are
+intentionally out of scope here — they are covered by the SQLite unit test, and
+the shared ``tests/server/conftest.py`` leaves ``auth`` as a MagicMock (suitable
+for the admin_api_key path this file exercises, but not for JWT auth).
+
+Run in the server Docker env: ``pytest tests/server/test_entity_permissions_api.py``.
+"""
+
+import importlib
+import os
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+pytest.importorskip("fastapi", reason="fastapi not installed")
+
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import delete  # noqa: E402
+
+from db import SessionLocal  # noqa: E402
+from models import Entity, EntityPermission, User  # noqa: E402
+
+
+class _PayloadRow:
+    """Vector-store row stand-in exposing ``.payload`` for iter_payloads/recount."""
+
+    def __init__(self, payload):
+        self.id = payload.get("data", "row")
+        self.payload = payload
+
+
+API_KEY = "test-secret-key-12345"
+
+
+@pytest.fixture
+def _mock_memory():
+    """MagicMock Memory instance with realistic return values.
+
+    ``vector_store.list`` returns rows carrying payloads so ``POST /entities/recount``
+    surfaces the unclaimed namespace.
+    """
+    mock = MagicMock()
+    mock.get.return_value = {
+        "id": "mem-1",
+        "memory": "test memory",
+        "user_id": "alice",
+        "agent_id": None,
+        "app_id": None,
+        "run_id": None,
+    }
+    mock.get_all.return_value = [{"id": "mem-1", "memory": "test memory", "user_id": "alice"}]
+    mock.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "test"}]}
+    mock.search.return_value = [{"id": "mem-1", "memory": "test memory", "score": 0.9}]
+    mock.update.return_value = {"message": "Memory updated"}
+    mock.delete.return_value = None
+    mock.delete_all.return_value = {"message": "Memories deleted successfully!"}
+    mock.vector_store.list.return_value = [_PayloadRow({"user_id": "alice", "data": "test"})]
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "fake-key"}):
+        with patch("mem0.Memory.from_config", return_value=mock):
+            yield mock
+
+
+def _load_app(env_overrides):
+    """Reload server/main.py with the given env and return the FastAPI app."""
+    import main as server_main
+
+    with patch.dict(os.environ, env_overrides, clear=False):
+        importlib.reload(server_main)
+    return server_main.app
+
+
+def _clean_entities():
+    """Delete entity_permissions + entities rows (isolation on the shared Postgres)."""
+    session = SessionLocal()
+    try:
+        session.execute(delete(EntityPermission))
+        session.execute(delete(Entity))
+        session.commit()
+    finally:
+        session.close()
+
+
+class TestBootstrapEntityPermissions:
+    """admin_api_key (bootstrap) path: unclaimed writes, recount, admin bypass."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _mock_memory):
+        _clean_entities()
+        self.mock = _mock_memory
+        self.app = _load_app({"ADMIN_API_KEY": API_KEY, "JWT_SECRET": "test-secret"})
+        self.client = TestClient(self.app)
+        yield
+        _clean_entities()
+
+    @property
+    def _auth(self):
+        return {"X-API-Key": API_KEY}
+
+    def test_bootstrap_memory_mutation_forbidden(self):
+        """admin_api_key cannot author or mutate memories (governance + read-only).
+
+        add / update / delete / delete_all all 403 at the endpoint gate, before
+        any vector-store or ownership work.
+        """
+        # add
+        resp = self.client.post(
+            "/memories",
+            json={
+                "messages": [{"role": "user", "content": "I like pizza"}],
+                "user_id": "alice",
+            },
+            headers=self._auth,
+        )
+        assert resp.status_code == 403, resp.text
+        assert "cannot author or mutate memories" in resp.json()["detail"].lower()
+        # update
+        resp = self.client.put("/memories/mem-1", json={"text": "x"}, headers=self._auth)
+        assert resp.status_code == 403, resp.text
+        # delete single
+        resp = self.client.delete("/memories/mem-1", headers=self._auth)
+        assert resp.status_code == 403, resp.text
+        # delete_all
+        resp = self.client.delete("/memories?user_id=alice", headers=self._auth)
+        assert resp.status_code == 403, resp.text
+
+    def test_bootstrap_cannot_create_entity(self):
+        """admin_api_key has no real identity to own with -> POST /entities 400."""
+        resp = self.client.post(
+            "/entities",
+            json={"type": "user", "id": "alice"},
+            headers=self._auth,
+        )
+        assert resp.status_code == 400, resp.text
+        assert "real owner" in resp.json()["detail"].lower()
+
+    def test_bootstrap_can_create_app(self):
+        """admin_api_key can create an app entity owned by a real user (governance).
+
+        The universal bootstrap-400 on POST /entities was relaxed to type-aware:
+        bootstrap can create `app` (with a real owner_user_id) but not `user`.
+        """
+        session = SessionLocal()
+        session.execute(delete(User).where(User.email == "app-owner@test.local"))
+        owner = User(name="app-owner", email="app-owner@test.local", role="member")
+        session.add(owner)
+        session.commit()
+        session.refresh(owner)
+        owner_id = str(owner.id)
+        session.close()
+
+        try:
+            resp = self.client.post(
+                "/entities",
+                json={"type": "app", "id": "myapp", "owner_user_id": owner_id},
+                headers=self._auth,
+            )
+            assert resp.status_code == 201, resp.text
+            body = resp.json()
+            assert body["type"] == "app"
+            assert body["id"] == "myapp"
+            assert body["owner"]["id"] == owner_id
+        finally:
+            # entities are wiped by the next _setup, but the user is not — clean it.
+            session = SessionLocal()
+            try:
+                session.execute(delete(Entity).where(Entity.id == "myapp", Entity.type == "app"))
+                session.execute(delete(User).where(User.email == "app-owner@test.local"))
+                session.commit()
+            finally:
+                session.close()
+
+    def test_bootstrap_admin_bypass_get_memory(self):
+        """admin_api_key can read any memory (admin bypass), incl. unclaimed scopes."""
+        resp = self.client.get("/memories/mem-1", headers=self._auth)
+        assert resp.status_code == 200, resp.text
+
+    def test_bootstrap_admin_bypass_search(self):
+        """admin_api_key search bypasses query permission (admin)."""
+        resp = self.client.post(
+            "/search",
+            json={"query": "pizza", "user_id": "alice"},
+            headers=self._auth,
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_delete_nonexistent_entity_is_404(self):
+        """DELETE /entities on a never-claimed namespace returns 404 (not 403/silent 200)."""
+        resp = self.client.delete("/entities/user/never-claimed", headers=self._auth)
+        assert resp.status_code == 404, resp.text

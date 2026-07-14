@@ -42,6 +42,7 @@ sys.modules.setdefault("auth", MagicMock())
 # leaves the server_state alias unset (breaking compat.entities/mcp_server).
 for _mod_path, _alias in [
     ("server.errors", "errors"),
+    ("server.entity", "entity"),
     ("server.utils", "utils"),
     ("server.utils.config", "utils.config"),
     ("server.server_state", "server_state"),
@@ -72,6 +73,7 @@ for _mod_path, _alias in [
     ("server.memory_lock", "memory_lock"),
     ("server.db", "db"),
     ("server.models", "models"),
+    ("server.entity_permissions", "entity_permissions"),
     ("server.auth_config", "auth_config"),
     ("server.oidc", "oidc"),
     ("server.oidc_state", "oidc_state"),

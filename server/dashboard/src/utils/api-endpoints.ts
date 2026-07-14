@@ -34,4 +34,16 @@ export const ENTITY_ENDPOINTS = {
   BASE: "/entities",
   BY_ID: (type: string, id: string) =>
     `/entities/${type}/${encodeURIComponent(id)}`,
+  PERMISSIONS: (type: string, id: string) =>
+    `/entities/${type}/${encodeURIComponent(id)}/permissions`,
+  PERMISSION_BY_USER: (type: string, id: string, userId: string) =>
+    `/entities/${type}/${encodeURIComponent(id)}/permissions/${userId}`,
+  TRANSFER_OWNER: (type: string, id: string) =>
+    `/entities/${type}/${encodeURIComponent(id)}/transfer-owner`,
+  COUNT: (type: string, id: string) =>
+    `/entities/${type}/${encodeURIComponent(id)}/count`,
+} as const;
+
+export const USER_ENDPOINTS = {
+  BASE: "/users",
 } as const;

@@ -2,9 +2,9 @@ import contextvars
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
-from typing import Annotated, Any, AsyncIterator, Iterator, Optional
+from typing import Annotated, Any, AsyncIterator, Callable, Iterator, Optional
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.routing import APIRouter
 from mcp.server.fastmcp import FastMCP
@@ -13,8 +13,9 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.types import Receive, Scope, Send
 
-from auth import verify_auth
-from compat.entities import list_entities_payload
+from auth import determine_user, is_bootstrap_admin, verify_auth
+from compat.entities import CompatEntity
+from entity import FIELD_TO_TYPE, is_scoped_entity_type
 from compat.events import (
     create_pending_add_event,
     event_access_allowed,
@@ -30,16 +31,37 @@ from compat.responses import (
     resolve_optional_pagination,
     sync_add_response,
 )
-from compat.scope import build_search_filters, collect_direct_entity_params, require_entity_scope
+from compat.scope import collect_direct_entity_params
 from compat.tasks import run_v3_add_memory_task
 from memory_lock import run_memory_write, run_memory_write_for_memory_id
 from server_state import get_memory_instance
+import server_state
+from entity_permissions import (
+    bulk_delete_memories,
+    collect_user_children,
+    get_entity_or_none,
+    authorize_write,
+    check_entity_delete_permission,
+    check_memory_scope_permission,
+    check_query_permission,
+    entity_filter_params,
+    get_visible_entities,
+    inject_default_user_id,
+    list_memory_ids_for_params,
+    reject_bootstrap_memory_mutation,
+    resolve_memory_entities,
+    validate_bulk_admin_operation,
+)
 
 logger = logging.getLogger("mem0.server.mcp")
 
 auth_user_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("mcp_user_id", default=None)
 platform_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("mcp_platform", default=None)
 mem0_source_var: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_mem0_source", default="MCP")
+# Full operator object + auth_type, set in _mcp_request_context, so tools (which
+# bypass FastAPI DI) can resolve (operator, is_admin) without the Request/User args.
+mcp_user_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar("mcp_user_object", default=None)
+mcp_auth_type_var: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_auth_type", default="none")
 
 # Background pool for infer=True adds only (LLM extraction can take seconds).
 _ADD_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mcp-add-memory")
@@ -63,6 +85,51 @@ _MCP_SESSION_MANAGER_STATE = "mem0_mcp_session_manager"
 def _mcp_auth_user_id() -> str | None:
     """Authenticated user id from the current MCP request context."""
     return auth_user_id_var.get()
+
+
+@contextmanager
+def _mcp_db() -> Iterator[Any]:
+    """Open a DB session from the server's session factory (MCP tools bypass FastAPI DI)."""
+    factory = server_state._session_factory
+    if factory is None:
+        raise RuntimeError("DB session factory not initialized.")
+    session = factory()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def _mcp_resolve_operator(db: Any) -> tuple[Any, bool]:
+    """Resolve the acting MCP operator from per-request contextvars.
+
+    Delegates to the shared core in entity_permissions; only the exception type
+    differs (ValueError for MCP vs HTTPException for REST).
+    """
+    result = determine_user(mcp_user_var.get(), mcp_auth_type_var.get(), db)
+    if result is None:
+        raise ValueError("Authentication required.")
+    return result
+
+
+def _mcp_raise(check: Callable[[], Any]) -> Any:
+    """Run a permission check, converting HTTPException to ValueError for MCP tools.
+
+    MCP tools use ValueError for client-visible errors (FastMCP surfaces it as an
+    isError response); the service layer raises HTTPException, so adapt here.
+    Returns the check's result so callers can capture rewritten filters, etc.
+    """
+    try:
+        return check()
+    except HTTPException as exc:
+        raise ValueError(exc.detail) from exc
+
+
+def _mcp_resolve_memory_entities(memory_id: str) -> dict[str, str]:
+    try:
+        return resolve_memory_entities(memory_id)
+    except HTTPException as exc:
+        raise ValueError(exc.detail) from exc
 
 
 @mcp.tool(
@@ -114,17 +181,24 @@ def add_memory(
         ),
     ] = None,
 ) -> dict[str, Any]:
-    scope = require_entity_scope(
-        user_id=user_id,
-        agent_id=agent_id,
-        app_id=app_id,
-        run_id=run_id,
-        fallback_user_id=_mcp_auth_user_id(),
-    )
+    with _mcp_db() as db:
+        operator, _ = _mcp_resolve_operator(db)
+        _mcp_raise(lambda: reject_bootstrap_memory_mutation(operator))
+        entity_params = collect_direct_entity_params(
+            user_id=user_id,
+            agent_id=agent_id,
+            app_id=app_id,
+            run_id=run_id,
+        )
+        entity_params = inject_default_user_id(entity_params, operator)
+        if not entity_params:
+            raise ValueError("One of the filters: user_id, agent_id, app_id or run_id is required!")
+        # Permission + ownership committed synchronously before any async dispatch.
+        _mcp_raise(lambda: authorize_write(entity_params, operator, db))
     if messages is None and text is None:
         raise ValueError("Provide either text or messages before calling add_memory.")
     conversation = messages if messages is not None else [{"role": "user", "content": text}]
-    add_kwargs: dict[str, Any] = {**scope}
+    add_kwargs: dict[str, Any] = {**entity_params}
 
     # Three-layer metadata precedence, matching REST merge_v3_add_metadata:
     # request-header source/platform (x-mem0-*) fill missing keys, caller
@@ -148,14 +222,14 @@ def add_memory(
         add_kwargs["infer"] = False
         raw = run_memory_write(
             lambda memory: memory.add(messages=conversation, **add_kwargs),
-            scope,
+            entity_params,
         )
         return sync_add_response(raw)
 
     if infer is True:
         add_kwargs["infer"] = True
 
-    event_id = create_pending_add_event(_mcp_auth_user_id() or resolve_event_owner_id(None, scope))
+    event_id = create_pending_add_event(_mcp_auth_user_id() or resolve_event_owner_id(None, entity_params))
     _ADD_EXECUTOR.submit(run_v3_add_memory_task, event_id, conversation, add_kwargs)
     return pending_add_response(event_id)
 
@@ -216,14 +290,24 @@ def search_memories(
     if source is not None:
         logger.debug("search_memories: source=%s (advisory; self-hosted tracks ADD events only)", source)
 
-    scoped_filters = build_search_filters(
-        user_id=user_id,
-        agent_id=agent_id,
-        app_id=app_id,
-        run_id=run_id,
-        filters=filters,
-        fallback_user_id=_mcp_auth_user_id(),
-    )
+    with _mcp_db() as db:
+        operator, _ = _mcp_resolve_operator(db)
+        entity_params = collect_direct_entity_params(
+            user_id=user_id,
+            agent_id=agent_id,
+            app_id=app_id,
+            run_id=run_id,
+            filters=filters,
+        )
+        if not entity_params:
+            if is_bootstrap_admin(operator):
+                raise ValueError(
+                    "admin_api_key requires an explicit scope (user_id, agent_id, app_id, or run_id)."
+                )
+            entity_params = {"user_id": str(operator.id)}
+        scoped_filters: dict[str, Any] = dict(filters) if filters else {}
+        scoped_filters.update(entity_params)
+        scoped_filters = _mcp_raise(lambda: check_query_permission(scoped_filters, operator.id, db))
 
     raw = get_memory_instance().search(
         query=query,
@@ -270,14 +354,24 @@ def get_memories(
     if source is not None:
         logger.debug("get_memories: source=%s (advisory; self-hosted tracks ADD events only)", source)
 
-    scoped_filters = build_search_filters(
-        user_id=user_id,
-        agent_id=agent_id,
-        app_id=app_id,
-        run_id=run_id,
-        filters=filters,
-        fallback_user_id=_mcp_auth_user_id(),
-    )
+    with _mcp_db() as db:
+        operator, _ = _mcp_resolve_operator(db)
+        entity_params = collect_direct_entity_params(
+            user_id=user_id,
+            agent_id=agent_id,
+            app_id=app_id,
+            run_id=run_id,
+            filters=filters,
+        )
+        if not entity_params:
+            if is_bootstrap_admin(operator):
+                raise ValueError(
+                    "admin_api_key requires an explicit scope (user_id, agent_id, app_id, or run_id)."
+                )
+            entity_params = {"user_id": str(operator.id)}
+        scoped_filters: dict[str, Any] = dict(filters) if filters else {}
+        scoped_filters.update(entity_params)
+        scoped_filters = _mcp_raise(lambda: check_query_permission(scoped_filters, operator.id, db))
 
     get_all_kwargs: dict[str, Any] = {"filters": scoped_filters}
     if show_expired is not None:
@@ -301,6 +395,10 @@ def get_memories(
 def get_memory(
     memory_id: Annotated[str, Field(description="Exact memory_id to fetch.")],
 ) -> dict[str, Any]:
+    with _mcp_db() as db:
+        operator, _ = _mcp_resolve_operator(db)
+        scope = _mcp_resolve_memory_entities(memory_id)
+        _mcp_raise(lambda: check_memory_scope_permission(scope, operator.id, "read", db))
     result = get_memory_instance().get(memory_id)
     if result is None:
         raise ValueError(f"Memory '{memory_id}' not found.")
@@ -330,6 +428,12 @@ def update_memory(
     if text is None and metadata is None and source is None and expiration_date_omitted:
         raise ValueError("Provide text, metadata, source or expiration_date.")
 
+    with _mcp_db() as db:
+        operator, _ = _mcp_resolve_operator(db)
+        _mcp_raise(lambda: reject_bootstrap_memory_mutation(operator))
+        scope = _mcp_resolve_memory_entities(memory_id)
+        _mcp_raise(lambda: check_memory_scope_permission(scope, operator.id, "write", db))
+
     update_kwargs: dict[str, Any] = {"memory_id": memory_id}
     if text is not None:
         update_kwargs["data"] = text
@@ -354,7 +458,13 @@ def update_memory(
 def delete_memory(
     memory_id: Annotated[str, Field(description="Exact memory_id to delete.")],
 ) -> dict[str, Any]:
-    return run_memory_write_for_memory_id(lambda memory: memory.delete(memory_id), memory_id)
+    with _mcp_db() as db:
+        operator, _ = _mcp_resolve_operator(db)
+        _mcp_raise(lambda: reject_bootstrap_memory_mutation(operator))
+        scope = _mcp_resolve_memory_entities(memory_id)
+        _mcp_raise(lambda: check_memory_scope_permission(scope, operator.id, "write", db))
+    result = run_memory_write_for_memory_id(lambda memory: memory.delete(memory_id), memory_id)
+    return result
 
 
 @mcp.tool(
@@ -376,15 +486,27 @@ def delete_all_memories(
     if source is not None:
         logger.debug("delete_all_memories: source=%s (advisory; self-hosted tracks ADD events only)", source)
 
-    scope = require_entity_scope(
-        user_id=user_id,
-        agent_id=agent_id,
-        app_id=app_id,
-        run_id=run_id,
-        fallback_user_id=_mcp_auth_user_id(),
-    )
+    with _mcp_db() as db:
+        operator, _ = _mcp_resolve_operator(db)
+        _mcp_raise(lambda: reject_bootstrap_memory_mutation(operator))
+        entity_params = collect_direct_entity_params(
+            user_id=user_id,
+            agent_id=agent_id,
+            app_id=app_id,
+            run_id=run_id,
+        )
+        if not entity_params:
+            raise ValueError("One of the filters: user_id, agent_id, app_id or run_id is required!")
+        # Scope to caller's user namespace for agent/run-only deletes (skip for
+        # app-scoped deletes — injecting user_id would narrow the delete scope).
+        entity_params = inject_default_user_id(entity_params, operator, skip_if_has_app=True)
+        operator_id = operator.id
 
-    return run_memory_write(lambda memory: memory.delete_all(**scope), scope)
+    def _delete_all(memory):
+        with _mcp_db() as db:
+            _mcp_raise(lambda: bulk_delete_memories(memory, entity_params, operator_id, db))
+
+    return run_memory_write(_delete_all, entity_params)
 
 
 @mcp.tool(
@@ -402,8 +524,69 @@ def delete_entities(
     )
     if not selected:
         raise ValueError("Provide user_id, agent_id, app_id or run_id before calling delete_entities.")
+    with _mcp_db() as db:
+        operator, _ = _mcp_resolve_operator(db)
+        # Client zone: no bypass. All operations are scoped to the caller's own
+        # namespace. Bootstrap admin cannot delete entities here (parent_entity_id
+        # resolves to None → check_entity_delete_permission returns 403/404).
+        operator_id = operator.id
+        # Owner-only delete check + child-safety check: must pass for ALL entities
+        # before any deletion, so a denied entity/child aborts the whole call.
+        # A granted admin cannot delete entities (design: delete = owner only).
+        for key, value in selected:
+            entity_type = FIELD_TO_TYPE[key]
+            parent_entity_id = None
+            if is_scoped_entity_type(entity_type):
+                parent_entity_id = user_id or (str(operator_id) if not is_bootstrap_admin(operator_id) else None)
+            entity = _mcp_raise(
+                lambda et=entity_type, v=value, p=parent_entity_id: check_entity_delete_permission(
+                    et, v, operator_id, False, db,
+                    parent_entity_id=p,
+                )
+            )
+            if entity is not None and entity.type == "user":
+                if collect_user_children(entity, db):
+                    raise ValueError(
+                        f"Cannot delete 'user/{value}' because it has sub-namespaces or "
+                        "agent/run entities. Delete them first."
+                    )
+    # Client zone: user entities with children cannot be deleted — the
+    # caller must delete sub-namespaces and agent/run children first.
+    # Cascade-delete is handled by the management zone (DELETE /entities/...).
+    # Bulk destructive: prescan + admin-validate + delete inside the scope
+    # lock so a concurrent cross-scope write cannot sneak a memory in (TOCTOU).
     for key, value in selected:
-        run_memory_write(lambda memory, k=key, v=value: memory.delete_all(**{k: v}), {key: value})
+        def _delete_one(memory, k=key, v=value):
+            with _mcp_db() as db:
+                entity_type = FIELD_TO_TYPE[k]
+                parent_entity_id = None
+                if is_scoped_entity_type(entity_type):
+                    parent_entity_id = user_id or (str(operator_id) if not is_bootstrap_admin(operator_id) else None)
+                entity = get_entity_or_none(
+                    entity_type, v, db,
+                    parent_entity_id=parent_entity_id,
+                )
+                # For agent/run: scope vector-store scan by parent user_id.
+                delete_params: dict[str, Any] = entity_filter_params(entity, db) if entity is not None else {k: v}
+                memory_ids = _mcp_raise(lambda: list_memory_ids_for_params(delete_params))
+                _mcp_raise(lambda: validate_bulk_admin_operation(memory_ids, operator_id, db))
+            memory.delete_all(**delete_params)
+        run_memory_write(_delete_one, {key: value})
+    # Drop DB rows so namespaces are released for re-claim (cascade clears
+    # permissions).
+    with _mcp_db() as db:
+        for key, value in selected:
+            entity_type = FIELD_TO_TYPE[key]
+            parent_entity_id = None
+            if is_scoped_entity_type(entity_type):
+                parent_entity_id = user_id or (str(operator_id) if not is_bootstrap_admin(operator_id) else None)
+            entity = get_entity_or_none(
+                entity_type, value, db,
+                parent_entity_id=parent_entity_id,
+            )
+            if entity is not None:
+                db.delete(entity)
+        db.commit()
     return {"message": f"Entities deleted successfully, count: {len(selected)}."}
 
 
@@ -412,7 +595,19 @@ def delete_entities(
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
 def list_entities() -> dict[str, Any]:
-    results = list_entities_payload()
+    with _mcp_db() as db:
+        operator, _ = _mcp_resolve_operator(db)
+        entities = get_visible_entities(operator.id, db)
+        results = [
+            CompatEntity.from_bucket(
+                ent.type,
+                ent.id,
+                created_at=ent.created_at,
+                updated_at=ent.updated_at,
+                entity_name=ent.name,
+            )
+            for ent in sorted(entities, key=lambda e: (e.type, e.id))
+        ]
     return {"count": len(results), "results": [item.model_dump() for item in results]}
 
 
@@ -554,6 +749,8 @@ def _mcp_request_context(request: Request, user: Any) -> Iterator[None]:
     # cannot leave auth_user_id_var set without a matching reset.
     meta = request_meta(request)
     auth_token = auth_user_id_var.set(str(user.id) if user is not None else None)
+    user_token = mcp_user_var.set(user)
+    auth_type_token = mcp_auth_type_var.set(getattr(request.state, "auth_type", "none"))
     platform_token = platform_var.set(meta.platform or meta.ua_tool_name)
     source_token = mem0_source_var.set(meta.source or "MCP")
 
@@ -561,6 +758,8 @@ def _mcp_request_context(request: Request, user: Any) -> Iterator[None]:
         yield
     finally:
         auth_user_id_var.reset(auth_token)
+        mcp_user_var.reset(user_token)
+        mcp_auth_type_var.reset(auth_type_token)
         platform_var.reset(platform_token)
         mem0_source_var.reset(source_token)
 

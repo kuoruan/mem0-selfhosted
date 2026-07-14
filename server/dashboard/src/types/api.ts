@@ -33,12 +33,46 @@ export interface ApiRequestLog {
   auth_type: string;
 }
 
-export type EntityType = "user" | "agent" | "run";
+export type EntityType = "user" | "agent" | "app" | "run";
+
+export interface ParentEntityInfo {
+  id: string;
+  type: EntityType;
+  name: string | null;
+}
 
 export interface Entity {
   id: string;
   type: EntityType;
-  total_memories: number;
+  name: string | null;
   created_at: string | null;
   updated_at: string | null;
+  owner: UserInfo | null;
+  parent: ParentEntityInfo | null;
+  is_owner: boolean;
+}
+
+export type EntityPermissionLevel = "read" | "write" | "admin";
+
+export interface UserInfo {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export interface EntityPermission {
+  id: string;
+  user: UserInfo;
+  permission: EntityPermissionLevel;
+  granted_by: UserInfo | null;
+  created_at: string;
+}
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  auth_provider: string;
+  created_at: string;
 }

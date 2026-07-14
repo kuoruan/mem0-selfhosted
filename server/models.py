@@ -1,7 +1,17 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
@@ -85,4 +95,71 @@ class OidcLink(Base):
     idp_issuer: Mapped[str] = mapped_column(String(512))
     idp_sub: Mapped[str] = mapped_column(String(512))
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class Entity(Base):
+    """An entity namespace (user/agent/app/run).
+
+    ``id`` is the external identifier (e.g. ``alice``, ``riley``).
+    ``pk`` is the internal UUID primary key.
+    """
+
+    __tablename__ = "entities"
+    __table_args__ = (
+        Index("ix_entities_owner_user_id", "owner_user_id"),
+        Index("ix_entities_parent_pk", "parent_pk"),
+        # Partial unique indexes (mirror migration 007): user/app are globally
+        # unique on (type, id); agent/run are unique per parent on
+        # (type, parent_pk, id). Duplicates raise IntegrityError, which the
+        # service layer uses for race-safe first-claim / orphan re-claim.
+        Index(
+            "uq_entities_type_id_global",
+            "type",
+            "id",
+            unique=True,
+            postgresql_where=text("type IN ('user', 'app')"),
+            sqlite_where=text("type IN ('user', 'app')"),
+        ),
+        Index(
+            "uq_entities_type_parent_id",
+            "type",
+            "parent_pk",
+            "id",
+            unique=True,
+            postgresql_where=text("type IN ('agent', 'run')"),
+            sqlite_where=text("type IN ('agent', 'run')"),
+        ),
+    )
+
+    pk: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    id: Mapped[str] = mapped_column(String(255))
+    type: Mapped[str] = mapped_column(String(20))
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    parent_pk: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("entities.pk", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class EntityPermission(Base):
+    """An explicit grant (read/write/admin) on an Entity to a dashboard user."""
+
+    __tablename__ = "entity_permissions"
+    __table_args__ = (
+        UniqueConstraint("entity_pk", "user_id", name="uq_entity_permissions_entity_user"),
+        Index("ix_entity_permissions_user_id", "user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    entity_pk: Mapped[uuid.UUID] = mapped_column(ForeignKey("entities.pk", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    permission: Mapped[str] = mapped_column(String(16))
+    granted_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

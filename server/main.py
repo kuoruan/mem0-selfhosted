@@ -7,10 +7,10 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 import telemetry
-from auth import ensure_admin, require_admin, verify_auth
+from auth import ensure_admin, is_bootstrap_admin, require_admin, verify_auth
 from auth_config import get_auth_config
 from bg_tasks import prune_loop
-from db import SessionLocal
+from db import SessionLocal, get_db
 from dotenv import load_dotenv
 from errors import (
     UpstreamError,
@@ -34,6 +34,7 @@ from routers import compat as compat_router
 from routers import entities as entities_router
 from routers import oidc as oidc_router
 from routers import requests as requests_router
+from routers import users as users_router
 from schemas import MessageResponse
 from server_state import (
     ALL_MEMORIES_LIMIT,
@@ -47,6 +48,18 @@ from server_state import (
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from entity_permissions import (
+    authorize_write,
+    bulk_delete_memories,
+    check_memory_scope_permission,
+    check_query_permission,
+    inject_default_user_id,
+    reject_bootstrap_memory_mutation,
+    resolve_memory_entities,
+    resolve_operator,
+)
 
 from mem0.exceptions import ValidationError as Mem0ValidationError
 
@@ -219,6 +232,7 @@ app.include_router(oidc_router.router)
 app.include_router(compat_router.router)
 app.include_router(entities_router.router)
 app.include_router(requests_router.router)
+app.include_router(users_router.router)
 setup_mcp_server(app)
 
 
@@ -231,6 +245,7 @@ class MemoryCreate(BaseModel):
     messages: List[Message] = Field(..., description="List of messages to store.")
     user_id: Optional[str] = None
     agent_id: Optional[str] = None
+    app_id: Optional[str] = None
     run_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     expiration_date: Optional[str] = Field(None, description="Expiration date in YYYY-MM-DD format.")
@@ -250,6 +265,7 @@ class SearchRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
     run_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
     agent_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
+    app_id: Optional[str] = Field(None, description="Deprecated: pass inside `filters` instead.", deprecated=True)
     filters: Optional[Dict[str, Any]] = None
     top_k: Optional[int] = Field(None, description="Maximum number of results to return.")
     threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
@@ -440,22 +456,51 @@ def generate_instructions(req: GenerateInstructionsRequest, _auth=Depends(verify
 
 
 @app.post("/memories", summary="Create memories")
-def add_memory(memory_create: MemoryCreate, _auth=Depends(verify_auth)):
+def add_memory(
+    memory_create: MemoryCreate,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
     """Store new memories."""
-    if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id]):
-        raise HTTPException(status_code=400, detail="At least one identifier (user_id, agent_id, run_id) is required.")
+    operator, is_admin = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
+    entity_params = {
+        k: v
+        for k, v in {
+            "user_id": memory_create.user_id,
+            "agent_id": memory_create.agent_id,
+            "app_id": memory_create.app_id,
+            "run_id": memory_create.run_id,
+        }.items()
+        if v
+    }
+    entity_params = inject_default_user_id(entity_params, operator)
+    if not entity_params:
+        # Only the admin_api_key bypass with no entity params reaches here (real
+        # users get their own user_id injected above). The scope lock and SDK both
+        # reject a scopeless write; fail fast with a clear message.
+        raise HTTPException(
+            status_code=400,
+            detail="At least one identifier (user_id, agent_id, app_id, run_id) is required.",
+        )
+
+    authorize_write(entity_params, operator, db, bypass=is_admin)
 
     params = {k: v for k, v in memory_create.model_dump().items() if v is not None and k != "messages"}
+    params.update(entity_params)
     try:
         response = run_memory_write(
             lambda memory: memory.add(messages=[m.model_dump() for m in memory_create.messages], **params),
-            entity_scope_from_params(params),
+            entity_params,
         )
         if response.get("results"):
             telemetry.log_dashboard_nudge_once(DASHBOARD_URL)
         return JSONResponse(content=response)
     except (ValueError, Mem0ValidationError) as e:
         raise _client_error(e)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
@@ -466,22 +511,28 @@ def get_all_memories(
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    app_id: Optional[str] = None,
     top_k: Optional[int] = Query(None, ge=0, le=ALL_MEMORIES_LIMIT),
     show_expired: bool = Query(False),
-    _auth=Depends(verify_auth),
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
-    """Retrieve stored memories. Lists all memories when no identifier is provided (admin only)."""
+    """Retrieve stored memories. With no identifier, returns the caller's own memories
+    (the admin_api_key bootstrap bypass lists everything)."""
+    operator, is_admin = resolve_operator(request, auth, db)
     try:
-        if not any([user_id, run_id, agent_id]):
-            # ensure_admin blocks unauthenticated callers (user=None) unless auth_type is
-            # admin_api_key/disabled — stricter than a plain role check, which matters here
-            # because this path returns every memory in the store.
-            ensure_admin(request, _auth)
-            # Admin all-memory listing is intentionally raw; scoped get_all below applies expiry visibility.
-            return list_all_memories(limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT)
         filters = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v
+            k: v
+            for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id, "app_id": app_id}.items()
+            if v
         }
+        if not filters:
+            if is_bootstrap_admin(operator):
+                # admin_api_key / system bypass has no per-user scope to default to.
+                ensure_admin(request, auth)
+                return list_all_memories(limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT)
+            filters = {"user_id": str(operator.id)}
+        filters = check_query_permission(filters, operator.id, db, bypass=is_admin)
         params = {"filters": filters}
         if top_k is not None:
             params["top_k"] = top_k
@@ -494,21 +545,37 @@ def get_all_memories(
 
 
 @app.get("/memories/{memory_id}", summary="Get a memory")
-def get_memory(memory_id: str, _auth=Depends(verify_auth)):
+def get_memory(
+    memory_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
     """Retrieve a specific memory by ID."""
+    operator, is_admin = resolve_operator(request, auth, db)
+    scope = resolve_memory_entities(memory_id)
+    check_memory_scope_permission(scope, operator.id, "read", db, bypass=is_admin)
     try:
         return get_memory_instance().get(memory_id)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
 
 @app.post("/search", summary="Search memories")
-def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
+def search_memories(
+    search_req: SearchRequest,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
     """Search for memories based on a query."""
+    operator, is_admin = resolve_operator(request, auth, db)
     try:
         filters = search_req.filters or {}
         deprecated_keys = []
-        for entity_key in ("user_id", "agent_id", "run_id"):
+        for entity_key in ("user_id", "agent_id", "app_id", "run_id"):
             entity_val = getattr(search_req, entity_key, None)
             if entity_val:
                 filters[entity_key] = entity_val
@@ -519,6 +586,9 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
                 ", ".join(deprecated_keys),
                 ", ".join(f'"{k}": "..."' for k in deprecated_keys),
             )
+        if not filters and not is_bootstrap_admin(operator):
+            filters = {"user_id": str(operator.id)}
+        filters = check_query_permission(filters, operator.id, db, bypass=is_admin)
         params = {}
         if search_req.top_k is not None:
             params["top_k"] = search_req.top_k
@@ -538,8 +608,18 @@ def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
 
 
 @app.put("/memories/{memory_id}", summary="Update a memory")
-def update_memory(memory_id: str, updated_memory: MemoryUpdate, _auth=Depends(verify_auth)):
+def update_memory(
+    memory_id: str,
+    updated_memory: MemoryUpdate,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
     """Update an existing memory."""
+    operator, is_admin = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
+    scope = resolve_memory_entities(memory_id)
+    check_memory_scope_permission(scope, operator.id, "write", db, bypass=is_admin)
     try:
         fields_set = getattr(updated_memory, "model_fields_set", getattr(updated_memory, "__fields_set__", set()))
         params = {"memory_id": memory_id}
@@ -555,47 +635,91 @@ def update_memory(memory_id: str, updated_memory: MemoryUpdate, _auth=Depends(ve
         )
     except (ValueError, Mem0ValidationError) as e:
         raise _client_error(e)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
 
 @app.get("/memories/{memory_id}/history", summary="Get memory history")
-def memory_history(memory_id: str, _auth=Depends(verify_auth)):
+def memory_history(
+    memory_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
     """Retrieve memory history."""
+    operator, is_admin = resolve_operator(request, auth, db)
+    scope = resolve_memory_entities(memory_id)
+    check_memory_scope_permission(scope, operator.id, "read", db, bypass=is_admin)
     try:
         return get_memory_instance().history(memory_id=memory_id)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
 
 @app.delete("/memories/{memory_id}", summary="Delete a memory", response_model=MessageResponse)
-def delete_memory(memory_id: str, _auth=Depends(verify_auth)):
+def delete_memory(
+    memory_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
     """Delete a specific memory by ID."""
+    operator, is_admin = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
+    scope = resolve_memory_entities(memory_id)
+    check_memory_scope_permission(scope, operator.id, "write", db, bypass=is_admin)
     try:
         run_memory_write_for_memory_id(lambda memory: memory.delete(memory_id=memory_id), memory_id)
         return MessageResponse(message="Memory deleted successfully")
     except (ValueError, Mem0ValidationError) as e:
         raise _client_error(e)
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 
 
 @app.delete("/memories", summary="Delete all memories", response_model=MessageResponse)
 def delete_all_memories(
+    request: Request,
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
     agent_id: Optional[str] = None,
-    _auth=Depends(require_admin),
+    app_id: Optional[str] = None,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
-    """Delete all memories for a given identifier. Requires admin role."""
-    if not any([user_id, run_id, agent_id]):
+    """Delete all memories for a given identifier.
+
+    Requires admin permission on every matched memory's full scope, so an entity
+    admin can delete within their own scope but a cross-scope match fails the batch.
+    """
+    operator, is_admin = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
+    params = {
+        k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id, "app_id": app_id}.items() if v
+    }
+    if not params:
         raise HTTPException(status_code=400, detail="At least one identifier is required.")
+    # Scope agent/run-only deletes to the caller's user namespace (skip for app-scoped
+    # deletes — injecting user_id would narrow the delete scope). Without this, a
+    # delete_all(agent_id=riley) prescans every user's same-named agent and the bulk
+    # admin check fails the whole batch with 403. Mirrors compat v1 / MCP.
+    params = inject_default_user_id(params, operator, skip_if_has_app=True)
     try:
-        params = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v
-        }
-        run_memory_write(lambda memory: memory.delete_all(**params), entity_scope_from_params(params))
+        run_memory_write(
+            lambda m: bulk_delete_memories(
+                m, params, operator.id, db, bypass=is_admin,
+            ),
+            entity_scope_from_params(params),
+        )
         return MessageResponse(message="All relevant memories deleted")
+    except HTTPException:
+        raise
     except Exception:
         raise upstream_error()
 

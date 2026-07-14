@@ -6,17 +6,8 @@ Provides helpers to collect, validate, and merge entity-identifying parameters
 
 from typing import Any, Optional
 
+from entity import ENTITY_PARAMS, TYPE_TO_FIELD
 from fastapi import HTTPException
-
-ENTITY_PARAMS = frozenset({"user_id", "agent_id", "app_id", "run_id"})
-
-COMPAT_TYPE_TO_FIELD: dict[str, str] = {
-    "user": "user_id",
-    "agent": "agent_id",
-    "app": "app_id",
-    "run": "run_id",
-}
-VALID_ENTITY_TYPES = frozenset(COMPAT_TYPE_TO_FIELD)
 
 
 def build_categories_filter(categories: list[str]) -> dict[str, Any]:
@@ -273,7 +264,7 @@ def get_entity_field(entity_type: str) -> str:
 
     Raises 400 for unknown types.
     """
-    field = COMPAT_TYPE_TO_FIELD.get(entity_type)
+    field = TYPE_TO_FIELD.get(entity_type)
     if field is None:
         raise HTTPException(status_code=400, detail="Invalid entity type")
     return field

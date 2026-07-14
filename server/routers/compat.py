@@ -56,10 +56,10 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from auth import ensure_admin, verify_auth
+from auth import is_bootstrap_admin, verify_auth
 from compat.decorators import upstream_guard
 from compat.requests import RequestMeta, request_meta
-from compat.entities import list_entities_payload
+from compat.entities import CompatEntity
 from compat.helpers import (
     build_search_kwargs,
     normalize_results,
@@ -85,7 +85,6 @@ from compat.events import (
     resolve_event_owner_id,
 )
 from compat.scope import (
-    VALID_ENTITY_TYPES,
     append_search_convenience_filters,
     build_list_filters,
     build_search_filters,
@@ -99,7 +98,26 @@ from memory_lock import (
     run_memory_write,
     run_memory_write_for_memory_id,
 )
-from server_state import get_memory_instance, list_all_memories
+from server_state import get_memory_instance
+from sqlalchemy.orm import Session
+from models import Entity
+from db import get_db
+from entity import VALID_ENTITY_TYPES, canonicalize_entity_id, is_scoped_entity_type
+from entity_permissions import (
+    authorize_write,
+    bulk_delete_memories,
+    check_entity_delete_permission,
+    check_memory_scope_permission,
+    check_query_permission,
+    collect_user_children,
+    get_visible_entities,
+    inject_default_user_id,
+    list_memory_ids_for_params,
+    reject_bootstrap_memory_mutation,
+    resolve_memory_entities,
+    resolve_operator,
+    validate_bulk_admin_operation,
+)
 
 logger = logging.getLogger("mem0.server.compat")
 
@@ -446,36 +464,52 @@ def v1_list_memories(
     run_id: Optional[str] = None,
     show_expired: Optional[bool] = Query(default=None),
     auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
+    operator, _ = resolve_operator(request, auth, db)
     show_expired_flag = show_expired if isinstance(show_expired, bool) else None
     filters = drop_none({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
 
     if not filters:
-        ensure_admin(request, auth)
-        raw = list_all_memories(limit=None, show_expired=show_expired_flag)
-    else:
-        kwargs: Dict[str, Any] = {"filters": filters}
-        if show_expired_flag is not None:
-            kwargs["show_expired"] = show_expired_flag
-        raw = get_memory_instance().get_all(**kwargs)
+        if is_bootstrap_admin(operator):
+            raise HTTPException(
+                status_code=400,
+                detail="admin_api_key requires an explicit scope (user_id, agent_id, app_id, or run_id).",
+            )
+        filters = {"user_id": str(operator.id)}
+    filters = check_query_permission(filters, operator.id, db)
+    kwargs: Dict[str, Any] = {"filters": filters}
+    if show_expired_flag is not None:
+        kwargs["show_expired"] = show_expired_flag
+    raw = get_memory_instance().get_all(**kwargs)
     return normalize_results(raw)
 
 
 @router.post("/v1/memories/", include_in_schema=False)
 @router.post("/v1/memories", summary="Add memories (v1)")
 @upstream_guard
-def v1_add_memories(body: MemoryAddInput, meta: RequestMeta = Depends(request_meta), _auth=Depends(verify_auth)):
+def v1_add_memories(
+    body: MemoryAddInput,
+    request: Request,
+    meta: RequestMeta = Depends(request_meta),
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
     entity_params = collect_direct_entity_params(
         user_id=body.user_id,
         agent_id=body.agent_id,
         app_id=body.app_id,
         run_id=body.run_id,
     )
+    entity_params = inject_default_user_id(entity_params, operator)
     if not entity_params:
         raise HTTPException(
             status_code=400,
             detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
         )
+    authorize_write(entity_params, operator, db)
     params = drop_none({**entity_params, "metadata": body.metadata})
     if body.infer is not None:
         params["infer"] = body.infer
@@ -494,20 +528,38 @@ def v1_add_memories(body: MemoryAddInput, meta: RequestMeta = Depends(request_me
 @router.get("/v1/memories/{memory_id}/", include_in_schema=False)
 @router.get("/v1/memories/{memory_id}", summary="Get a memory (v1)")
 @upstream_guard
-def v1_get_memory(memory_id: str, _auth=Depends(verify_auth)):
+def v1_get_memory(
+    memory_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
+    scope = resolve_memory_entities(memory_id)
+    check_memory_scope_permission(scope, operator.id, "read", db)
     return resolve_existing(get_memory_instance(), memory_id)
 
 
 @router.put("/v1/memories/{memory_id}", include_in_schema=False)
 @router.put("/v1/memories/{memory_id}/", summary="Update a memory (v1)")
 @upstream_guard
-def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(verify_auth)):
+def v1_update_memory(
+    memory_id: str,
+    body: MemoryUpdateInput,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
     has_expiration_update = "expiration_date" in body.model_fields_set
     if body.text is None and body.metadata is None and body.timestamp is None and not has_expiration_update:
         raise HTTPException(
             status_code=400,
             detail="At least one of text, metadata, timestamp, or expiration_date must be provided for update.",
         )
+    scope = resolve_memory_entities(memory_id)
+    check_memory_scope_permission(scope, operator.id, "write", db)
     # Forward only the fields the caller explicitly set (mirrors main.update_memory).
     params: Dict[str, Any] = {"memory_id": memory_id}
     if body.text is not None:
@@ -536,17 +588,37 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
 @router.delete("/v1/memories/{memory_id}/", include_in_schema=False)
 @router.delete("/v1/memories/{memory_id}", summary="Delete a memory (v1)")
 @upstream_guard
-def v1_delete_memory(memory_id: str, _auth=Depends(verify_auth)):
+def v1_delete_memory(
+    memory_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
+    scope = resolve_memory_entities(memory_id)
+    check_memory_scope_permission(scope, operator.id, "write", db)
     try:
-        return run_memory_write_for_memory_id(lambda memory: memory.delete(memory_id=memory_id), memory_id)
+        result = run_memory_write_for_memory_id(
+            lambda memory: memory.delete(memory_id=memory_id), memory_id
+        )
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
+    return result
 
 
 @router.get("/v1/memories/{memory_id}/history/", include_in_schema=False)
 @router.get("/v1/memories/{memory_id}/history", summary="Get memory history (v1)")
 @upstream_guard
-def v1_memory_history(memory_id: str, _auth=Depends(verify_auth)):
+def v1_memory_history(
+    memory_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
+    scope = resolve_memory_entities(memory_id)
+    check_memory_scope_permission(scope, operator.id, "read", db)
     raw = get_memory_instance().history(memory_id=memory_id)
     return normalize_results(raw)
 
@@ -557,10 +629,16 @@ def v1_memory_history(memory_id: str, _auth=Depends(verify_auth)):
 def v1_get_entity_memories(
     entity_type: str,
     entity_id: str,
+    request: Request,
     show_expired: Optional[bool] = Query(default=None),
-    _auth=Depends(verify_auth),
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
-    kwargs: Dict[str, Any] = {"filters": {get_entity_field(entity_type): entity_id}}
+    operator, _ = resolve_operator(request, auth, db)
+    field = get_entity_field(entity_type)  # validates entity_type (400 on invalid)
+    filters: Dict[str, Any] = {field: entity_id}
+    filters = check_query_permission(filters, operator.id, db)
+    kwargs: Dict[str, Any] = {"filters": filters}
     if isinstance(show_expired, bool):
         kwargs["show_expired"] = show_expired
     raw = get_memory_instance().get_all(**kwargs)
@@ -570,7 +648,13 @@ def v1_get_entity_memories(
 @router.post("/v1/memories/search/", include_in_schema=False)
 @router.post("/v1/memories/search", summary="Search memories (v1)")
 @upstream_guard
-def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
+def v1_search_memories(
+    body: MemorySearchInput,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
     warn_unsupported_fields(body.fields, "v1_search_memories")
     warn_ignored_compat_params("v1_search_memories", latest_only=body.latest_only)
     effective_filters = build_search_filters(
@@ -581,6 +665,7 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
         detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
     effective_filters = append_search_convenience_filters(effective_filters, metadata=body.metadata)
+    effective_filters = check_query_permission(effective_filters, operator.id, db)
 
     raw = get_memory_instance().search(
         query=body.query,
@@ -593,13 +678,17 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
 @router.delete("/v1/memories", summary="Delete all memories (v1)")
 @upstream_guard
 def v1_delete_all_memories(
+    request: Request,
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
     app_id: Optional[str] = None,
     run_id: Optional[str] = None,
     filters: Optional[str] = None,
-    _auth=Depends(verify_auth),
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
+    operator, _ = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
     # ``filters`` is a legacy query-string JSON blob (not the structured dict
     # used in v2/v3 body endpoints). Only parse it when no explicit entity
     # params are given, to avoid silently overriding explicit args.
@@ -621,7 +710,15 @@ def v1_delete_all_memories(
             status_code=400,
             detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
         )
-    return run_memory_write(lambda memory: memory.delete_all(**params), entity_scope_from_params(params))
+    # Scope agent/run/app-only deletes to the caller's user namespace (mirrors the
+    # write path's inject_default_user_id). Without this, delete_all(agent_id=riley)
+    # matches every user's same-named agent and the prescan fails the whole batch
+    # (403) — so a user could write but not delete their own agent memories.
+    params = inject_default_user_id(params, operator, skip_if_has_app=True)
+    return run_memory_write(
+        lambda m: bulk_delete_memories(m, params, operator.id, db),
+        entity_scope_from_params(params),
+    )
 
 
 @router.get("/v1/events/", include_in_schema=False)
@@ -669,7 +766,14 @@ def v1_list_memory_events(_auth=Depends(verify_auth)):
 @router.put("/v1/batch/", include_in_schema=False)
 @router.put("/v1/batch", summary="Batch update memories (v1)")
 @upstream_guard
-def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
+def v1_batch_update(
+    body: MemoryBatchUpdateInput,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
     # Validate items: each must have at least text or metadata.
     invalid: List[str] = [item.memory_id for item in body.memories if item.text is None and item.metadata is None]
     if invalid:
@@ -681,6 +785,12 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
             status_code=400,
             detail=f"Too many updates ({len(body.memories)}). Maximum is 100 per request.",
         )
+    # Pre-validate write permission on ALL items before updating any (all-or-nothing;
+    # an unauthorized item fails the whole request instead of being silently skipped).
+    for item in body.memories:
+        scope = resolve_memory_entities(item.memory_id)
+        check_memory_scope_permission(scope, operator.id, "write", db)
+
     updated_count = 0
     for item in body.memories:
         try:
@@ -689,7 +799,9 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
                 item.memory_id,
             )
             updated_count += 1
-        except (HTTPException, ValueError):
+        except ValueError:
+            # Memory vanished between pre-validation and update (concurrent
+            # delete); not a permission issue, so skip rather than fail.
             continue
     return {"message": f"Memories updated successfully, count: {updated_count}."}
 
@@ -699,13 +811,25 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
 @upstream_guard
 def v1_batch_delete(
     body: MemoryBatchDeleteLegacyInput | MemoryBatchDeleteInput,
-    _auth=Depends(verify_auth),
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
+    operator, _ = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
     memory_ids = (
         body.memory_ids if isinstance(body, MemoryBatchDeleteInput) else [item.memory_id for item in body.memories]
     )
     if len(memory_ids) > 1000:
         raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be deleted in a single request")
+    # Pre-validate admin permission on ALL memory_ids before deleting any: an
+    # unauthorized item fails the whole request (all-or-nothing) instead of being
+    # silently skipped. resolve_memory_entities raises 404 for a missing memory;
+    # check_memory_scope_permission raises 403 for insufficient permission.
+    for memory_id in memory_ids:
+        scope = resolve_memory_entities(memory_id)
+        check_memory_scope_permission(scope, operator.id, "write", db)
+
     deleted_count = 0
     for memory_id in memory_ids:
         try:
@@ -715,6 +839,8 @@ def v1_batch_delete(
             )
             deleted_count += 1
         except ValueError:
+            # Memory vanished between pre-validation and delete (concurrent
+            # delete); not a permission issue, so skip rather than fail.
             continue
     return {"message": f"Memories deleted successfully, count: {deleted_count}."}
 
@@ -726,15 +852,29 @@ def v1_list_entities(
     request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=200),
-    _auth=Depends(verify_auth),
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
     """Return entities in the SDK-compatible envelope while preserving spec fields.
 
-    The hosted spec documents an array response, but ``MemoryClient.users()`` and
-    ``delete_users()`` read ``response["results"]``. Keep that envelope here and
-    include the spec fields on each entity item.
+    Visibility is filtered by ownership/grants (get_visible_entities); unclaimed
+    namespaces are not visible to non-admins. The hosted spec documents an array
+    response, but ``MemoryClient.users()`` and ``delete_users()`` read
+    ``response["results"]``. Keep that envelope here and include the spec fields
+    on each entity item.
     """
-    all_results = list_entities_payload()
+    operator, _ = resolve_operator(request, auth, db)
+    entities = get_visible_entities(operator.id, db)
+    all_results = [
+        CompatEntity.from_bucket(
+            ent.type,
+            ent.id,
+            created_at=ent.created_at,
+            updated_at=ent.updated_at,
+            entity_name=ent.name,
+        )
+        for ent in sorted(entities, key=lambda e: (e.type, e.id))
+    ]
     return paginate_response(request, all_results, page, page_size)
 
 
@@ -752,15 +892,19 @@ def v2_list_memories(
     body: MemoryGetInputV2,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=200),
-    _auth=Depends(verify_auth),
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
+    operator, _ = resolve_operator(request, auth, db)
     warn_unsupported_fields(body.fields, "v2_list_memories")
     warn_ignored_compat_params("v2_list_memories", latest_only=body.latest_only)
     entity_params = require_entity_scope(
         filters=body.filters,
         detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
     )
-    kwargs: Dict[str, Any] = {"filters": build_list_filters(body, entity_params)}
+    filters = build_list_filters(body, entity_params)
+    filters = check_query_permission(filters, operator.id, db)
+    kwargs: Dict[str, Any] = {"filters": filters}
     if body.show_expired is not None:
         kwargs["show_expired"] = body.show_expired
     raw = get_memory_instance().get_all(**kwargs)
@@ -775,7 +919,13 @@ def v2_list_memories(
 @router.post("/v2/memories/search/", include_in_schema=False)
 @router.post("/v2/memories/search", summary="Search memories (v2)")
 @upstream_guard
-def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
+def v2_search_memories(
+    body: MemorySearchInputV2,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
     warn_unsupported_fields(body.fields, "v2_search_memories")
     warn_ignored_compat_params("v2_search_memories", latest_only=body.latest_only)
     effective_filters = build_search_filters(
@@ -786,6 +936,7 @@ def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
         filters=body.filters,
         detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
+    effective_filters = check_query_permission(effective_filters, operator.id, db)
     raw = get_memory_instance().search(
         query=body.query,
         **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank, body.show_expired),
@@ -798,11 +949,25 @@ def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
 @router.get("/v2/entities/{entity_type}/{entity_id}/", include_in_schema=False)
 @router.get("/v2/entities/{entity_type}/{entity_id}", summary="Get entity details (v2)")
 @upstream_guard
-def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
+def v2_get_entity(
+    entity_type: str,
+    entity_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
     get_entity_field(entity_type)  # validate entity_type early
-    for entity in list_entities_payload():
-        if entity.type == entity_type and entity.id == entity_id:
-            return entity
+    eid = canonicalize_entity_id(entity_type, entity_id)
+    for ent in get_visible_entities(operator.id, db):
+        if ent.type == entity_type and ent.id == eid:
+            return CompatEntity.from_bucket(
+                ent.type,
+                ent.id,
+                created_at=ent.created_at,
+                updated_at=ent.updated_at,
+                entity_name=ent.name,
+            )
     raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
 
@@ -810,14 +975,61 @@ def v2_get_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
 @router.delete("/v2/entities/{entity_type}/{entity_id}/", include_in_schema=False, status_code=204)
 @router.delete("/v2/entities/{entity_type}/{entity_id}", summary="Delete entity (v2)", status_code=204)
 @upstream_guard
-def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth)):
+def v2_delete_entity(
+    entity_type: str,
+    entity_id: str,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
+    # Client zone: no bypass. All operations are scoped to the caller's own
+    # namespace. Bootstrap admin cannot delete entities here (parent_entity_id
+    # resolves to None → check_entity_delete_permission returns 403/404).
+    field = get_entity_field(entity_type)  # validate entity_type early
+    # Owner-only delete: a granted admin cannot delete entities (design: delete =
+    # owner only). agent/run are unique per parent, not globally: scope
+    # the by-name lookup to the caller.
+    parent_entity_id = None if is_bootstrap_admin(operator.id) else str(operator.id)
+    entity = check_entity_delete_permission(
+        entity_type, entity_id, operator.id, False, db,
+        parent_entity_id=parent_entity_id,
+    )
+    # Client zone: user entities with children cannot be deleted — the
+    # caller must delete sub-namespaces and agent/run children first.
+    # Cascade-delete is handled by the management zone (DELETE /entities/...).
+    if entity is not None and entity_type == "user":
+        if collect_user_children(entity, db):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete 'user/{entity_id}' because it has sub-namespaces or agent/run entities. Delete them first.",
+            )
+    # For agent/run: resolve parent user id to scope the vector-store scan/delete
+    # (otherwise a same-named agent/run owned by another user is matched).
+    parent_user_id = None
+    if entity is not None and is_scoped_entity_type(entity_type) and entity.parent_pk is not None:
+        parent_entity = db.get(Entity, entity.parent_pk)
+        if parent_entity is not None:
+            parent_user_id = parent_entity.id
+    # Bulk destructive: prescan + admin-validate + delete inside the scope lock (TOCTOU).
+    delete_params: dict[str, Any] = {field: entity_id}
+    if parent_user_id is not None:
+        delete_params["user_id"] = parent_user_id
+
+    def _delete_all(memory):
+        memory_ids = list_memory_ids_for_params(delete_params)
+        validate_bulk_admin_operation(memory_ids, operator.id, db)
+        memory.delete_all(**delete_params)
+
     try:
-        run_memory_write(
-            lambda memory: memory.delete_all(**{get_entity_field(entity_type): entity_id}),
-            {get_entity_field(entity_type): entity_id},
-        )
+        run_memory_write(_delete_all, delete_params)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
+    # Drop the DB row so the namespace is released for re-claim (mirrors
+    # DELETE /entities/{type}/{id}); cascade clears entity_permissions.
+    if entity is not None:
+        db.delete(entity)
+        db.commit()
 
 
 @router.post("/v3/memories/add/", include_in_schema=False)
@@ -826,9 +1038,13 @@ def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth
 def v3_add_memory(
     body: MemoryAddInputV3,
     background_tasks: BackgroundTasks,
+    request: Request,
     meta: RequestMeta = Depends(request_meta),
     auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
+    operator, _ = resolve_operator(request, auth, db)
+    reject_bootstrap_memory_mutation(operator)
     entity_params = collect_direct_entity_params(
         filters=body.filters,
         user_id=body.user_id,
@@ -836,11 +1052,15 @@ def v3_add_memory(
         app_id=body.app_id,
         run_id=body.run_id,
     )
+    entity_params = inject_default_user_id(entity_params, operator)
     if not entity_params:
         raise HTTPException(
             status_code=400,
             detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
         )
+    # Permission + ownership must be committed synchronously before the async task
+    # is dispatched.
+    authorize_write(entity_params, operator, db)
     params: Dict[str, Any] = drop_none(
         {
             **entity_params,
@@ -892,14 +1112,18 @@ def v3_get_all_memories(
     body: MemoryGetInputV3,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=200),
-    _auth=Depends(verify_auth),
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
 ):
+    operator, _ = resolve_operator(request, auth, db)
     warn_ignored_compat_params("v3_get_all_memories", latest_only=body.latest_only)
     entity_params = require_entity_scope(
         filters=body.filters,
         detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
     )
-    kwargs: Dict[str, Any] = {"filters": build_list_filters(body, entity_params)}
+    filters = build_list_filters(body, entity_params)
+    filters = check_query_permission(filters, operator.id, db)
+    kwargs: Dict[str, Any] = {"filters": filters}
     if body.show_expired is not None:
         kwargs["show_expired"] = body.show_expired
     raw = get_memory_instance().get_all(**kwargs)
@@ -911,7 +1135,13 @@ def v3_get_all_memories(
 @router.post("/v3/memories/search/", include_in_schema=False)
 @router.post("/v3/memories/search", summary="Search memories (v3)")
 @upstream_guard
-def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
+def v3_search_memories(
+    body: MemorySearchInputV3,
+    request: Request,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    operator, _ = resolve_operator(request, auth, db)
     warn_unsupported_fields(body.fields, "v3_search_memories")
     warn_ignored_compat_params(
         "v3_search_memories",
@@ -931,6 +1161,7 @@ def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
         categories=body.categories,
         metadata=body.metadata,
     )
+    effective_filters = check_query_permission(effective_filters, operator.id, db)
     raw = get_memory_instance().search(
         query=body.query,
         **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank, body.show_expired),

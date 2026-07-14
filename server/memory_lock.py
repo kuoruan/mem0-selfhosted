@@ -38,7 +38,7 @@ from typing import Any, Callable, Dict, Iterator, Optional, Tuple, TypeVar
 
 from cachetools import TTLCache
 
-from compat.scope import ENTITY_PARAMS
+from entity import ENTITY_PARAMS
 from server_state import get_memory_instance
 
 # Coarse-to-fine; must match LOCK_ACQUIRE_ORDER. ``scope_lock_key`` sorts by field name.

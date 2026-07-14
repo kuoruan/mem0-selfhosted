@@ -98,13 +98,11 @@ class TestCompatEntity:
         entity = CompatEntity.from_bucket(
             "user",
             "alice",
-            total_memories=3,
             created_at=created,
             updated_at=updated,
         )
         assert entity.type == "user"
         assert entity.name == "alice"
-        assert entity.total_memories == 3
         assert entity.created_at == created.isoformat()
         assert entity.owner == "self-hosted"
 
@@ -127,7 +125,6 @@ class TestCompatEntity:
         entities = list_entities_payload()
         assert len(entities) == 1
         assert entities[0].id == "alice"
-        assert entities[0].total_memories == 1
 
     def test_aggregate_entity_buckets_handles_mixed_timezone_formats(self):
         payloads = [
@@ -137,7 +134,6 @@ class TestCompatEntity:
 
         buckets = compat_entities.aggregate_entity_buckets(payloads, {"user": "user_id"})
         bucket = buckets[("user", "alice")]
-        assert bucket["total_memories"] == 2
         assert bucket["created_at"] is not None
         assert bucket["updated_at"] is not None
         assert bucket["created_at"].tzinfo is not None
@@ -225,7 +221,6 @@ class TestCompatEntity:
         assert len(result["results"]) == 1
         entity = result["results"][0]
         assert entity.id == "alice"
-        assert entity.total_memories == 2
 
     def test_v1_list_entities_respects_pagination(self, monkeypatch):
         rows = [
@@ -1034,6 +1029,26 @@ class TestPaginateResponse:
         items = list(range(25))
         result = paginate_response(req, items, page=3, page_size=10)
         assert "page=2" in result["previous"]
+
+    def test_total_uses_supplied_count_without_reslicing(self):
+        """When total is provided, items is the already-paginated DB slice — it
+        must not be re-sliced, and count/next/previous use the supplied total
+        (this is the list_users DB-level pagination path)."""
+        req = self._request()
+        # DB returned page 2 (items 10-19 of 95 total); pass the slice + total.
+        page_items = list(range(10, 20))
+        result = paginate_response(req, page_items, page=2, page_size=10, total=95)
+        assert result["count"] == 95
+        assert result["results"] == list(range(10, 20))  # not re-sliced
+        assert result["next"] is not None  # 20 < 95
+        assert result["previous"] is not None  # page 2
+
+    def test_total_last_page_no_next(self):
+        req = self._request()
+        result = paginate_response(req, [90, 91, 92, 93, 94], page=10, page_size=10, total=95)
+        assert result["count"] == 95
+        assert result["next"] is None  # start(90) + page_size(10) = 100 >= 95
+        assert result["results"] == [90, 91, 92, 93, 94]
 
 
 class TestResolveOptionalPagination:

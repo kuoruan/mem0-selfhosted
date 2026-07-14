@@ -1,21 +1,10 @@
 """Helper utilities shared by compat routers."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
 
-
-def normalize_results(raw: Any) -> List[Any]:
-    """Normalise SDK output to a plain ``list``.
-
-    Accepts ``{"results": [...]}``, a bare ``list``, or anything else
-    (returned as an empty list).
-    """
-    if isinstance(raw, dict) and "results" in raw and isinstance(raw["results"], list):
-        return raw["results"]
-    if isinstance(raw, list):
-        return raw
-    return []
+from utils.helpers import normalize_results, unwrap_result
 
 
 def normalize_results_dict(raw: Any, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -56,7 +45,7 @@ def build_search_kwargs(
 def resolve_existing(mem: Any, memory_id: str) -> Dict[str, Any]:
     """Fetch an existing memory and return its dict, or raise 404."""
     raw = mem.get(memory_id)
-    item = raw[0] if isinstance(raw, list) and raw else raw
+    item = unwrap_result(raw)
     if not isinstance(item, dict):
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
     return item
