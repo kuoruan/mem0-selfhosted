@@ -1,0 +1,110 @@
+name: Build and Push Server Docker Images to GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (e.g. latest, v1.0.0)'
+        required: true
+        type: string
+        default: 'latest'
+      build-server:
+        description: 'Build mem0-api-server image'
+        required: false
+        type: boolean
+        default: true
+      build-dashboard:
+        description: 'Build mem0-dashboard image'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: server-docker-cd-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build-server:
+    name: Build and push mem0-api-server
+    if: ${{ fromJSON(inputs.build-server) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/mem0-api-server
+          tags: |
+            type=raw,value=${{ inputs.tag }}
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ./server
+          build-contexts: root=.
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,mode=max,scope=server
+          provenance: true
+
+  build-dashboard:
+    name: Build and push mem0-dashboard
+    if: ${{ fromJSON(inputs.build-dashboard) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/mem0-dashboard
+          tags: |
+            type=raw,value=${{ inputs.tag }}
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ./server/dashboard
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
+          provenance: true
