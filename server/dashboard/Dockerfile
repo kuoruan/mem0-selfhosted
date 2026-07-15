@@ -4,11 +4,11 @@ WORKDIR /app
 
 # Dependencies
 FROM base AS deps
-COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
+COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN \
   if [ -f yarn.lock ]; then yarn --frozen-lockfile --network-timeout 600000; \
   elif [ -f package-lock.json ]; then npm ci; \
-  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i; \
+  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile; \
   else npm install; \
   fi
 

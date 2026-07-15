@@ -15,8 +15,9 @@ WORKDIR /tmp
 COPY --from=root mem0 ./mem0
 COPY --from=root pyproject.toml .
 COPY --from=root README.md .
+COPY --from=root LICENSE .
 RUN pip install --no-cache-dir ".[nlp]" \
-	&& rm -rf /tmp/mem0 /tmp/pyproject.toml /tmp/README.md
+	&& rm -rf /tmp/mem0 /tmp/pyproject.toml /tmp/README.md /tmp/LICENSE
 
 WORKDIR /app
 # Copy server code

@@ -10,7 +10,7 @@ cd /app
 # New NEXT_PUBLIC_* vars must be added to the Dockerfile or this loop won't substitute them.
 printenv | grep '^NEXT_PUBLIC_' | while IFS='=' read -r key value; do
   escaped=$(printf '%s' "$value" | sed -e 's/[\\&|]/\\&/g')
-  find .next/ -type f -exec sed -i "s|$key|$escaped|g" {} \;
+  find .next/ -type f -exec sed -i "s|$key|$escaped|g" {} +
 done
 echo "Done replacing env variables NEXT_PUBLIC_ with real values"
 
