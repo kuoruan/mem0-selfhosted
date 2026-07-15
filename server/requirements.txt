@@ -1,7 +1,7 @@
 fastapi>=0.139.0,<1.0.0
 uvicorn>=0.50.0,<1.0.0
 pydantic[email]>=2.12.0,<3.0.0
-mem0ai[nlp]>=2.0.0,<3.0.0
+# mem0 — pip install -e ".[nlp]" from repo root
 python-dotenv>=1.2.0,<2.0.0
 mcp[cli]>=1.28.0,<2.0.0
 psycopg>=3.3.0,<4.0.0
