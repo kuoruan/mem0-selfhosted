@@ -133,9 +133,7 @@ def _subnamespace_prefix_condition(parent_id: str):
 def _get_user_entity_or_none(entity_id: str, db: Session) -> Entity | None:
     """Look up a user entity by exact entity_id."""
     eid = canonicalize_entity_id("user", entity_id)
-    return db.scalar(
-        select(Entity).where(Entity.type == "user", Entity.id == eid)
-    )
+    return db.scalar(select(Entity).where(Entity.type == "user", Entity.id == eid))
 
 
 def _resolve_parent_user_id(scope: dict[str, str], user_id: uuid.UUID) -> str | None:
@@ -158,12 +156,7 @@ def _resolve_user_owner(entity_id: str, db: Session) -> tuple[uuid.UUID | None, 
     prefixes) and avoids the longer-orphan masking a shorter owned prefix.
     """
     prefixes = [canonicalize_entity_id("user", p) for p in user_prefixes(entity_id)]
-    entities = {
-        e.id: e
-        for e in db.scalars(
-            select(Entity).where(Entity.type == "user", Entity.id.in_(prefixes))
-        ).all()
-    }
+    entities = {e.id: e for e in db.scalars(select(Entity).where(Entity.type == "user", Entity.id.in_(prefixes))).all()}
     for prefix in prefixes:
         entity = entities.get(prefix)
         if entity is not None and entity.owner_user_id is not None:
@@ -299,6 +292,7 @@ def _get_entity_or_404(
             detail=f"Entity '{entity_type}/{entity_id}' not found.",
         )
     return entity
+
 
 def _get_scoped_entity_or_none(
     entity_type: str,
@@ -693,9 +687,7 @@ def _rewrite_query_filter(
                 # app_id" can only be expressed by enumerating the app ids. The
                 # admin decision belongs here at wildcard expansion, not inside
                 # the non-admin _get_accessible_apps helper.
-                accessible_apps = sorted(
-                    db.scalars(select(Entity.id).where(Entity.type == "app")).all()
-                )
+                accessible_apps = sorted(db.scalars(select(Entity.id).where(Entity.type == "app")).all())
             else:
                 accessible_apps = _get_accessible_apps(user_id, db)
         return accessible_apps
@@ -707,10 +699,7 @@ def _rewrite_query_filter(
             return [_drop_user_id(child, in_metadata) for child in node]
         if not isinstance(node, dict):
             return node
-        result = {
-            k: _drop_user_id(v, in_metadata or k == "metadata")
-            for k, v in node.items()
-        }
+        result = {k: _drop_user_id(v, in_metadata or k == "metadata") for k, v in node.items()}
         if not in_metadata:
             result.pop("user_id", None)
         return result
@@ -933,11 +922,7 @@ def check_entity_permission(
         try:
             if uuid.UUID(top_level_user_id(entity_id)) == user_id:
                 top_entity = _get_user_entity_or_none(top_level_user_id(entity_id), db)
-                if (
-                    top_entity is None
-                    or top_entity.owner_user_id is None
-                    or top_entity.owner_user_id == user_id
-                ):
+                if top_entity is None or top_entity.owner_user_id is None or top_entity.owner_user_id == user_id:
                     return True
                 # Transferred to another user: fall through to the hierarchical
                 # ownership/grant check below.
@@ -967,9 +952,7 @@ def check_entity_permission(
         canonical_prefixes = [canonicalize_entity_id("user", p) for p in user_prefixes(entity_id)]
         prefix_entities = {
             e.id: e
-            for e in db.scalars(
-                select(Entity).where(Entity.type == "user", Entity.id.in_(canonical_prefixes))
-            ).all()
+            for e in db.scalars(select(Entity).where(Entity.type == "user", Entity.id.in_(canonical_prefixes))).all()
         }
         # Batch-fetch the grants for all prefix entities in one query (avoids a
         # per-prefix N+1 on deep namespaces like A:B:C:D:E).
@@ -1059,7 +1042,11 @@ def check_memory_scope_permission(
     # --- app as primary gate ---
     if "app" in scope:
         ok = check_entity_permission(
-            "app", scope["app"], user_id, required, db,
+            "app",
+            scope["app"],
+            user_id,
+            required,
+            db,
             bypass=bypass,
         )
         if not ok:
@@ -1074,7 +1061,11 @@ def check_memory_scope_permission(
 
     results = [
         check_entity_permission(
-            et, eid, user_id, required, db,
+            et,
+            eid,
+            user_id,
+            required,
+            db,
             bypass=bypass,
             parent_entity_id=parent_entity_id if is_scoped_entity_type(et) else None,
         )
@@ -1170,13 +1161,7 @@ def extract_query_scope_branches(filters: Any) -> tuple[list[dict[str, str]], bo
         if and_sub is not None:
             and_children = and_sub if isinstance(and_sub, list) else [and_sub]
             and_branches = and_combine([walk(child, depth + 1) for child in and_children])
-            combined = [
-                m
-                for b in branches
-                for ab in and_branches
-                for m in [merge(b, ab)]
-                if m is not None
-            ]
+            combined = [m for b in branches for ab in and_branches for m in [merge(b, ab)] if m is not None]
             branches = combined if combined else [{}]
 
         if not_sub is not None:
@@ -1257,11 +1242,7 @@ def resolve_memory_entities(memory_id: str) -> dict[str, str]:
     if not isinstance(item, dict):
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
     field_scope = entity_scope_from_record(item)
-    return {
-        FIELD_TO_TYPE[field]: value
-        for field, value in field_scope.items()
-        if field in FIELD_TO_TYPE
-    }
+    return {FIELD_TO_TYPE[field]: value for field, value in field_scope.items() if field in FIELD_TO_TYPE}
 
 
 def validate_bulk_admin_operation(
@@ -1313,7 +1294,11 @@ def bulk_delete_memories(
     memory_ids = list_memory_ids_for_params(params)
     scope_hint = params_to_entities(params)
     validate_bulk_admin_operation(
-        memory_ids, operator_id, db, bypass=bypass, scope_hint=scope_hint,
+        memory_ids,
+        operator_id,
+        db,
+        bypass=bypass,
+        scope_hint=scope_hint,
     )
     memory.delete_all(**params)
 
@@ -1393,7 +1378,12 @@ def authorize_write(
             existing = get_entity_or_none(entity_type, entity_id, db)
 
         if existing is not None and not check_entity_permission(
-            entity_type, entity_id, operator.id, "write", db, bypass=bypass,
+            entity_type,
+            entity_id,
+            operator.id,
+            "write",
+            db,
+            bypass=bypass,
             parent_entity_id=parent_entity_id if is_scoped_entity_type(entity_type) else None,
         ):
             raise HTTPException(
@@ -1404,7 +1394,10 @@ def authorize_write(
     # Pass 2: create/claim entities
     for entity_type, entity_id in scope.items():
         ensure_entity_owner(
-            entity_type, entity_id, operator.id, db,
+            entity_type,
+            entity_id,
+            operator.id,
+            db,
             bypass=bypass,
             parent_entity_id=parent_entity_id if is_scoped_entity_type(entity_type) else None,
         )
@@ -1430,9 +1423,10 @@ def _assert_can_manage(
     403 otherwise.
     """
     is_owner = entity.owner_user_id is not None and entity.owner_user_id == operator_id
-    operator_has_admin = bypass or is_owner or (
-        operator_id is not None
-        and check_entity_permission(entity_type, entity_id, operator_id, "admin", db)
+    operator_has_admin = (
+        bypass
+        or is_owner
+        or (operator_id is not None and check_entity_permission(entity_type, entity_id, operator_id, "admin", db))
     )
     if not (is_owner or operator_has_admin):
         raise HTTPException(
@@ -1454,9 +1448,7 @@ def is_owner_or_global_admin(
     not enough. Contrast with ``_assert_can_manage`` (grant/revoke/list), which
     also accepts an explicit admin grant.
     """
-    return bypass or (
-        entity.owner_user_id is not None and entity.owner_user_id == operator_id
-    )
+    return bypass or (entity.owner_user_id is not None and entity.owner_user_id == operator_id)
 
 
 def upsert_permission(
@@ -1725,9 +1717,7 @@ def transfer_entity_owner(
 # --------------------------------------------------------------------------- #
 # Visibility (list)
 # --------------------------------------------------------------------------- #
-def get_visible_entities(
-    user_id: uuid.UUID, db: Session, *, bypass: bool = False
-) -> list[Entity]:
+def get_visible_entities(user_id: uuid.UUID, db: Session, *, bypass: bool = False) -> list[Entity]:
     """Entities the user can see: owned + explicitly granted (admins see all)."""
     if bypass:
         return db.execute(select(Entity)).scalars().all()
@@ -1766,9 +1756,7 @@ def get_visible_entities_paginated(
     visibility = or_(
         Entity.owner_user_id == user_id,
         Entity.owner_user_id.is_not(None)
-        & Entity.pk.in_(
-            select(EntityPermission.entity_pk).where(EntityPermission.user_id == user_id)
-        ),
+        & Entity.pk.in_(select(EntityPermission.entity_pk).where(EntityPermission.user_id == user_id)),
     )
     where_clause = [] if bypass else [visibility]
     if entity_type is not None:
@@ -1777,16 +1765,16 @@ def get_visible_entities_paginated(
     # Owned-first ordering: 0 for owned, 1 for everything else.
     owned_first = case((Entity.owner_user_id == user_id, 0), else_=1)
 
-    base = select(Entity)
+    count_stmt = select(func.count(Entity.pk))
+    items_stmt = select(Entity)
     if where_clause:
-        base = base.where(*where_clause)
+        count_stmt = count_stmt.where(*where_clause)
+        items_stmt = items_stmt.where(*where_clause)
 
-    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    total = db.scalar(count_stmt) or 0
     items = (
         db.execute(
-            base.order_by(owned_first, Entity.type, Entity.id)
-            .offset((page - 1) * page_size)
-            .limit(page_size)
+            items_stmt.order_by(owned_first, Entity.type, Entity.id).offset((page - 1) * page_size).limit(page_size)
         )
         .scalars()
         .all()
@@ -1855,7 +1843,9 @@ def check_entity_delete_permission(
     parent user namespace (agent/run are unique per parent, not globally).
     """
     entity = get_entity_or_none(
-        entity_type, entity_id, db,
+        entity_type,
+        entity_id,
+        db,
         parent_entity_id=parent_entity_id,
     )
     if entity is None:

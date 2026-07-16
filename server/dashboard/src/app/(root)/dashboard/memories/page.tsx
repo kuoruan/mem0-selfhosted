@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,11 @@ export default function MemoriesPage() {
   const { user } = useAuth();
   const ownUserId = user?.id ?? "";
   const [userId, setUserId] = useState(ownUserId);
+  // `useAuth()` may load async; backfill the initial "" once the operator's id
+  // arrives, without overriding a value the user has explicitly picked.
+  useEffect(() => {
+    if (ownUserId) setUserId((prev) => (prev === "" ? ownUserId : prev));
+  }, [ownUserId]);
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
   const [page, setPage] = useState(0);

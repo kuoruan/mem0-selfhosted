@@ -33,13 +33,15 @@ export default function EditEntityNameDialog({
   onSaved,
 }: EditEntityNameDialogProps) {
   const [name, setName] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     setName(entity?.name ?? "");
   }, [entity]);
 
   const handleSave = async () => {
-    if (!entity) return;
+    if (!entity || isSaving) return;
+    setIsSaving(true);
     try {
       await api.patch(
         ENTITY_ENDPOINTS.UPDATE(entity.type, entity.id),
@@ -55,6 +57,8 @@ export default function EditEntityNameDialog({
         description: getErrorMessage(error),
         variant: "destructive",
       });
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -90,13 +94,16 @@ export default function EditEntityNameDialog({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Display name"
+                maxLength={255}
               />
             </div>
             <DialogFooter>
               <DialogClose asChild>
                 <Button variant="outline">Cancel</Button>
               </DialogClose>
-              <Button onClick={handleSave}>Save</Button>
+              <Button onClick={handleSave} disabled={isSaving}>
+                {isSaving ? "Saving..." : "Save"}
+              </Button>
             </DialogFooter>
           </div>
         )}

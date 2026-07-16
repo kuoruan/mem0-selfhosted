@@ -76,6 +76,7 @@ class EntityPermissionResponse(BaseModel):
 
 class EntityListResponse(BaseModel):
     """Paginated envelope mirroring ``compat.responses.paginate_response``."""
+
     count: int
     next: Optional[str] = None
     previous: Optional[str] = None
@@ -150,9 +151,7 @@ def _entity_to_response(entity: Entity, operator_id: uuid.UUID, db: Session) -> 
     )
 
 
-def _entities_to_response_batch(
-    entities: list[Entity], operator_id: uuid.UUID, db: Session
-) -> list[EntityResponse]:
+def _entities_to_response_batch(entities: list[Entity], operator_id: uuid.UUID, db: Session) -> list[EntityResponse]:
     """Batch-resolve parent entities and owner users in one query each."""
     # Collect parent PKs and owner user IDs
     parent_pks: set[uuid.UUID] = set()
@@ -166,12 +165,7 @@ def _entities_to_response_batch(
     # Batch-fetch parents
     parents: dict[uuid.UUID, Entity] = {}
     if parent_pks:
-        parents = {
-            p.pk: p
-            for p in db.execute(
-                select(Entity).where(Entity.pk.in_(parent_pks))
-            ).scalars().all()
-        }
+        parents = {p.pk: p for p in db.execute(select(Entity).where(Entity.pk.in_(parent_pks))).scalars().all()}
 
     # Batch-fetch owners
     owners = _user_info_batch(owner_ids, db)
@@ -188,16 +182,18 @@ def _entities_to_response_batch(
                     type=parent_entity.type,
                     name=parent_entity.name,
                 )
-        result.append(EntityResponse(
-            id=entity.id,
-            type=entity.type,
-            name=entity.name,
-            created_at=entity.created_at,
-            updated_at=entity.updated_at,
-            owner=owners.get(entity.owner_user_id) if entity.owner_user_id else None,
-            parent=parent,
-            is_owner=entity.owner_user_id == operator_id,
-        ))
+        result.append(
+            EntityResponse(
+                id=entity.id,
+                type=entity.type,
+                name=entity.name,
+                created_at=entity.created_at,
+                updated_at=entity.updated_at,
+                owner=owners.get(entity.owner_user_id) if entity.owner_user_id else None,
+                parent=parent,
+                is_owner=entity.owner_user_id == operator_id,
+            )
+        )
     return result
 
 
@@ -215,9 +211,7 @@ def _permission_to_response(perm: EntityPermission, db: Session) -> EntityPermis
     )
 
 
-def _permissions_to_response_batch(
-    perms: list[EntityPermission], db: Session
-) -> list[EntityPermissionResponse]:
+def _permissions_to_response_batch(perms: list[EntityPermission], db: Session) -> list[EntityPermissionResponse]:
     """Batch-resolve all user references in one query instead of N+1."""
     user_ids: set[uuid.UUID] = set()
     for p in perms:
@@ -238,6 +232,7 @@ def _permissions_to_response_batch(
         for p in perms
     ]
 
+
 def _parse_uuid(value: str, *, label: str = "UUID") -> uuid.UUID:
     """Parse a UUID string, raising 400 on invalid input."""
     try:
@@ -257,9 +252,7 @@ def list_entities(
     entity_type: Optional[EntityType] = Query(
         None, alias="type", description="Filter to one entity type (e.g. 'user')."
     ),
-    user_id: Optional[str] = Query(
-        None, description="Admin-only: scope to entities visible to this user (UUID)."
-    ),
+    user_id: Optional[str] = Query(None, description="Admin-only: scope to entities visible to this user (UUID)."),
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
@@ -350,7 +343,7 @@ def create_entity(
                 detail=f"Entity '{body.type}/{body.id}' is already owned by another user.",
             )
         if body.name and entity.name is None:
-            entity.name = body.name.strip()
+            entity.name = body.name.strip() or None
         db.commit()
         return _entity_to_response(entity, operator.id, db)
 
@@ -367,7 +360,7 @@ def create_entity(
                 detail="owner_user_id is required when creating an app entity.",
             )
         owner_id = _parse_uuid(body.owner_user_id, label="owner_user_id")
-        entity = create_app_entity(body.id, owner_id, db, name=body.name)
+        entity = create_app_entity(body.id, owner_id, db, name=body.name and body.name.strip() or None)
         return _entity_to_response(entity, operator.id, db)
 
     raise HTTPException(status_code=400, detail=f"Unknown entity type: '{body.type}'.")
@@ -404,7 +397,9 @@ def count_entity_memories(
         parent_entity_id = namespace or str(operator.id)
 
     entity = get_entity_or_none(
-        entity_type, entity_id, db,
+        entity_type,
+        entity_id,
+        db,
         parent_entity_id=parent_entity_id,
     )
     if entity is None:
@@ -413,8 +408,13 @@ def count_entity_memories(
     # check and the vector store query (agent/run are unique per parent, not globally).
     scoped_namespace = entity_parent_user_id(entity, db)
     if not check_entity_permission(
-        entity_type, entity_id, operator.id, "read", db,
-        bypass=is_admin, parent_entity_id=scoped_namespace,
+        entity_type,
+        entity_id,
+        operator.id,
+        "read",
+        db,
+        bypass=is_admin,
+        parent_entity_id=scoped_namespace,
     ):
         raise HTTPException(status_code=403, detail="You do not have read permission for this entity.")
     count = count_memories_for_entity(entity_type, entity_id, parent_user_id=scoped_namespace)
@@ -538,7 +538,11 @@ def delete_entity(
         parent_entity_id = namespace or str(operator.id)
 
     entity = check_entity_delete_permission(
-        entity_type, entity_id, operator.id, is_admin, db,
+        entity_type,
+        entity_id,
+        operator.id,
+        is_admin,
+        db,
         parent_entity_id=parent_entity_id,
     )
 
@@ -628,7 +632,7 @@ def update_entity(
     if entity.owner_user_id != operator.id and not is_admin:
         raise HTTPException(status_code=403, detail="Only the owner or an admin can edit this entity.")
 
-    if body.name is not None:
-        entity.name = body.name.strip() or None
+    if "name" in body.model_fields_set:
+        entity.name = body.name and body.name.strip() or None
     db.commit()
     return _entity_to_response(entity, operator.id, db)

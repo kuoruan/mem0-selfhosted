@@ -335,5 +335,21 @@ class TestBootstrapEntityPermissions:
             )
             assert resp.status_code == 200, resp.text
             assert resp.json()["name"] is None
+
+            # Explicit JSON null clears too (REST clearing semantics via
+            # model_fields_set — distinguishes "omit" from "set to null").
+            resp = self.client.patch(
+                "/entities/app/patch-app",
+                json={"name": "label"},
+                headers=self._auth,
+            )
+            assert resp.json()["name"] == "label"
+            resp = self.client.patch(
+                "/entities/app/patch-app",
+                json={"name": None},
+                headers=self._auth,
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["name"] is None
         finally:
             self._cleanup_owner_entities(["patch-app"])

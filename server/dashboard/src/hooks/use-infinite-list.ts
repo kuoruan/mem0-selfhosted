@@ -41,7 +41,9 @@ const EMPTY_DEPS: DependencyList = [];
  * ``loadMore`` guards read ``page`` / ``isLoading`` / ``hasMore`` from refs
  * (not state) so rapid scroll events can't observe stale values and fire
  * duplicate fetches; ``pageRef`` advances before the async resolves so a
- * concurrent guard backs off.
+ * concurrent guard backs off. A monotonic ``queryIdRef`` discards results from
+ * fetches superseded by a deps/enabled change, so a stale page can't append
+ * onto the reset list.
  */
 export function useInfiniteList<T>({
   fetchPage,
@@ -64,12 +66,19 @@ export function useInfiniteList<T>({
   const pageRef = useRef(1);
   const isLoadingRef = useRef(enabled);
   const hasMoreRef = useRef(enabled);
+  // Monotonic session id. Bumped on every fetch and on every reset; a fetch
+  // whose id no longer matches the current session is stale (superseded by a
+  // deps/enabled change or a newer page) and its result is discarded so it
+  // can't append stale items onto a reset list.
+  const queryIdRef = useRef(0);
 
   const run = useCallback(async (targetPage: number) => {
+    const id = ++queryIdRef.current;
     isLoadingRef.current = true;
     setLoading(true);
     try {
       const data = await fetchPageRef.current(targetPage);
+      if (id !== queryIdRef.current) return;
       const newItems = data.results ?? [];
       setItems((prev) =>
         targetPage === 1 ? newItems : [...prev, ...newItems],
@@ -79,20 +88,29 @@ export function useInfiniteList<T>({
       hasMoreRef.current = next;
       setHasMore(next);
     } catch (err) {
+      if (id !== queryIdRef.current) return;
       hasMoreRef.current = false;
       setHasMore(false);
       onErrorRef.current?.(err);
     } finally {
-      isLoadingRef.current = false;
-      setLoading(false);
+      // Only the owning session clears the loading flag; a stale fetch leaves
+      // it for the newer session that already set it.
+      if (id === queryIdRef.current) {
+        isLoadingRef.current = false;
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
+    // Invalidate any in-flight fetch from the previous deps/enabled state.
+    queryIdRef.current += 1;
     if (!enabled) {
       setItems([]);
       hasMoreRef.current = false;
       setHasMore(false);
+      isLoadingRef.current = false;
+      setLoading(false);
       return;
     }
     pageRef.current = 1;

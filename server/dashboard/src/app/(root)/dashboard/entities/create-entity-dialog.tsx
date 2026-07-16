@@ -166,6 +166,7 @@ export default function CreateEntityDialog({
               value={form.name}
               onChange={(e) => updateField("name", e.target.value)}
               placeholder="Display name"
+              maxLength={255}
             />
           </div>
           {form.type === "app" && isAdmin && (
