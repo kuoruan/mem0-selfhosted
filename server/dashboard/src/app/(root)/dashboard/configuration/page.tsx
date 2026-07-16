@@ -203,20 +203,6 @@ export default function ConfigurationPage() {
         </CardContent>
       </Card>
 
-      <p className="text-xs text-onSurface-default-tertiary">
-        Need another provider? Install its Python package, rebuild the image,
-        and extend the bundled list. See the{" "}
-        <a
-          href="https://docs.mem0.ai/open-source/setup#supported-providers"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline underline-offset-4 hover:text-onSurface-default-primary"
-        >
-          setup guide
-        </a>
-        .
-      </p>
-
       {isAdmin && (
         <Button onClick={handleSave} disabled={isSaving}>
           {isSaving ? "Saving..." : "Save Configuration"}

@@ -49,8 +49,6 @@ const STEP_TITLES = [
   "Tell us your use case",
   "Test your setup",
 ];
-const SUPPORTED_PROVIDERS_URL =
-  "https://docs.mem0.ai/open-source/setup#supported-providers";
 
 const USE_CASE_PRESETS = [
   "Personal assistant",
@@ -498,20 +496,6 @@ export default function SetupPage() {
                     />
                   </div>
                 </div>
-
-                <p className="text-xs text-onSurface-default-tertiary">
-                  Need another provider? Install its Python package and rebuild
-                  the image. See{" "}
-                  <a
-                    href={SUPPORTED_PROVIDERS_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline underline-offset-4 hover:text-onSurface-default-primary"
-                  >
-                    supported providers
-                  </a>
-                  .
-                </p>
 
                 <Button
                   type="submit"

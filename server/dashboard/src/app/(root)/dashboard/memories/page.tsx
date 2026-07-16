@@ -136,14 +136,6 @@ export default function MemoriesPage() {
   -H "Content-Type: application/json" \\
   -d '{"messages": [{"role": "user", "content": "I like hiking"}], "user_id": "${userId || 'alice'}"`}
           </pre>
-          <a
-            href="https://docs.mem0.ai/open-source/features/rest-api#memory-operations"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-onSurface-default-tertiary underline underline-offset-4 hover:text-onSurface-default-primary mt-2"
-          >
-            REST API reference
-          </a>
         </EmptyState>
       ) : (
         <>
