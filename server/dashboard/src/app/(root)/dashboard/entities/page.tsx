@@ -50,7 +50,7 @@ export default function EntitiesPage() {
       const params: Record<string, unknown> = { page, page_size: 50 };
       const effectiveScope = scopeUserId || ownUserId;
       if (effectiveScope !== "all" && effectiveScope) {
-        params.user_id = effectiveScope;
+        params.scope_user_id = effectiveScope;
       }
       const res = await api.get<EntityListResponse>(ENTITY_ENDPOINTS.BASE, {
         params,

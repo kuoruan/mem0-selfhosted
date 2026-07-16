@@ -252,7 +252,7 @@ def list_entities(
     entity_type: Optional[EntityType] = Query(
         None, alias="type", description="Filter to one entity type (e.g. 'user')."
     ),
-    user_id: Optional[str] = Query(None, description="Admin-only: scope to entities visible to this user (UUID)."),
+    scope_user_id: Optional[str] = Query(None, description="Admin-only: scope to entities visible to this user (UUID)."),
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
@@ -263,16 +263,16 @@ def list_entities(
     type — the memories-page user picker uses ``type=user`` to fetch only user
     namespaces.
 
-    When ``user_id`` is provided (admin only), the list is scoped to entities
+    When ``scope_user_id`` is provided (admin only), the list is scoped to entities
     visible to that user (owned + explicitly granted). Without it, behaviour is
     unchanged: admins see all, non-admins see their own.
     """
     operator, is_admin = resolve_operator(request, auth, db)
 
-    if user_id is not None:
+    if scope_user_id is not None:
         if not is_admin:
             raise HTTPException(status_code=403, detail="Only admins can scope to another user.")
-        target_id = _parse_uuid(user_id, label="user_id")
+        target_id = _parse_uuid(scope_user_id, label="scope_user_id")
         items, total = get_visible_entities_paginated(
             target_id,
             db,

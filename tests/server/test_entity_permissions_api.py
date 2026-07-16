@@ -250,12 +250,12 @@ class TestBootstrapEntityPermissions:
             assert "page_size=1" in body["next"]
 
             # Admin scoping to another user keeps `user_id` in the next link.
-            resp = self.client.get(f"/entities?user_id={owner_id}&page_size=1", headers=self._auth)
+            resp = self.client.get(f"/entities?scope_user_id={owner_id}&page_size=1", headers=self._auth)
             assert resp.status_code == 200, resp.text
             scoped = resp.json()
             assert scoped["count"] == 2
             assert scoped["next"] is not None
-            assert f"user_id={owner_id}" in scoped["next"]
+            assert f"scope_user_id={owner_id}" in scoped["next"]
         finally:
             self._cleanup_owner_entities(["app-a", "app-b"])
 
