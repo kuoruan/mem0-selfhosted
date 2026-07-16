@@ -4,5 +4,4 @@ Dockerfile
 Makefile
 docker-compose.yaml
 docker-compose.yml
-init-db.sh
 dashboard/
