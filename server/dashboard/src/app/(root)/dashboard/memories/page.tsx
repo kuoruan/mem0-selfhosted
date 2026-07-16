@@ -34,15 +34,14 @@ export default function MemoriesPage() {
   const { user } = useAuth();
   const ownUserId = user?.id ?? "";
   const [userId, setUserId] = useState(ownUserId);
-  // `useAuth()` may load async; backfill the initial "" once the operator's id
-  // arrives, without overriding a value the user has explicitly picked.
-  useEffect(() => {
-    if (ownUserId) setUserId((prev) => (prev === "" ? ownUserId : prev));
-  }, [ownUserId]);
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
   const [page, setPage] = useState(0);
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+
+  useEffect(() => {
+    if (ownUserId) setUserId((prev) => (prev === "" ? ownUserId : prev));
+  }, [ownUserId]);
 
   const {
     data: memories = [],
@@ -63,8 +62,6 @@ export default function MemoriesPage() {
     },
   );
 
-  // Switching user also resets to the first page — folded into the handler so
-  // no separate effect/render cycle is needed.
   const selectUser = (id: string) => {
     setUserId(id);
     setPage(0);
@@ -137,7 +134,7 @@ export default function MemoriesPage() {
             {`curl -X POST ${apiUrl}/memories \\
   -H "X-API-Key: <your-key>" \\
   -H "Content-Type: application/json" \\
-  -d '{"messages": [{"role": "user", "content": "I like hiking"}], "user_id": "alice"}'`}
+  -d '{"messages": [{"role": "user", "content": "I like hiking"}], "user_id": "${userId || 'alice'}"`}
           </pre>
           <a
             href="https://docs.mem0.ai/open-source/features/rest-api#memory-operations"
