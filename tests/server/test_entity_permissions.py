@@ -318,7 +318,7 @@ def test_ensure_app_entity_requires_existing(db, make_user):
 def test_ensure_app_entity_admin_creates(db, make_user):
     """Admin creates app via POST /entities, then writes work."""
     owner = make_user()
-    ep._create_entity_row("app", "my-repo", owner.id, None, db)
+    ep._create_entity_row("app", "my-repo", None, owner.id, None, db)
     db.commit()
     # Now owner can write
     entity = ep.ensure_entity_owner("app", "my-repo", owner.id, db)
@@ -912,7 +912,7 @@ def test_validate_bulk_admin_unauthorized_memory(db, make_user, fake_memory):
     ep.ensure_entity_owner("user", "bob", owner.id, db)
     db.commit()
     fake_memory.add("m1", {"user_id": "alice", "app_id": "my-repo", "data": "x"})
-    ep._create_entity_row("app", "my-repo", owner.id, None, db)
+    ep._create_entity_row("app", "my-repo", None, owner.id, None, db)
     db.commit()
     ep.grant_entity_permission(
         "user", "bob", b.id, "admin", operator_id=owner.id, bypass=False, db=db,
@@ -946,7 +946,7 @@ def test_validate_bulk_admin_scope_hint_app_short_circuits(db, make_user, monkey
     """App-scoped scope_hint must check the app entity once and skip per-memory
     vector-store lookups (no resolve_memory_entities calls)."""
     owner = make_user()
-    ep._create_entity_row("app", "my-repo", owner.id, None, db)
+    ep._create_entity_row("app", "my-repo", None, owner.id, None, db)
     db.commit()
     # If per-memory resolution ran, resolve_memory_entities would raise (no such id);
     # the fast path must never touch it.
@@ -2079,3 +2079,100 @@ class TestIsOwnerOrGlobalAdmin:
         entity = Entity(type="app", id="app-x", owner_user_id=owner_id)
         # granted admin ≠ owner, bypass=False → False
         assert ep.is_owner_or_global_admin(entity, grantee_id, bypass=False) is False
+
+
+# --------------------------------------------------------------------------- #
+# get_visible_entities_paginated
+# --------------------------------------------------------------------------- #
+class TestGetVisibleEntitiesPaginated:
+    """Pagination, owned-first ordering, type filter, and visibility scoping."""
+
+    def _seed(self, db, owner):
+        """A mix of owned + foreign user/agent entities for ordering checks."""
+        owned_user = Entity(type="user", id="default", owner_user_id=owner.id)
+        owned_sub = Entity(type="user", id="default:laptop", owner_user_id=owner.id)
+        foreign_user = Entity(type="user", id="bob", owner_user_id=uuid.uuid4())
+        owned_agent = Entity(type="agent", id="bot", owner_user_id=owner.id)
+        db.add_all([owned_user, owned_sub, foreign_user, owned_agent])
+        db.flush()
+        return owned_user, owned_sub, foreign_user, owned_agent
+
+    def test_owned_entities_sort_first(self, db, make_user):
+        """Owned entities precede foreign ones regardless of id alphabet."""
+        owner = make_user()
+        self._seed(db, owner)
+        db.flush()
+
+        items, total = ep.get_visible_entities_paginated(
+            owner.id, db, bypass=True, page=1, page_size=100
+        )
+        assert total == 4
+        ids = [e.id for e in items]
+        # The three owned entities (default, default:laptop, bot) come before bob.
+        assert ids.index("default") < ids.index("bob")
+        assert ids.index("default:laptop") < ids.index("bob")
+        assert ids.index("bot") < ids.index("bob")
+
+    def test_entity_type_filter_restricts_to_user(self, db, make_user):
+        """entity_type='user' drops agent/run rows."""
+        owner = make_user()
+        self._seed(db, owner)
+        db.flush()
+
+        items, total = ep.get_visible_entities_paginated(
+            owner.id, db, bypass=True, entity_type="user", page=1, page_size=100
+        )
+        assert total == 3  # default, default:laptop, bob (agent 'bot' excluded)
+        assert {e.type for e in items} == {"user"}
+
+    def test_pagination_slice_and_total(self, db, make_user):
+        """page_size limits the slice while total reflects the full count."""
+        owner = make_user()
+        # 5 owned user entities
+        for i in range(5):
+            db.add(Entity(type="user", id=f"u{i}", owner_user_id=owner.id))
+        db.flush()
+
+        items, total = ep.get_visible_entities_paginated(
+            owner.id, db, bypass=True, entity_type="user", page=1, page_size=2
+        )
+        assert total == 5
+        assert len(items) == 2
+        # Page 2 returns the next slice.
+        items2, _ = ep.get_visible_entities_paginated(
+            owner.id, db, bypass=True, entity_type="user", page=2, page_size=2
+        )
+        assert len(items2) == 2
+        assert {e.id for e in items}.isdisjoint({e.id for e in items2})
+
+    def test_non_admin_sees_only_owned_and_granted(self, db, make_user):
+        """Without bypass, a user sees owned + explicitly granted entities only."""
+        owner = make_user()
+        other = make_user()
+        db.add(Entity(type="user", id="alice", owner_user_id=owner.id))
+        granted = Entity(type="app", id="shared-app", owner_user_id=other.id)
+        db.add(granted)
+        db.add(Entity(type="user", id="carol", owner_user_id=other.id))  # invisible
+        db.flush()
+        # Grant 'other' read on owner's alice entity.
+        db.add(EntityPermission(
+            entity_pk=granted.pk, user_id=owner.id, permission="read",
+        ))
+        db.flush()
+
+        items, total = ep.get_visible_entities_paginated(
+            owner.id, db, bypass=False, page=1, page_size=100
+        )
+        ids = {e.id for e in items}
+        # alice (owned) + shared-app (granted); carol is invisible.
+        assert ids == {"alice", "shared-app"}
+        assert total == 2
+
+    def test_empty_state(self, db, make_user):
+        """A fresh user with no entities gets an empty page and zero total."""
+        user = make_user()
+        items, total = ep.get_visible_entities_paginated(
+            user.id, db, bypass=False, page=1, page_size=100
+        )
+        assert items == []
+        assert total == 0

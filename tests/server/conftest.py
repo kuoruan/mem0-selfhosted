@@ -45,6 +45,7 @@ for _mod_path, _alias in [
     ("server.entity", "entity"),
     ("server.utils", "utils"),
     ("server.utils.config", "utils.config"),
+    ("server.utils.pagination", "utils.pagination"),
     ("server.server_state", "server_state"),
     ("server.rate_limit", "rate_limit"),
     ("server.schemas", "schemas"),

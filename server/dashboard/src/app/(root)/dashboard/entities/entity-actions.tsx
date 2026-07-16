@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRightLeft, Trash2, Users } from "lucide-react";
+import { ArrowRightLeft, Pencil, Trash2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Entity } from "@/types/api";
 
@@ -12,6 +12,7 @@ interface EntityActionsProps {
   isAdmin: boolean;
   onManage: (entity: Entity) => void;
   onTransfer: (entity: Entity) => void;
+  onEdit: (entity: Entity) => void;
   onDelete: (entity: Entity) => void;
 }
 
@@ -20,6 +21,7 @@ export default function EntityActions({
   isAdmin,
   onManage,
   onTransfer,
+  onEdit,
   onDelete,
 }: EntityActionsProps) {
   if (!canManage(entity, isAdmin)) return null;
@@ -50,6 +52,15 @@ export default function EntityActions({
           <ArrowRightLeft className="size-3.5" />
         </Button>
       )}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-7"
+        title="Edit name"
+        onClick={() => onEdit(entity)}
+      >
+        <Pencil className="size-3.5" />
+      </Button>
       <Button
         variant="ghost"
         size="icon"

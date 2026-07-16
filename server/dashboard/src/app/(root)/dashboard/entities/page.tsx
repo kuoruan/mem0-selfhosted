@@ -9,39 +9,65 @@ import { Card } from "@/components/ui/card";
 import { DataTable } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { EmptyState } from "@/components/self-hosted/empty-state";
+import InfiniteScrollSentinel from "@/components/shared/infinite-scroll-sentinel";
 import DeleteConfirmationModal from "@/components/ui/delete-confirmation-modal";
 import { toast } from "@/components/ui/use-toast";
 import { api } from "@/utils/api";
 import { ENTITY_ENDPOINTS } from "@/utils/api-endpoints";
 import { getErrorMessage } from "@/lib/error-message";
-import { useApiQuery } from "@/hooks/use-api-query";
+import { useInfiniteList } from "@/hooks/use-infinite-list";
 import { useAuth } from "@/hooks/use-auth";
-import type { Entity, UserInfo } from "@/types/api";
+import EntityScopeSelect from "@/components/shared/entity-scope-select";
+import type { Entity, EntityListResponse, UserInfo } from "@/types/api";
 import CreateEntityDialog from "./create-entity-dialog";
 import TransferOwnerDialog from "./transfer-owner-dialog";
+import EditEntityNameDialog from "./edit-entity-name-dialog";
 import EntityMemoryCount from "./entity-memory-count";
 import EntityActions from "./entity-actions";
 import ManagePermissionsSheet from "./manage-permissions-sheet";
 
 export default function EntitiesPage() {
-  const { isAdmin } = useAuth();
+  const { user, isAdmin } = useAuth();
+  const ownUserId = user?.id ?? "";
   const [manageEntity, setManageEntity] = useState<Entity | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [transferEntity, setTransferEntity] = useState<Entity | null>(null);
+  const [editEntity, setEditEntity] = useState<Entity | null>(null);
   const [entityToDelete, setEntityToDelete] = useState<Entity | null>(null);
   const [showUnownedOnly, setShowUnownedOnly] = useState(false);
+  const [scopeUserId, setScopeUserId] = useState<string>("");
+  // Bump to reset the list to page 1 after a mutation (react-query invalidation).
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const reload = () => setRefreshNonce((n) => n + 1);
 
   const {
-    data: entities = [],
+    items: entities = [],
     isLoading,
-    refetch,
-  } = useApiQuery<Entity[]>(
-    async () => {
-      const res = await api.get<Entity[]>(ENTITY_ENDPOINTS.BASE);
-      return res.data ?? [];
+    hasMore,
+    loadMore,
+  } = useInfiniteList<Entity>({
+    fetchPage: async (page) => {
+      const params: Record<string, unknown> = { page, page_size: 50 };
+      const effectiveScope = scopeUserId || ownUserId;
+      if (effectiveScope !== "all" && effectiveScope) {
+        params.user_id = effectiveScope;
+      }
+      const res = await api.get<EntityListResponse>(ENTITY_ENDPOINTS.BASE, {
+        params,
+      });
+      return res.data ?? { results: [], next: null };
     },
-    { errorToast: "Failed to load entities", initialData: [] },
-  );
+    onError: (error) =>
+      toast({
+        title: "Failed to load entities",
+        description: getErrorMessage(error),
+        variant: "destructive",
+      }),
+    deps: [scopeUserId, ownUserId, refreshNonce],
+  });
+
+  // Infinite scroll: the sentinel fires `loadMore` on scroll-into-view.
+  // Duplicate fires are safe — `useInfiniteList`'s `loadMore` guards via refs.
 
   const visibleEntities = useMemo(() => {
     const list = showUnownedOnly
@@ -65,7 +91,7 @@ export default function EntitiesPage() {
       );
       toast({ title: "Entity deleted", variant: "success" });
       setEntityToDelete(null);
-      void refetch();
+      reload();
     } catch (error) {
       toast({
         title: "Failed to delete entity",
@@ -118,7 +144,6 @@ export default function EntitiesPage() {
       key: "memories" as any,
       label: "Memories",
       width: 100,
-      align: "right" as const,
       render: (_value: string, row: Entity) => (
         <EntityMemoryCount entity={row} />
       ),
@@ -140,6 +165,7 @@ export default function EntitiesPage() {
           isAdmin={isAdmin}
           onManage={setManageEntity}
           onTransfer={setTransferEntity}
+          onEdit={setEditEntity}
           onDelete={setEntityToDelete}
         />
       ),
@@ -152,15 +178,23 @@ export default function EntitiesPage() {
         <h1 className="text-xl font-semibold font-fustat">Entities</h1>
         <div className="flex flex-wrap items-center gap-2">
           {isAdmin && (
-            <label className="flex items-center gap-2 text-sm text-onSurface-default-tertiary">
-              <input
-                type="checkbox"
-                className="size-4"
-                checked={showUnownedOnly}
-                onChange={(e) => setShowUnownedOnly(e.target.checked)}
+            <>
+              <EntityScopeSelect
+                value={scopeUserId || ownUserId}
+                onChange={setScopeUserId}
+                ownUserId={ownUserId}
               />
-              Unowned only
-            </label>
+              <label className="flex items-center gap-2 text-sm text-onSurface-default-tertiary">
+                <input
+                  type="checkbox"
+                  className="size-4"
+                  checked={showUnownedOnly}
+                  disabled={(scopeUserId || ownUserId) !== "all"}
+                  onChange={(e) => setShowUnownedOnly(e.target.checked)}
+                />
+                Unowned only
+              </label>
+            </>
           )}
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="size-4 mr-1" /> Create Entity
@@ -169,12 +203,12 @@ export default function EntitiesPage() {
             open={createOpen}
             onClose={() => setCreateOpen(false)}
             isAdmin={isAdmin}
-            onCreated={() => void refetch()}
+            onCreated={reload}
           />
         </div>
       </div>
 
-      {isLoading ? (
+      {isLoading && entities.length === 0 ? (
         <TableSkeleton rows={5} columns={6} />
       ) : visibleEntities.length === 0 ? (
         <EmptyState
@@ -186,13 +220,20 @@ export default function EntitiesPage() {
           }
         />
       ) : (
-        <Card className="border-memBorder-primary overflow-hidden">
-          <DataTable
-            data={visibleEntities}
-            columns={columns}
-            getRowKey={(row) => `${row.type}:${row.id}`}
+        <>
+          <Card className="border-memBorder-primary overflow-hidden">
+            <DataTable
+              data={visibleEntities}
+              columns={columns}
+              getRowKey={(row) => `${row.type}:${row.id}`}
+            />
+          </Card>
+          <InfiniteScrollSentinel
+            hasMore={hasMore}
+            isLoading={isLoading}
+            onLoadMore={loadMore}
           />
-        </Card>
+        </>
       )}
 
       <ManagePermissionsSheet
@@ -207,7 +248,14 @@ export default function EntitiesPage() {
         open={!!transferEntity}
         onClose={() => setTransferEntity(null)}
         isAdmin={isAdmin}
-        onTransferred={() => void refetch()}
+        onTransferred={reload}
+      />
+
+      <EditEntityNameDialog
+        entity={editEntity}
+        open={!!editEntity}
+        onClose={() => setEditEntity(null)}
+        onSaved={reload}
       />
 
       <DeleteConfirmationModal

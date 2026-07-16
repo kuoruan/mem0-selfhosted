@@ -16,7 +16,7 @@ from entity_permissions import (
     entity_filter_params,
     entity_parent_user_id,
     get_entity_or_none,
-    get_visible_entities,
+    get_visible_entities_paginated,
     grant_entity_permission,
     list_entity_permissions,
     list_memory_ids_for_params,
@@ -26,13 +26,14 @@ from entity_permissions import (
     validate_bulk_admin_operation,
 )
 from errors import upstream_error
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from memory_lock import run_memory_write
 from models import Entity, EntityPermission, User
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from schemas import MessageResponse, UserInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from utils.pagination import paginate_response
 
 router = APIRouter(prefix="/entities", tags=["entities"])
 
@@ -73,10 +74,19 @@ class EntityPermissionResponse(BaseModel):
     created_at: datetime
 
 
+class EntityListResponse(BaseModel):
+    """Paginated envelope mirroring ``compat.responses.paginate_response``."""
+    count: int
+    next: Optional[str] = None
+    previous: Optional[str] = None
+    results: list[EntityResponse]
+
+
 class CreateEntityInput(BaseModel):
     type: EntityType
     id: str
     owner_user_id: Optional[str] = None  # admin only, for app creation
+    name: Optional[str] = Field(None, max_length=255)
 
 
 class GrantPermissionInput(BaseModel):
@@ -86,6 +96,10 @@ class GrantPermissionInput(BaseModel):
 
 class TransferOwnerInput(BaseModel):
     user_id: str
+
+
+class UpdateEntityInput(BaseModel):
+    name: Optional[str] = Field(None, max_length=255)
 
 
 def _user_info(user_id: uuid.UUID, db: Session) -> UserInfo:
@@ -235,15 +249,56 @@ def _parse_uuid(value: str, *, label: str = "UUID") -> uuid.UUID:
 # --------------------------------------------------------------------------- #
 # List / create
 # --------------------------------------------------------------------------- #
-@router.get("", response_model=list[EntityResponse])
+@router.get("", response_model=EntityListResponse)
 def list_entities(
     request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=500),
+    entity_type: Optional[EntityType] = Query(
+        None, alias="type", description="Filter to one entity type (e.g. 'user')."
+    ),
+    user_id: Optional[str] = Query(
+        None, description="Admin-only: scope to entities visible to this user (UUID)."
+    ),
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
+    """Page through visible entities. Owned entities are sorted first.
+
+    Pagination is done at the DB level (``LIMIT``/``OFFSET`` + ``COUNT``). The
+    optional ``type`` filter (query param ``?type=user``) narrows to a single
+    type — the memories-page user picker uses ``type=user`` to fetch only user
+    namespaces.
+
+    When ``user_id`` is provided (admin only), the list is scoped to entities
+    visible to that user (owned + explicitly granted). Without it, behaviour is
+    unchanged: admins see all, non-admins see their own.
+    """
     operator, is_admin = resolve_operator(request, auth, db)
-    entities = get_visible_entities(operator.id, db, bypass=is_admin)
-    return _entities_to_response_batch(entities, operator.id, db)
+
+    if user_id is not None:
+        if not is_admin:
+            raise HTTPException(status_code=403, detail="Only admins can scope to another user.")
+        target_id = _parse_uuid(user_id, label="user_id")
+        items, total = get_visible_entities_paginated(
+            target_id,
+            db,
+            bypass=False,
+            entity_type=entity_type,
+            page=page,
+            page_size=page_size,
+        )
+    else:
+        items, total = get_visible_entities_paginated(
+            operator.id,
+            db,
+            bypass=is_admin,
+            entity_type=entity_type,
+            page=page,
+            page_size=page_size,
+        )
+    results = _entities_to_response_batch(items, operator.id, db)
+    return paginate_response(request, results, page, page_size, total=total)
 
 
 @router.post("", response_model=EntityResponse, status_code=201)
@@ -268,6 +323,21 @@ def create_entity(
                 status_code=400,
                 detail="User entity_id cannot contain ':'. Sub-namespaces are created automatically on write.",
             )
+        # UUID entity_ids are not allowed for manual creation.
+        try:
+            parsed_uuid = uuid.UUID(body.id)
+        except (ValueError, TypeError):
+            parsed_uuid = None
+        if parsed_uuid is not None:
+            if parsed_uuid == operator.id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Your own user_id is already yours by default; no entity needs to be created.",
+                )
+            raise HTTPException(
+                status_code=400,
+                detail="UUID user_ids cannot be created manually. Use a non-UUID identifier (e.g. 'alice').",
+            )
         if is_bootstrap_admin(operator.id):
             raise HTTPException(
                 status_code=400,
@@ -279,6 +349,8 @@ def create_entity(
                 status_code=403,
                 detail=f"Entity '{body.type}/{body.id}' is already owned by another user.",
             )
+        if body.name and entity.name is None:
+            entity.name = body.name.strip()
         db.commit()
         return _entity_to_response(entity, operator.id, db)
 
@@ -295,7 +367,7 @@ def create_entity(
                 detail="owner_user_id is required when creating an app entity.",
             )
         owner_id = _parse_uuid(body.owner_user_id, label="owner_user_id")
-        entity = create_app_entity(body.id, owner_id, db)
+        entity = create_app_entity(body.id, owner_id, db, name=body.name)
         return _entity_to_response(entity, operator.id, db)
 
     raise HTTPException(status_code=400, detail=f"Unknown entity type: '{body.type}'.")
@@ -521,3 +593,42 @@ def delete_entity(
     db.delete(entity)
     db.commit()
     return MessageResponse(message="Entity deleted")
+
+
+@router.patch("/{entity_type}/{entity_id}", response_model=EntityResponse)
+def update_entity(
+    entity_type: EntityType,
+    entity_id: str,
+    body: UpdateEntityInput,
+    request: Request,
+    namespace: str | None = None,
+    auth=Depends(verify_auth),
+    db: Session = Depends(get_db),
+):
+    """Update an entity's display name. Only the owner or an admin may edit.
+
+    For agent/run entities, ``namespace`` scopes the lookup to a specific
+    user namespace (same as delete/count).
+    """
+    operator, is_admin = resolve_operator(request, auth, db)
+
+    # Resolve parent namespace for agent/run (mirror count_entity_memories/delete).
+    if is_admin and namespace is not None:
+        parent_entity_id = namespace
+    elif is_bootstrap_admin(operator.id):
+        parent_entity_id = namespace
+    else:
+        parent_entity_id = namespace or str(operator.id)
+
+    entity = get_entity_or_none(entity_type, entity_id, db, parent_entity_id=parent_entity_id)
+    if entity is None:
+        raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
+
+    # Only the owner or a system admin may edit.
+    if entity.owner_user_id != operator.id and not is_admin:
+        raise HTTPException(status_code=403, detail="Only the owner or an admin can edit this entity.")
+
+    if body.name is not None:
+        entity.name = body.name.strip() or None
+    db.commit()
+    return _entity_to_response(entity, operator.id, db)

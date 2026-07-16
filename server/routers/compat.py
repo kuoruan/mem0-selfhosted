@@ -69,13 +69,13 @@ from compat.helpers import (
 from compat.metadata import build_v3_add_extra_metadata, merge_v1_add_metadata, merge_v3_add_metadata
 from compat.utils import drop_none
 from compat.responses import (
-    paginate_response,
     warn_ignored_compat_params,
     warn_unsupported_fields,
     pending_add_response,
     sync_add_response,
     unsupported_api_error,
 )
+from utils.pagination import paginate_response
 from compat.events import (
     create_pending_add_event,
     event_access_allowed,

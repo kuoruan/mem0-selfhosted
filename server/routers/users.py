@@ -1,16 +1,28 @@
+from typing import Optional
+
 from auth import require_admin
-from compat.responses import paginate_response
 from db import get_db
 from fastapi import APIRouter, Depends, Query, Request
 from models import User
+from pydantic import BaseModel
 from routers.auth import UserResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from utils.pagination import paginate_response
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-@router.get("", summary="List dashboard users (admin only)")
+class UserListResponse(BaseModel):
+    """Paginated envelope mirroring ``utils.pagination.paginate_response``."""
+
+    count: int
+    next: Optional[str] = None
+    previous: Optional[str] = None
+    results: list[UserResponse]
+
+
+@router.get("", response_model=UserListResponse, summary="List dashboard users (admin only)")
 def list_users(
     request: Request,
     page: int = Query(1, ge=1),
@@ -26,18 +38,13 @@ def list_users(
     """
     total = db.scalar(select(func.count(User.id))) or 0
     users = (
-        db.execute(
-            select(User)
-            .order_by(User.name.asc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
+        db.execute(select(User).order_by(User.name.asc()).offset((page - 1) * page_size).limit(page_size))
         .scalars()
         .all()
     )
     return paginate_response(
         request,
-        [UserResponse.model_validate(u) for u in users],
+        users,
         page,
         page_size,
         total=total,

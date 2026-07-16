@@ -8,7 +8,6 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
-from fastapi import Request
 
 from compat.helpers import normalize_results_dict
 
@@ -57,38 +56,6 @@ def resolve_optional_pagination(
     raw_size = default_page_size if page_size is None else page_size
     effective_page_size = min(max(1, raw_size), max_page_size)
     return effective_page, effective_page_size
-
-
-def build_page_url(request: Request, *, page: int, page_size: int) -> str:
-    return str(request.url.include_query_params(page=page, page_size=page_size))
-
-
-def paginate_response(
-    request: Request,
-    items: List[Any],
-    page: int,
-    page_size: int,
-    *,
-    total: int | None = None,
-) -> Dict[str, Any]:
-    """Wrap a list of items in the SDK-compatible pagination envelope.
-
-    When *total* is provided, *items* is treated as the already-paginated page
-    slice (e.g. produced by a DB-level ``LIMIT``/``OFFSET``) and is not re-sliced;
-    otherwise the full list is sliced here and *total* is derived from its length.
-    """
-    start = (page - 1) * page_size
-    if total is None:
-        total = len(items)
-        page_items = items[start : start + page_size]
-    else:
-        page_items = items
-    return {
-        "count": total,
-        "next": build_page_url(request, page=page + 1, page_size=page_size) if start + page_size < total else None,
-        "previous": build_page_url(request, page=page - 1, page_size=page_size) if page > 1 else None,
-        "results": page_items,
-    }
 
 
 def warn_unsupported_fields(fields: Optional[List[str]], endpoint: str) -> None:

@@ -42,6 +42,8 @@ export const ENTITY_ENDPOINTS = {
     `/entities/${type}/${encodeURIComponent(id)}/transfer-owner`,
   COUNT: (type: string, id: string) =>
     `/entities/${type}/${encodeURIComponent(id)}/count`,
+  UPDATE: (type: string, id: string) =>
+    `/entities/${type}/${encodeURIComponent(id)}`,
 } as const;
 
 export const USER_ENDPOINTS = {

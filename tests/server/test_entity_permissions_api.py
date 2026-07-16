@@ -196,3 +196,144 @@ class TestBootstrapEntityPermissions:
         """DELETE /entities on a never-claimed namespace returns 404 (not 403/silent 200)."""
         resp = self.client.delete("/entities/user/never-claimed", headers=self._auth)
         assert resp.status_code == 404, resp.text
+
+    # ------------------------------------------------------------------ #
+    # Pagination envelope, UUID rejection, PATCH rename
+    # ------------------------------------------------------------------ #
+    def _make_owner(self, email="app-owner@test.local"):
+        """Insert a member user for app-entity ownership (wipes a prior row first).
+
+        The caller is responsible for cleaning up both the entities and the user
+        in a ``finally`` block — ``_clean_entities`` only wipes the entities table.
+        """
+        session = SessionLocal()
+        session.execute(delete(User).where(User.email == email))
+        owner = User(name="app-owner", email=email, role="member")
+        session.add(owner)
+        session.commit()
+        session.refresh(owner)
+        owner_id = str(owner.id)
+        session.close()
+        return owner_id
+
+    def _cleanup_owner_entities(self, entity_ids, email="app-owner@test.local"):
+        session = SessionLocal()
+        try:
+            session.execute(delete(Entity).where(Entity.id.in_(entity_ids)))
+            session.execute(delete(User).where(User.email == email))
+            session.commit()
+        finally:
+            session.close()
+
+    def test_list_entities_returns_paginated_envelope(self):
+        """GET /entities returns {count,next,previous,results}, not a bare array."""
+        owner_id = self._make_owner()
+        try:
+            for eid in ("app-a", "app-b"):
+                resp = self.client.post(
+                    "/entities",
+                    json={"type": "app", "id": eid, "owner_user_id": owner_id},
+                    headers=self._auth,
+                )
+                assert resp.status_code == 201, resp.text
+
+            resp = self.client.get("/entities?page_size=1", headers=self._auth)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert {"count", "next", "previous", "results"} <= set(body)
+            assert isinstance(body["results"], list)
+            assert body["count"] >= 2
+            # page 1 with more to go → next link set, previous absent.
+            assert body["next"] is not None
+            assert body["previous"] is None
+            assert "page=2" in body["next"]
+            assert "page_size=1" in body["next"]
+
+            # Admin scoping to another user keeps `user_id` in the next link.
+            resp = self.client.get(f"/entities?user_id={owner_id}&page_size=1", headers=self._auth)
+            assert resp.status_code == 200, resp.text
+            scoped = resp.json()
+            assert scoped["count"] == 2
+            assert scoped["next"] is not None
+            assert f"user_id={owner_id}" in scoped["next"]
+        finally:
+            self._cleanup_owner_entities(["app-a", "app-b"])
+
+    def test_create_entity_rejects_uuid_user_id(self):
+        """POST /entities with a UUID user_id is rejected; own UUID says 'already yours'."""
+        other_uuid = "12345678-1234-1234-1234-123456789012"
+        resp = self.client.post(
+            "/entities",
+            json={"type": "user", "id": other_uuid},
+            headers=self._auth,
+        )
+        assert resp.status_code == 400, resp.text
+        assert "cannot be created manually" in resp.json()["detail"].lower()
+
+        # _BOOTSTRAP_ADMIN.id == uuid.UUID(int=0) — the operator's own UUID.
+        own_uuid = "00000000-0000-0000-0000-000000000000"
+        resp = self.client.post(
+            "/entities",
+            json={"type": "user", "id": own_uuid},
+            headers=self._auth,
+        )
+        assert resp.status_code == 400, resp.text
+        assert "already yours" in resp.json()["detail"].lower()
+
+    def test_create_entity_with_name(self):
+        """POST /entities {name} stores and returns the display name."""
+        owner_id = self._make_owner()
+        try:
+            resp = self.client.post(
+                "/entities",
+                json={
+                    "type": "app",
+                    "id": "named-app",
+                    "owner_user_id": owner_id,
+                    "name": "my entity",
+                },
+                headers=self._auth,
+            )
+            assert resp.status_code == 201, resp.text
+            assert resp.json()["name"] == "my entity"
+        finally:
+            self._cleanup_owner_entities(["named-app"])
+
+    def test_update_entity_name_and_clear(self):
+        """PATCH /entities/{type}/{id} sets, clears, and whitespace-trims the name."""
+        owner_id = self._make_owner()
+        try:
+            create = self.client.post(
+                "/entities",
+                json={"type": "app", "id": "patch-app", "owner_user_id": owner_id},
+                headers=self._auth,
+            )
+            assert create.status_code == 201, create.text
+
+            resp = self.client.patch(
+                "/entities/app/patch-app",
+                json={"name": "X"},
+                headers=self._auth,
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["name"] == "X"
+
+            # Empty string clears to null.
+            resp = self.client.patch(
+                "/entities/app/patch-app",
+                json={"name": ""},
+                headers=self._auth,
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["name"] is None
+
+            # Whitespace-only also clears to null (strip() or None).
+            resp = self.client.patch(
+                "/entities/app/patch-app",
+                json={"name": " "},
+                headers=self._auth,
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["name"] is None
+        finally:
+            self._cleanup_owner_entities(["patch-app"])

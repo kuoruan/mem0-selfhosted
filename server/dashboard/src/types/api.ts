@@ -52,6 +52,13 @@ export interface Entity {
   is_owner: boolean;
 }
 
+export interface EntityListResponse {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: Entity[];
+}
+
 export type EntityPermissionLevel = "read" | "write" | "admin";
 
 export interface UserInfo {
@@ -75,4 +82,12 @@ export interface User {
   role: string;
   auth_provider: string;
   created_at: string;
+}
+
+/** Paginated envelope returned by ``GET /users``. */
+export interface UserListResponse {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: User[];
 }

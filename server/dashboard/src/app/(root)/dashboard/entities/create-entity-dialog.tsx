@@ -21,10 +21,26 @@ import { toast } from "@/components/ui/use-toast";
 import { api } from "@/utils/api";
 import { ENTITY_ENDPOINTS } from "@/utils/api-endpoints";
 import { getErrorMessage } from "@/lib/error-message";
+import { isUuidString } from "@/lib/validators";
 import type { EntityType } from "@/types/api";
 import UserSelect from "@/components/shared/user-select";
+import { useAuth } from "@/hooks/use-auth";
 
-const ENTITY_TYPES: EntityType[] = ["user", "agent", "app", "run"];
+const ENTITY_TYPES: EntityType[] = ["user", "app"];
+
+interface CreateEntityForm {
+  type: EntityType;
+  id: string;
+  name: string;
+  ownerUserId: string;
+}
+
+const EMPTY_FORM: CreateEntityForm = {
+  type: "user",
+  id: "",
+  name: "",
+  ownerUserId: "",
+};
 
 interface CreateEntityDialogProps {
   open: boolean;
@@ -39,27 +55,35 @@ export default function CreateEntityDialog({
   isAdmin,
   onCreated,
 }: CreateEntityDialogProps) {
-  const [newType, setNewType] = useState<EntityType>("user");
-  const [newId, setNewId] = useState("");
-  const [newOwnerId, setNewOwnerId] = useState("");
+  const { user } = useAuth();
+  const [form, setForm] = useState<CreateEntityForm>(EMPTY_FORM);
 
   // Reset the form each time the dialog opens so stale input from a previous
   // cancelled session never carries over.
   useEffect(() => {
     if (!open) return;
-    setNewType("user");
-    setNewId("");
-    setNewOwnerId("");
+    setForm(EMPTY_FORM);
   }, [open]);
+
+  const updateField = <K extends keyof CreateEntityForm>(
+    key: K,
+    value: CreateEntityForm[K],
+  ) => setForm((prev) => ({ ...prev, [key]: value }));
+
+  const isUuid = form.type === "user" && isUuidString(form.id.trim());
+  const isOwnUuid = isUuid && form.id.trim() === user?.id;
 
   const handleCreate = async () => {
     try {
       const body: Record<string, unknown> = {
-        type: newType,
-        id: newId.trim(),
+        type: form.type,
+        id: form.id.trim(),
       };
-      if (newType === "app" && newOwnerId.trim()) {
-        body.owner_user_id = newOwnerId.trim();
+      if (form.name.trim()) {
+        body.name = form.name.trim();
+      }
+      if (form.type === "app" && form.ownerUserId.trim()) {
+        body.owner_user_id = form.ownerUserId.trim();
       }
       await api.post(ENTITY_ENDPOINTS.BASE, body);
       toast({ title: "Entity created", variant: "success" });
@@ -89,8 +113,8 @@ export default function CreateEntityDialog({
           <div className="space-y-2">
             <Label>Type</Label>
             <Select
-              value={newType}
-              onValueChange={(v) => setNewType(v as EntityType)}
+              value={form.type}
+              onValueChange={(v) => updateField("type", v as EntityType)}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -103,46 +127,54 @@ export default function CreateEntityDialog({
                 ))}
               </SelectContent>
             </Select>
-            {newType === "agent" || newType === "run" ? (
-              <p className="text-xs text-onSurface-default-tertiary">
-                {newType} entities are auto-created on first write and cannot be
-                manually created.
-              </p>
-            ) : null}
           </div>
           <div className="space-y-2">
             <Label htmlFor="entity-id">ID</Label>
             <Input
               id="entity-id"
-              value={newId}
-              onChange={(e) => setNewId(e.target.value)}
-              placeholder={
-                newType === "user"
-                  ? "e.g. alice or a UUID"
-                  : newType === "app"
-                    ? "e.g. my-repo"
-                    : "auto-created"
-              }
-              disabled={newType === "agent" || newType === "run"}
+              value={form.id}
+              onChange={(e) => updateField("id", e.target.value)}
+              placeholder={form.type === "user" ? "e.g. alice" : "e.g. my-repo"}
             />
-            {newType === "user" ? (
+            {form.type === "user" ? (
               <p className="text-xs text-onSurface-default-tertiary">
-                UUID entity_ids are reserved for the user with that ID. Cannot
-                contain <code>:</code>.
+                Cannot contain <code>:</code>. UUID user_ids cannot be created
+                manually; your own UUID is already yours by default.
               </p>
-            ) : newType === "app" ? (
+            ) : form.type === "app" ? (
               <p className="text-xs text-onSurface-default-tertiary">
                 App entities must be created by an admin. Requires an owner.
               </p>
             ) : null}
+            {isOwnUuid && (
+              <p className="text-xs text-onSurface-info-primary">
+                This is your own user_id — already yours by default; no entity
+                needs to be created.
+              </p>
+            )}
+            {isUuid && !isOwnUuid && (
+              <p className="text-xs text-onSurface-danger-primary">
+                UUID user_ids cannot be created manually. Use a non-UUID
+                identifier (e.g. &#39;alice&#39;).
+              </p>
+            )}
           </div>
-          {newType === "app" && isAdmin && (
+          <div className="space-y-2">
+            <Label htmlFor="entity-name">Name (optional)</Label>
+            <Input
+              id="entity-name"
+              value={form.name}
+              onChange={(e) => updateField("name", e.target.value)}
+              placeholder="Display name"
+            />
+          </div>
+          {form.type === "app" && isAdmin && (
             <div className="space-y-2">
               <Label htmlFor="owner-id">Owner user ID</Label>
               <UserSelect
                 id="owner-id"
-                value={newOwnerId}
-                onChange={setNewOwnerId}
+                value={form.ownerUserId}
+                onChange={(v) => updateField("ownerUserId", v)}
                 isAdmin={isAdmin}
               />
             </div>
@@ -150,11 +182,10 @@ export default function CreateEntityDialog({
           <Button
             onClick={handleCreate}
             disabled={
-              !newId.trim() ||
-              newType === "agent" ||
-              newType === "run" ||
-              (newType === "app" && !isAdmin) ||
-              (newType === "app" && !newOwnerId.trim())
+              !form.id.trim() ||
+              isUuid ||
+              (form.type === "app" && !isAdmin) ||
+              (form.type === "app" && !form.ownerUserId.trim())
             }
             className="w-full"
           >

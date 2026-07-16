@@ -1,24 +1,10 @@
 "use client";
 
-import { useMemo, useState, type UIEvent } from "react";
-import { Check, ChevronsUpDown } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
+import { useMemo } from "react";
 import { Input } from "@/components/ui/input";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
 import { useUsers } from "@/hooks/use-users";
+import Combobox from "@/components/shared/combobox";
+import type { ComboboxOption } from "@/components/shared/combobox";
 
 interface UserSelectProps {
   value: string;
@@ -45,23 +31,16 @@ export default function UserSelect({
   inputPlaceholder = "User UUID",
 }: UserSelectProps) {
   const { users, isLoading, hasMore, loadMore } = useUsers(isAdmin);
-  const [open, setOpen] = useState(false);
 
-  const selected = useMemo(
-    () => users.find((u) => u.id === value) ?? null,
-    [users, value],
+  const options: ComboboxOption[] = useMemo(
+    () =>
+      users.map((u) => ({
+        value: u.id,
+        label: `${u.name} (${u.email})`,
+        search: `${u.name} ${u.email} ${u.id}`,
+      })),
+    [users],
   );
-
-  const handleScroll = (e: UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    if (
-      !isLoading &&
-      hasMore &&
-      el.scrollHeight - el.scrollTop - el.clientHeight < 32
-    ) {
-      loadMore();
-    }
-  };
 
   if (!isAdmin) {
     return (
@@ -76,66 +55,18 @@ export default function UserSelect({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          id={id}
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={open}
-          className={cn(
-            "w-full justify-between font-normal",
-            !value && "text-onSurface-default-tertiary",
-            className,
-          )}
-        >
-          <span className="truncate">
-            {selected
-              ? `${selected.name} (${selected.email})`
-              : value || placeholder}
-          </span>
-          <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        className="min-w-[16rem] w-[var(--radix-popover-trigger-width)] p-0"
-        align="start"
-      >
-        <Command>
-          <CommandInput placeholder="Search user..." />
-          <CommandList onScroll={handleScroll}>
-            <CommandEmpty>
-              {isLoading ? "Loading..." : "No user found."}
-            </CommandEmpty>
-            <CommandGroup>
-              {users.map((u) => (
-                <CommandItem
-                  key={u.id}
-                  value={`${u.name} ${u.email} ${u.id}`}
-                  onSelect={() => {
-                    onChange(u.id);
-                    setOpen(false);
-                  }}
-                >
-                  <Check
-                    className={cn(
-                      "mr-2 size-4",
-                      value === u.id ? "opacity-100" : "opacity-0",
-                    )}
-                  />
-                  {u.name} ({u.email})
-                </CommandItem>
-              ))}
-            </CommandGroup>
-            {hasMore && (
-              <div className="py-2 text-center text-xs text-onSurface-default-tertiary">
-                {isLoading ? "Loading..." : "Scroll for more"}
-              </div>
-            )}
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <Combobox
+      value={value}
+      onChange={onChange}
+      options={options}
+      isLoading={isLoading}
+      hasMore={hasMore}
+      onLoadMore={loadMore}
+      placeholder={placeholder}
+      searchPlaceholder="Search user..."
+      emptyText="No user found."
+      id={id}
+      className={className}
+    />
   );
 }

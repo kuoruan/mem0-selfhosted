@@ -4,7 +4,6 @@ import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { DataTable } from "@/components/shared/data-table";
@@ -23,7 +22,9 @@ import { toast } from "@/components/ui/use-toast";
 import { getErrorMessage } from "@/lib/error-message";
 import { api } from "@/utils/api";
 import { MEMORY_ENDPOINTS } from "@/utils/api-endpoints";
+import { useAuth } from "@/hooks/use-auth";
 import { useApiQuery } from "@/hooks/use-api-query";
+import EntityUserSelect from "@/components/shared/entity-user-select";
 import { Memory } from "@/types/api";
 
 const PAGE_SIZE = 20;
@@ -31,7 +32,9 @@ const PAGE_SIZE = 20;
 const MEMORY_FETCH_LIMIT = 1000;
 
 export default function MemoriesPage() {
-  const [userId, setUserId] = useState("");
+  const { user } = useAuth();
+  const ownUserId = user?.id ?? "";
+  const [userId, setUserId] = useState(ownUserId);
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
   const [page, setPage] = useState(0);
@@ -43,15 +46,25 @@ export default function MemoriesPage() {
     refetch,
   } = useApiQuery<Memory[]>(
     async () => {
-      const params = userId.trim()
-        ? { user_id: userId.trim(), top_k: MEMORY_FETCH_LIMIT }
-        : { top_k: MEMORY_FETCH_LIMIT };
-      const res = await api.get(MEMORY_ENDPOINTS.BASE, { params });
+      const res = await api.get(MEMORY_ENDPOINTS.BASE, {
+        params: { user_id: userId, top_k: MEMORY_FETCH_LIMIT },
+      });
       const raw = res.data?.results ?? res.data ?? [];
       return Array.isArray(raw) ? raw : [];
     },
-    { errorToast: "Failed to load memories", initialData: [] },
+    {
+      errorToast: "Failed to load memories",
+      initialData: [],
+      deps: [userId],
+    },
   );
+
+  // Switching user also resets to the first page — folded into the handler so
+  // no separate effect/render cycle is needed.
+  const selectUser = (id: string) => {
+    setUserId(id);
+    setPage(0);
+  };
 
   const totalPages = Math.ceil(memories.length / PAGE_SIZE);
   const paginatedMemories = memories.slice(
@@ -111,17 +124,11 @@ export default function MemoriesPage() {
       )}
 
       <div className="flex gap-3">
-        <Input
-          placeholder="Filter by User ID (optional)"
+        <EntityUserSelect
           value={userId}
-          onChange={(e) => setUserId(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              setPage(0);
-              refetch();
-            }
-          }}
-          className="w-64"
+          onChange={selectUser}
+          ownUserId={ownUserId}
+          className="w-72"
         />
       </div>
 

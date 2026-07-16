@@ -33,7 +33,7 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException, Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -346,6 +346,7 @@ def count_owned_entities(user_id: uuid.UUID, db: Session) -> int:
 def _create_entity_row(
     entity_type: str,
     entity_id: str,
+    entity_name: str | None,
     owner_user_id: uuid.UUID,
     parent_pk: uuid.UUID | None,
     db: Session,
@@ -358,6 +359,7 @@ def _create_entity_row(
                 id=entity_id,
                 owner_user_id=owner_user_id,
                 parent_pk=parent_pk,
+                name=entity_name,
             )
             db.add(entity)
             db.flush()
@@ -412,7 +414,7 @@ def _first_claim_toplevel(
         )
 
     try:
-        _create_entity_row("user", top, user_id, None, db)
+        _create_entity_row("user", top, None, user_id, None, db)
     except IntegrityError:
         # Race: another request created the top-level entity first.
         existing_top = _get_user_entity_or_none(top, db)
@@ -484,7 +486,7 @@ def _ensure_user_entity(
         if existing is not None:
             return existing
         try:
-            return _create_entity_row("user", entity_id, user_id, None, db)
+            return _create_entity_row("user", entity_id, None, user_id, None, db)
         except IntegrityError:
             existing = _claim_or_get_user_entity(entity_id, user_id, db)
             if existing is None:
@@ -514,7 +516,7 @@ def _ensure_agent_or_run_entity(
         return existing
 
     try:
-        return _create_entity_row(entity_type, entity_id, owner_user_id, parent_pk, db)
+        return _create_entity_row(entity_type, entity_id, None, owner_user_id, parent_pk, db)
     except IntegrityError:
         existing = _get_scoped_entity_or_none(entity_type, parent_pk, entity_id, db)
         if existing is None:
@@ -575,7 +577,7 @@ def ensure_entity_owner(
     raise HTTPException(status_code=400, detail=f"Unknown entity type: '{entity_type}'.")
 
 
-def create_app_entity(entity_id: str, owner_user_id: uuid.UUID, db: Session) -> Entity:
+def create_app_entity(entity_id: str, owner_user_id: uuid.UUID, db: Session, *, name: str | None = None) -> Entity:
     """Create an app entity owned by *owner_user_id* (admin-only manual creation).
 
     Validates that *owner_user_id* is an existing user (404 otherwise) and that
@@ -585,7 +587,7 @@ def create_app_entity(entity_id: str, owner_user_id: uuid.UUID, db: Session) -> 
     if db.get(User, owner_user_id) is None:
         raise HTTPException(status_code=404, detail=f"User '{owner_user_id}' not found.")
     try:
-        entity = _create_entity_row("app", entity_id, owner_user_id, None, db)
+        entity = _create_entity_row("app", entity_id, name, owner_user_id, None, db)
     except IntegrityError:
         if get_entity_or_none("app", entity_id, db) is not None:
             raise HTTPException(status_code=409, detail=f"App '{entity_id}' already exists.")
@@ -1743,6 +1745,53 @@ def get_visible_entities(
         .scalars()
         .all()
     )
+
+
+def get_visible_entities_paginated(
+    user_id: uuid.UUID,
+    db: Session,
+    *,
+    bypass: bool = False,
+    entity_type: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
+) -> tuple[list[Entity], int]:
+    """Paginated variant of :func:`get_visible_entities`.
+
+    Returns ``(page_items, total)``. Ordering puts entities owned by ``user_id``
+    first (so the caller's own namespaces surface at the top of the list), then by
+    type and id. ``entity_type`` optionally restricts to one type (e.g. ``"user"``)
+    so the memories-page user picker can fetch only user entities.
+    """
+    visibility = or_(
+        Entity.owner_user_id == user_id,
+        Entity.owner_user_id.is_not(None)
+        & Entity.pk.in_(
+            select(EntityPermission.entity_pk).where(EntityPermission.user_id == user_id)
+        ),
+    )
+    where_clause = [] if bypass else [visibility]
+    if entity_type is not None:
+        where_clause.append(Entity.type == entity_type)
+
+    # Owned-first ordering: 0 for owned, 1 for everything else.
+    owned_first = case((Entity.owner_user_id == user_id, 0), else_=1)
+
+    base = select(Entity)
+    if where_clause:
+        base = base.where(*where_clause)
+
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    items = (
+        db.execute(
+            base.order_by(owned_first, Entity.type, Entity.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return items, total
 
 
 # --------------------------------------------------------------------------- #
