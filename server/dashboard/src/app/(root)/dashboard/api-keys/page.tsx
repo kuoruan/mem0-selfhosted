@@ -19,7 +19,6 @@ import DeleteConfirmationModal from "@/components/ui/delete-confirmation-modal";
 import { api } from "@/utils/api";
 import { API_KEY_ENDPOINTS } from "@/utils/api-endpoints";
 import { toast } from "@/components/ui/use-toast";
-import { UpgradeBanner } from "@/components/self-hosted/upgrade-banner";
 import { Plus, Copy, Check, Trash2 } from "lucide-react";
 import { CopyToClipboard } from "react-copy-to-clipboard";
 import { format } from "date-fns";
@@ -202,16 +201,6 @@ export default function ApiKeysPage() {
           </DialogContent>
         </Dialog>
       </div>
-
-      {keys.length >= 3 && (
-        <UpgradeBanner
-          id="api-keys-3"
-          message="Managing multiple apps? Cloud offers project-based isolation."
-          ctaLabel="Explore Cloud"
-          ctaUrl="https://app.mem0.ai?utm_source=oss&utm_medium=dashboard-api-keys"
-          variant="cloud"
-        />
-      )}
 
       {isLoading ? (
         <TableSkeleton rows={3} columns={4} />
