@@ -1,7 +1,7 @@
 import {
   useCallback,
   useEffect,
-  useEffectEvent,
+  useRef,
   useState,
   type DependencyList,
 } from "react";
@@ -40,35 +40,34 @@ export function useApiQuery<T>(
   const [isLoading, setIsLoading] = useState(enabled);
   const [error, setError] = useState("");
 
-  // Effect events: `fetcher` / `errorToast` can change without retriggering
-  // the mount fetch (and without becoming effect dependencies).
-  const fetchEvent = useEffectEvent(() => fetcher());
-  const handleError = useEffectEvent((err: unknown) => {
-    const message = getErrorMessage(err, errorToast || "Request failed");
-    setError(message);
-    if (errorToast) {
-      toast({
-        title: errorToast,
-        description: message,
-        variant: "destructive",
-      });
-    }
-  });
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
 
   const run = useCallback(async () => {
     setIsLoading(true);
     setError("");
     try {
-      setData(await fetchEvent());
+      setData(await fetcherRef.current());
     } catch (err) {
-      handleError(err);
+      const message = getErrorMessage(err, errorToast || "Request failed");
+      setError(message);
+      if (errorToast) {
+        toast({
+          title: errorToast,
+          description: message,
+          variant: "destructive",
+        });
+      }
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [errorToast]);
 
   useEffect(() => {
     if (enabled) void run();
+    // `deps` is caller-controlled and spread here so the effect re-runs only on
+    // the caller's chosen triggers (plus enabled/run). The spread can't be
+    // statically verified by exhaustive-deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, run, ...deps]);
 

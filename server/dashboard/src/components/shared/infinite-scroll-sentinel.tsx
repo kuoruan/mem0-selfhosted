@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useEffectEvent, useRef } from "react";
+import { useEffect, useRef } from "react";
 
 interface InfiniteScrollSentinelProps {
   /** When false, the sentinel renders nothing. */
@@ -21,7 +21,7 @@ interface InfiniteScrollSentinelProps {
 /**
  * Drop-in sentinel for infinite-scroll lists. Place it after the list/table;
  * an IntersectionObserver fires ``onLoadMore`` when it scrolls into view.
- * ``onLoadMore`` is an effect event, so the observer re-subscribes only on
+ * ``onLoadMore`` is read through a ref, so the observer re-subscribes only on
  * ``hasMore`` / ``isLoading`` / ``rootMargin`` — a short first page that leaves
  * the sentinel in view auto-continues to the next page on the load transition.
  */
@@ -35,7 +35,8 @@ export default function InfiniteScrollSentinel({
   className,
 }: InfiniteScrollSentinelProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const loadMoreEvent = useEffectEvent(onLoadMore);
+  const onLoadMoreRef = useRef(onLoadMore);
+  onLoadMoreRef.current = onLoadMore;
 
   useEffect(() => {
     if (!hasMore) return;
@@ -43,13 +44,12 @@ export default function InfiniteScrollSentinel({
     if (!el) return;
     const io = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting) loadMoreEvent();
+        if (entries[0]?.isIntersecting) onLoadMoreRef.current();
       },
       { rootMargin, threshold: 0 },
     );
     io.observe(el);
     return () => io.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasMore, isLoading, rootMargin]);
 
   if (!hasMore) return null;

@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useEffectEvent,
   useRef,
   useState,
   type DependencyList,
@@ -36,8 +35,8 @@ const EMPTY_DEPS: DependencyList = [];
 /**
  * Infinite-scroll list loader (react-query ``useInfiniteQuery`` semantics;
  * distinct from ``useApiQuery``'s single-page refetch). ``fetchPage`` /
- * ``onError`` are effect events, so inline closures won't retrigger the mount
- * fetch.
+ * ``onError`` are read through refs so inline closures won't retrigger the
+ * mount fetch.
  *
  * ``loadMore`` guards read ``page`` / ``isLoading`` / ``hasMore`` from refs
  * (not state) so rapid scroll events can't observe stale values and fire
@@ -54,8 +53,10 @@ export function useInfiniteList<T>({
   const [hasMore, setHasMore] = useState(enabled);
   const [isLoading, setLoading] = useState(enabled);
 
-  const fetchPageEvent = useEffectEvent((page: number) => fetchPage(page));
-  const onErrorEvent = useEffectEvent((err: unknown) => onError?.(err));
+  const fetchPageRef = useRef(fetchPage);
+  fetchPageRef.current = fetchPage;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   // Refs mirror state for synchronous guard reads. Initialized to `enabled`
   // so a sentinel callback firing before the mount fetch still sees "loading"
@@ -68,7 +69,7 @@ export function useInfiniteList<T>({
     isLoadingRef.current = true;
     setLoading(true);
     try {
-      const data = await fetchPageEvent(targetPage);
+      const data = await fetchPageRef.current(targetPage);
       const newItems = data.results ?? [];
       setItems((prev) =>
         targetPage === 1 ? newItems : [...prev, ...newItems],
@@ -80,7 +81,7 @@ export function useInfiniteList<T>({
     } catch (err) {
       hasMoreRef.current = false;
       setHasMore(false);
-      onErrorEvent(err);
+      onErrorRef.current?.(err);
     } finally {
       isLoadingRef.current = false;
       setLoading(false);
