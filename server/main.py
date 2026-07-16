@@ -83,7 +83,7 @@ SENSITIVE_CONFIG_KEYS = {
     "secret",
     "token",
 }
-SKIPPED_REQUEST_LOG_PATHS = {"/api/health", "/docs", "/redoc", "/openapi.json"}
+SKIPPED_REQUEST_LOG_PATHS = {"/api/health", "/docs", "/redoc", "/openapi.json", "/v1/ping"}
 SKIPPED_REQUEST_LOG_PREFIXES = ("/requests",)
 
 BUNDLED_LLM_PROVIDERS = ("openai", "anthropic", "gemini", "deepseek", "ollama")
@@ -329,8 +329,9 @@ def _should_log_request(request: Request) -> bool:
     if request.method == "OPTIONS":
         return False
     path = request.url.path
-    if path in SKIPPED_REQUEST_LOG_PATHS:
-        return False
+    for skipped in SKIPPED_REQUEST_LOG_PATHS:
+        if path == skipped or path.startswith(skipped.rstrip("/") + "/"):
+            return False
     return not path.startswith(SKIPPED_REQUEST_LOG_PREFIXES)
 
 
