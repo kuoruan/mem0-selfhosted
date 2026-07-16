@@ -176,37 +176,31 @@ export default function EntitiesPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-semibold font-fustat">Entities</h1>
-        <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && (
-            <>
-              <EntityScopeSelect
-                value={scopeUserId || ownUserId}
-                onChange={setScopeUserId}
-                ownUserId={ownUserId}
-              />
-              <label className="flex items-center gap-2 text-sm text-onSurface-default-tertiary">
-                <input
-                  type="checkbox"
-                  className="size-4"
-                  checked={showUnownedOnly}
-                  disabled={(scopeUserId || ownUserId) !== "all"}
-                  onChange={(e) => setShowUnownedOnly(e.target.checked)}
-                />
-                Unowned only
-              </label>
-            </>
-          )}
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="size-4 mr-1" /> Create Entity
-          </Button>
-          <CreateEntityDialog
-            open={createOpen}
-            onClose={() => setCreateOpen(false)}
-            isAdmin={isAdmin}
-            onCreated={reload}
-          />
-        </div>
+        <Button size="sm" onClick={() => setCreateOpen(true)}>
+          <Plus className="size-4 mr-1" /> Create Entity
+        </Button>
       </div>
+
+      {isAdmin && (
+        <div className="flex flex-wrap items-center gap-3">
+          <EntityScopeSelect
+            value={scopeUserId || ownUserId}
+            onChange={setScopeUserId}
+            ownUserId={ownUserId}
+            className="w-72"
+          />
+          <label className="flex items-center gap-2 text-sm text-onSurface-default-tertiary">
+            <input
+              type="checkbox"
+              className="size-4"
+              checked={showUnownedOnly}
+              disabled={(scopeUserId || ownUserId) !== "all"}
+              onChange={(e) => setShowUnownedOnly(e.target.checked)}
+            />
+            Unowned only
+          </label>
+        </div>
+      )}
 
       {isLoading && entities.length === 0 ? (
         <TableSkeleton rows={5} columns={6} />
@@ -235,6 +229,13 @@ export default function EntitiesPage() {
           />
         </>
       )}
+
+      <CreateEntityDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        isAdmin={isAdmin}
+        onCreated={reload}
+      />
 
       <ManagePermissionsSheet
         entity={manageEntity}
