@@ -4,6 +4,13 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+_WILDCARD = "*"
+
+
+def is_wildcard(value: Any) -> bool:
+    """Return True if *value* is the wildcard sentinel ``"*"``."""
+    return value == _WILDCARD
+
 
 def is_http_url(url: str) -> bool:
     """Return ``True`` if *url* starts with ``http://`` or ``https://`` (case-insensitive)."""

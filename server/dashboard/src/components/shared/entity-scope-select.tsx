@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { useUsers } from "@/hooks/use-users";
 import Combobox from "@/components/shared/combobox";
+import { WILDCARD } from "@/utils/helpers";
 import type { ComboboxOption } from "@/components/shared/combobox";
 
 interface EntityScopeSelectProps {
@@ -31,7 +32,7 @@ export default function EntityScopeSelect({
   const options: ComboboxOption[] = useMemo(() => {
     const presets: ComboboxOption[] = [
       { value: ownUserId, label: "My entities", search: "My entities" },
-      { value: "all", label: "All entities", search: "All entities" },
+      { value: WILDCARD, label: "All entities", search: "All entities" },
     ];
     const userOptions: ComboboxOption[] = users
       .filter((u) => u.id !== ownUserId)

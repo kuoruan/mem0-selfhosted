@@ -3,8 +3,12 @@ export interface Memory {
   memory: string;
   user_id?: string;
   agent_id?: string;
+  app_id?: string;
+  run_id?: string;
+  hash?: string;
   created_at?: string;
   updated_at?: string;
+  metadata?: { categories?: string[]; [k: string]: unknown };
 }
 
 export interface ApiKey {
@@ -50,6 +54,7 @@ export interface Entity {
   owner: UserInfo | null;
   parent: ParentEntityInfo | null;
   is_owner: boolean;
+  permission?: "owner" | "admin" | "write" | "read" | null;
 }
 
 export interface EntityListResponse {

@@ -60,6 +60,7 @@ from entity_permissions import (
     resolve_memory_entities,
     resolve_operator,
 )
+from utils.helpers import is_wildcard
 
 from mem0.exceptions import ValidationError as Mem0ValidationError
 
@@ -519,7 +520,13 @@ def get_all_memories(
     db: Session = Depends(get_db),
 ):
     """Retrieve stored memories. With no identifier, returns the caller's own memories
-    (the admin_api_key bootstrap bypass lists everything)."""
+    (the admin_api_key bootstrap bypass lists everything).
+
+    When both ``user_id`` and ``app_id`` are provided, this endpoint enforces a
+    **dual permission check**: the caller must hold read permission on both the
+    user entity and the app entity. The compat (``/v1/``, ``/v2/``, ``/v3/``) and
+    MCP paths use the legacy app-primary-gate behaviour instead (``user_id`` is
+    stripped when ``app_id`` is present — see ``strip_user_id_for_app_gate``)."""
     operator, is_admin = resolve_operator(request, auth, db)
     try:
         filters = {
@@ -531,8 +538,11 @@ def get_all_memories(
             if is_bootstrap_admin(operator):
                 # admin_api_key / system bypass has no per-user scope to default to.
                 ensure_admin(request, auth)
-                return list_all_memories(limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT)
+                return list_all_memories(limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT, show_expired=show_expired)
             filters = {"user_id": str(operator.id)}
+        # Admin user_id="*" shortcut: bypass the filter rewrite and list everything.
+        if is_wildcard(filters.get("user_id")) and is_admin and len(filters) == 1:
+            return list_all_memories(limit=top_k if top_k is not None else ALL_MEMORIES_LIMIT, show_expired=show_expired)
         filters = check_query_permission(filters, operator.id, db, bypass=is_admin)
         params = {"filters": filters}
         if top_k is not None:

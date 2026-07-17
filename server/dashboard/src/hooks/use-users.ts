@@ -3,6 +3,7 @@ import { api } from "@/utils/api";
 import { USER_ENDPOINTS } from "@/utils/api-endpoints";
 import { getErrorMessage } from "@/lib/error-message";
 import { useInfiniteList } from "@/hooks/use-infinite-list";
+import { EMPTY_PAGE_RESULTS } from "@/utils/helpers";
 import type { User, UserListResponse } from "@/types/api";
 
 const PAGE_SIZE = 50;
@@ -32,7 +33,7 @@ export function useUsers(isAdmin: boolean): UseUsersResult {
       const res = await api.get<UserListResponse>(USER_ENDPOINTS.BASE, {
         params: { page, page_size: PAGE_SIZE },
       });
-      return res.data;
+      return res.data ?? EMPTY_PAGE_RESULTS;
     },
   });
   return { users: items, isLoading, hasMore, loadMore };

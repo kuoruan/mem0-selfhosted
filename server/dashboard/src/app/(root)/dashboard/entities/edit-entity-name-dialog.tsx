@@ -46,7 +46,7 @@ export default function EditEntityNameDialog({
       await api.patch(
         ENTITY_ENDPOINTS.UPDATE(entity.type, entity.id),
         { name: name.trim() },
-        { params: { namespace: entity.parent?.id } },
+        { params: { parent_id: entity.parent?.id } },
       );
       toast({ title: "Entity name updated", variant: "success" });
       onClose();

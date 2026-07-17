@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from schemas import MessageResponse, UserInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from utils.helpers import is_wildcard
 from utils.pagination import paginate_response
 
 router = APIRouter(prefix="/entities", tags=["entities"])
@@ -64,6 +65,7 @@ class EntityResponse(BaseModel):
     owner: Optional[UserInfo] = None
     parent: Optional[ParentEntityInfo] = None
     is_owner: bool = False
+    permission: Optional[Literal["owner", "admin", "write", "read"]] = None
 
 
 class EntityPermissionResponse(BaseModel):
@@ -124,43 +126,21 @@ def _user_info_batch(user_ids: set[uuid.UUID], db: Session) -> dict[uuid.UUID, U
     return users
 
 
-def _entity_to_response(entity: Entity, operator_id: uuid.UUID, db: Session) -> EntityResponse:
-    parent: Optional[ParentEntityInfo] = None
-    if entity.parent_pk is not None:
-        parent_entity = db.get(Entity, entity.parent_pk)
-        if parent_entity is not None:
-            parent = ParentEntityInfo(
-                id=parent_entity.id,
-                type=parent_entity.type,
-                name=parent_entity.name,
-            )
-
-    owner: Optional[UserInfo] = None
-    if entity.owner_user_id is not None:
-        owner = _user_info(entity.owner_user_id, db)
-
-    return EntityResponse(
-        id=entity.id,
-        type=entity.type,
-        name=entity.name,
-        created_at=entity.created_at,
-        updated_at=entity.updated_at,
-        owner=owner,
-        parent=parent,
-        is_owner=entity.owner_user_id == operator_id,
-    )
-
-
-def _entities_to_response_batch(entities: list[Entity], operator_id: uuid.UUID, db: Session) -> list[EntityResponse]:
-    """Batch-resolve parent entities and owner users in one query each."""
+def _entities_to_response_batch(
+    entities: list[Entity], operator_id: uuid.UUID, db: Session, *, bypass: bool = False
+) -> list[EntityResponse]:
+    """Batch-resolve parent entities, owner users, and operator permissions."""
     # Collect parent PKs and owner user IDs
     parent_pks: set[uuid.UUID] = set()
     owner_ids: set[uuid.UUID] = set()
+    grant_pks: set[uuid.UUID] = set()
     for e in entities:
         if e.parent_pk is not None:
             parent_pks.add(e.parent_pk)
         if e.owner_user_id is not None:
             owner_ids.add(e.owner_user_id)
+        if e.owner_user_id != operator_id:
+            grant_pks.add(e.pk)
 
     # Batch-fetch parents
     parents: dict[uuid.UUID, Entity] = {}
@@ -169,6 +149,20 @@ def _entities_to_response_batch(entities: list[Entity], operator_id: uuid.UUID, 
 
     # Batch-fetch owners
     owners = _user_info_batch(owner_ids, db)
+
+    # Batch-fetch explicit grants for non-owned entities
+    grants: dict[uuid.UUID, str] = {}
+    if grant_pks:
+        grants = {
+            p.entity_pk: p.permission
+            for p in db.execute(
+                select(EntityPermission).where(
+                    EntityPermission.entity_pk.in_(grant_pks),
+                    EntityPermission.user_id == operator_id,
+                    EntityPermission.permission.in_(["read", "write", "admin"]),
+                )
+            ).scalars().all()
+        }
 
     # Build responses
     result: list[EntityResponse] = []
@@ -182,6 +176,15 @@ def _entities_to_response_batch(entities: list[Entity], operator_id: uuid.UUID, 
                     type=parent_entity.type,
                     name=parent_entity.name,
                 )
+        # Resolve permission
+        permission: Optional[Literal["owner", "admin", "write", "read"]] = None
+        if entity.owner_user_id == operator_id:
+            permission = "owner"
+        elif entity.pk in grants:
+            permission = grants[entity.pk]
+        elif bypass:
+            permission = "admin"
+
         result.append(
             EntityResponse(
                 id=entity.id,
@@ -192,9 +195,17 @@ def _entities_to_response_batch(entities: list[Entity], operator_id: uuid.UUID, 
                 owner=owners.get(entity.owner_user_id) if entity.owner_user_id else None,
                 parent=parent,
                 is_owner=entity.owner_user_id == operator_id,
+                permission=permission,
             )
         )
     return result
+
+
+def _entity_to_response(
+    entity: Entity, operator_id: uuid.UUID, db: Session, *, bypass: bool = False
+) -> EntityResponse:
+    """Single-entity convenience wrapper around ``_entities_to_response_batch``."""
+    return _entities_to_response_batch([entity], operator_id, db, bypass=bypass)[0]
 
 
 def _permission_to_response(perm: EntityPermission, db: Session) -> EntityPermissionResponse:
@@ -253,6 +264,7 @@ def list_entities(
         None, alias="type", description="Filter to one entity type (e.g. 'user')."
     ),
     scope_user_id: Optional[str] = Query(None, description="Admin-only: scope to entities visible to this user (UUID)."),
+    unowned_only: bool = Query(False, description="Only return entities without an owner."),
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
@@ -266,6 +278,9 @@ def list_entities(
     When ``scope_user_id`` is provided (admin only), the list is scoped to entities
     visible to that user (owned + explicitly granted). Without it, behaviour is
     unchanged: admins see all, non-admins see their own.
+
+    ``unowned_only`` returns entities whose ``owner_user_id`` is NULL — useful for
+    surfacing unclaimed namespaces on the dashboard.
     """
     operator, is_admin = resolve_operator(request, auth, db)
 
@@ -278,6 +293,7 @@ def list_entities(
             db,
             bypass=False,
             entity_type=entity_type,
+            unowned_only=unowned_only,
             page=page,
             page_size=page_size,
         )
@@ -287,10 +303,11 @@ def list_entities(
             db,
             bypass=is_admin,
             entity_type=entity_type,
+            unowned_only=unowned_only,
             page=page,
             page_size=page_size,
         )
-    results = _entities_to_response_batch(items, operator.id, db)
+    results = _entities_to_response_batch(items, operator.id, db, bypass=is_admin)
     return paginate_response(request, results, page, page_size, total=total)
 
 
@@ -309,16 +326,33 @@ def create_entity(
             detail=f"Entity type '{body.type}' cannot be manually created. It is auto-created on first write.",
         )
 
+    entity_id = body.id.strip()
+    entity_name = (body.name or "").strip() or None
+
+    # "*" is reserved as a wildcard in query filters and cannot be used as an entity id.
+    if is_wildcard(entity_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Entity id '*' is reserved for wildcard queries and cannot be used.",
+        )
+
+    # entity id must be at least 3 characters.
+    if len(entity_id) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Entity id must be at least 3 characters, got '{entity_id}'.",
+        )
+
     # user: UI-created, entity_id cannot contain ':'
     if body.type == "user":
-        if ":" in body.id:
+        if ":" in entity_id:
             raise HTTPException(
                 status_code=400,
                 detail="User entity_id cannot contain ':'. Sub-namespaces are created automatically on write.",
             )
         # UUID entity_ids are not allowed for manual creation.
         try:
-            parsed_uuid = uuid.UUID(body.id)
+            parsed_uuid = uuid.UUID(entity_id)
         except (ValueError, TypeError):
             parsed_uuid = None
         if parsed_uuid is not None:
@@ -336,16 +370,16 @@ def create_entity(
                 status_code=400,
                 detail="Cannot create a user entity without a real owner.",
             )
-        entity = ensure_entity_owner(body.type, body.id, operator.id, db, bypass=is_admin)
+        entity = ensure_entity_owner(body.type, entity_id, operator.id, db, bypass=is_admin)
         if entity.owner_user_id != operator.id:
             raise HTTPException(
                 status_code=403,
-                detail=f"Entity '{body.type}/{body.id}' is already owned by another user.",
+                detail=f"Entity '{body.type}/{entity_id}' is already owned by another user.",
             )
-        if body.name and entity.name is None:
-            entity.name = body.name.strip() or None
+        if entity_name and entity.name is None:
+            entity.name = entity_name
         db.commit()
-        return _entity_to_response(entity, operator.id, db)
+        return _entity_to_response(entity, operator.id, db, bypass=is_admin)
 
     # app: admin only, must specify owner_user_id
     if body.type == "app":
@@ -360,8 +394,8 @@ def create_entity(
                 detail="owner_user_id is required when creating an app entity.",
             )
         owner_id = _parse_uuid(body.owner_user_id, label="owner_user_id")
-        entity = create_app_entity(body.id, owner_id, db, name=body.name and body.name.strip() or None)
-        return _entity_to_response(entity, operator.id, db)
+        entity = create_app_entity(entity_id, owner_id, db, name=entity_name)
+        return _entity_to_response(entity, operator.id, db, bypass=is_admin)
 
     raise HTTPException(status_code=400, detail=f"Unknown entity type: '{body.type}'.")
 
@@ -371,42 +405,42 @@ def count_entity_memories(
     entity_type: EntityType,
     entity_id: str,
     request: Request,
-    namespace: str | None = None,
+    parent_id: str | None = None,
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
     """Return the current memory count for this entity by scanning the vector store.
 
-    For agent/run entities (unique per parent user), ``namespace`` scopes the
+    For agent/run entities (unique per parent user), ``parent_id`` scopes the
     count to a specific user namespace (e.g. ``"<uuid>"`` or ``"<uuid>:laptop"``).
     Non-admins are always scoped to their own namespace; admins may pass
-    ``namespace`` to count another user's entity. Bootstrap admin without
-    ``namespace`` returns a global count across all users.
+    ``parent_id`` to count another user's entity. Bootstrap admin without
+    ``parent_id`` returns a global count across all users.
     """
     operator, is_admin = resolve_operator(request, auth, db)
 
-    # Bootstrap admin without namespace: global count across all users.
-    if is_bootstrap_admin(operator.id) and not namespace:
+    # Bootstrap admin without parent_id: global count across all users.
+    if is_bootstrap_admin(operator.id) and not parent_id:
         count = count_memories_for_entity(entity_type, entity_id, parent_user_id=None)
         return {"total_memories": count}
 
     # Resolve the parent entity id for scoped agent/run lookup.
-    if is_admin and namespace is not None:
-        parent_entity_id = namespace
+    if is_admin and parent_id is not None:
+        resolved_parent = parent_id
     else:
-        parent_entity_id = namespace or str(operator.id)
+        resolved_parent = parent_id or str(operator.id)
 
     entity = get_entity_or_none(
         entity_type,
         entity_id,
         db,
-        parent_entity_id=parent_entity_id,
+        parent_entity_id=resolved_parent,
     )
     if entity is None:
         raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
     # For agent/run: resolve the parent namespace to scope both the permission
     # check and the vector store query (agent/run are unique per parent, not globally).
-    scoped_namespace = entity_parent_user_id(entity, db)
+    parent_user_id = entity_parent_user_id(entity, db)
     if not check_entity_permission(
         entity_type,
         entity_id,
@@ -414,10 +448,10 @@ def count_entity_memories(
         "read",
         db,
         bypass=is_admin,
-        parent_entity_id=scoped_namespace,
+        parent_entity_id=parent_user_id,
     ):
         raise HTTPException(status_code=403, detail="You do not have read permission for this entity.")
-    count = count_memories_for_entity(entity_type, entity_id, parent_user_id=scoped_namespace)
+    count = count_memories_for_entity(entity_type, entity_id, parent_user_id=parent_user_id)
     return {"total_memories": count}
 
 
@@ -507,7 +541,7 @@ def transfer_owner_endpoint(
         bypass=is_admin,
         db=db,
     )
-    return _entity_to_response(entity, operator.id, db)
+    return _entity_to_response(entity, operator.id, db, bypass=is_admin)
 
 
 @router.delete("/{entity_type}/{entity_id}", response_model=MessageResponse)
@@ -515,27 +549,27 @@ def delete_entity(
     entity_type: EntityType,
     entity_id: str,
     request: Request,
-    namespace: str | None = None,
+    parent_id: str | None = None,
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
     """Delete an entity namespace: prescan matched memories, verify owner permission,
     clear the vector store, then drop the DB row (cascades entity_permissions).
 
-    For agent/run entities (unique per parent user), ``namespace`` scopes the
+    For agent/run entities (unique per parent user), ``parent_id`` scopes the
     lookup to a specific user namespace (e.g. ``"<uuid>"`` or ``"<uuid>:laptop"``).
     Non-admins are always scoped to their own namespace; admins may pass
-    ``namespace`` to delete another user's entity. Bootstrap admin without
-    ``namespace`` matches any entity of that type/name.
+    ``parent_id`` to delete another user's entity. Bootstrap admin without
+    ``parent_id`` matches any entity of that type/name.
     """
     operator, is_admin = resolve_operator(request, auth, db)
 
-    if is_admin and namespace is not None:
-        parent_entity_id = namespace
+    if is_admin and parent_id is not None:
+        resolved_parent = parent_id
     elif is_bootstrap_admin(operator.id):
-        parent_entity_id = namespace  # None → unscoped, or explicit scope
+        resolved_parent = parent_id  # None → unscoped, or explicit scope
     else:
-        parent_entity_id = namespace or str(operator.id)
+        resolved_parent = parent_id or str(operator.id)
 
     entity = check_entity_delete_permission(
         entity_type,
@@ -543,7 +577,7 @@ def delete_entity(
         operator.id,
         is_admin,
         db,
-        parent_entity_id=parent_entity_id,
+        parent_entity_id=resolved_parent,
     )
 
     # For user entities: guard against child namespaces, cascade-delete for admins.
@@ -605,26 +639,26 @@ def update_entity(
     entity_id: str,
     body: UpdateEntityInput,
     request: Request,
-    namespace: str | None = None,
+    parent_id: str | None = None,
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
     """Update an entity's display name. Only the owner or an admin may edit.
 
-    For agent/run entities, ``namespace`` scopes the lookup to a specific
+    For agent/run entities, ``parent_id`` scopes the lookup to a specific
     user namespace (same as delete/count).
     """
     operator, is_admin = resolve_operator(request, auth, db)
 
     # Resolve parent namespace for agent/run (mirror count_entity_memories/delete).
-    if is_admin and namespace is not None:
-        parent_entity_id = namespace
+    if is_admin and parent_id is not None:
+        resolved_parent = parent_id
     elif is_bootstrap_admin(operator.id):
-        parent_entity_id = namespace
+        resolved_parent = parent_id
     else:
-        parent_entity_id = namespace or str(operator.id)
+        resolved_parent = parent_id or str(operator.id)
 
-    entity = get_entity_or_none(entity_type, entity_id, db, parent_entity_id=parent_entity_id)
+    entity = get_entity_or_none(entity_type, entity_id, db, parent_entity_id=resolved_parent)
     if entity is None:
         raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
@@ -633,6 +667,6 @@ def update_entity(
         raise HTTPException(status_code=403, detail="Only the owner or an admin can edit this entity.")
 
     if "name" in body.model_fields_set:
-        entity.name = body.name and body.name.strip() or None
+        entity.name = (body.name or "").strip() or None
     db.commit()
-    return _entity_to_response(entity, operator.id, db)
+    return _entity_to_response(entity, operator.id, db, bypass=is_admin)

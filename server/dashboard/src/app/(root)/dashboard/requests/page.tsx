@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/shared/data-table";
+import PaginationBar from "@/components/shared/pagination-bar";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { EmptyState } from "@/components/self-hosted/empty-state";
 import { api } from "@/utils/api";
@@ -244,32 +245,12 @@ export default function RequestsPage() {
               getRowKey={(row) => row.id}
             />
           </Card>
-          {logs.length > PAGE_SIZE && (
-            <div className="flex items-center justify-between text-sm text-onSurface-default-tertiary">
-              <span>
-                {page * PAGE_SIZE + 1}–
-                {Math.min((page + 1) * PAGE_SIZE, logs.length)} of {logs.length}
-              </span>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page === 0}
-                  onClick={() => setPage((p) => p - 1)}
-                >
-                  Previous
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={(page + 1) * PAGE_SIZE >= logs.length}
-                  onClick={() => setPage((p) => p + 1)}
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-          )}
+          <PaginationBar
+                page={page}
+                total={logs.length}
+                pageSize={PAGE_SIZE}
+                onPageChange={setPage}
+              />
         </>
       )}
     </div>

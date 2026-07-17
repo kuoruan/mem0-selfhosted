@@ -6,29 +6,29 @@ import type { Entity, EntityListResponse } from "@/types/api";
 
 const PAGE_SIZE = 100;
 
-export interface UseEntityUsersResult {
-  users: Entity[];
+export interface UseEntityAppsResult {
+  apps: Entity[];
   isLoading: boolean;
   hasMore: boolean;
   loadMore: () => void;
 }
 
 /**
- * Paginated loader for user-type entities (``GET /entities?type=user``).
+ * Paginated loader for app-type entities (``GET /entities?type=app``).
  *
  * Thin wrapper over ``useInfiniteList``. ``/entities`` is not admin-gated —
  * every caller sees their own owned + granted entities, so this always fetches.
  * Owned entities sort first server-side. Errors are swallowed silently (the
  * picker just shows what it has).
  */
-export function useEntityUsers(): UseEntityUsersResult {
+export function useEntityApps(): UseEntityAppsResult {
   const { items, isLoading, hasMore, loadMore } = useInfiniteList<Entity>({
     fetchPage: async (page) => {
       const res = await api.get<EntityListResponse>(ENTITY_ENDPOINTS.BASE, {
-        params: { type: "user", page, page_size: PAGE_SIZE },
+        params: { type: "app", page, page_size: PAGE_SIZE },
       });
       return res.data ?? EMPTY_PAGE_RESULTS;
     },
   });
-  return { users: items, isLoading, hasMore, loadMore };
+  return { apps: items, isLoading, hasMore, loadMore };
 }

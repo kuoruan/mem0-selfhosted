@@ -4,6 +4,17 @@ export const toTitleCase = (str: string) => {
   return str.replace(/\b\w/g, (char) => char.toUpperCase());
 };
 
+export const WILDCARD = "*";
+
+/** Return true if *value* is the wildcard sentinel ``"*"``. */
+export const isWildcard = (value: unknown): boolean => value === WILDCARD;
+
+/** Return ``"--"`` for ``undefined``/``null``, otherwise the value itself. */
+export const orDash = (v: string | undefined | null): string => v ?? "--";
+
+/** Empty paginated response fallback (``results: [], count: 0, next: null, previous: null``). */
+export const EMPTY_PAGE_RESULTS = { results: [], count: 0, next: null, previous: null };
+
 /**
  * Return a safe relative redirect path, or the fallback if the input is unsafe.
  *

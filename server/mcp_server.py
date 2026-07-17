@@ -47,6 +47,7 @@ from entity_permissions import (
     entity_filter_params,
     get_visible_entities,
     inject_default_user_id,
+    strip_user_id_for_app_gate,
     list_memory_ids_for_params,
     reject_bootstrap_memory_mutation,
     resolve_memory_entities,
@@ -287,6 +288,7 @@ def search_memories(
     # `source` is accepted for parity with the platform MCP. The self-hosted
     # event model only tracks ADD events (see compat.events), so read/delete
     # paths have no SEARCH/GET_ALL/DELETE_ALL event to tag — record intent only.
+    # When both `user_id` and `app_id` are present, `user_id` is stripped (app-primary-gate).
     if source is not None:
         logger.debug("search_memories: source=%s (advisory; self-hosted tracks ADD events only)", source)
 
@@ -307,6 +309,7 @@ def search_memories(
             entity_params = {"user_id": str(operator.id)}
         scoped_filters: dict[str, Any] = dict(filters) if filters else {}
         scoped_filters.update(entity_params)
+        scoped_filters = strip_user_id_for_app_gate(scoped_filters)
         scoped_filters = _mcp_raise(lambda: check_query_permission(scoped_filters, operator.id, db))
 
     raw = get_memory_instance().search(
@@ -324,7 +327,9 @@ Use filters to list specific memories. Common filter patterns:
 - Agent memories: {"AND": [{"agent_id": "agent_name"}]}
 
 Pagination: Use page (1-indexed) and page_size for browsing results.
-user_id is automatically added to filters if not provided.""",
+user_id is automatically added to filters if not provided. When both
+user_id and app_id are present, user_id is stripped (app-primary-gate
+— see ``strip_user_id_for_app_gate``).""",
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
 )
 def get_memories(
@@ -371,6 +376,7 @@ def get_memories(
             entity_params = {"user_id": str(operator.id)}
         scoped_filters: dict[str, Any] = dict(filters) if filters else {}
         scoped_filters.update(entity_params)
+        scoped_filters = strip_user_id_for_app_gate(scoped_filters)
         scoped_filters = _mcp_raise(lambda: check_query_permission(scoped_filters, operator.id, db))
 
     get_all_kwargs: dict[str, Any] = {"filters": scoped_filters}

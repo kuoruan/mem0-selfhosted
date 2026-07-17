@@ -24,7 +24,7 @@ export default function EntityMemoryCount({ entity }: EntityMemoryCountProps) {
     try {
       const res = await api.get<{ total_memories: number }>(
         ENTITY_ENDPOINTS.COUNT(entity.type, entity.id),
-        { params: { namespace: entity.parent?.id } },
+        { params: { parent_id: entity.parent?.id } },
       );
       setInfo({ loading: false, value: res.data.total_memories });
     } catch (error) {

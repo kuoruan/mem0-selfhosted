@@ -110,6 +110,7 @@ from entity_permissions import (
     check_memory_scope_permission,
     check_query_permission,
     collect_user_children,
+    strip_user_id_for_app_gate,
     get_visible_entities,
     inject_default_user_id,
     list_memory_ids_for_params,
@@ -466,6 +467,11 @@ def v1_list_memories(
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
+    """List memories (v1 compat).
+
+    When both ``user_id`` and ``app_id`` are provided, ``user_id`` is stripped
+    and only the app permission is checked (app-primary-gate). See
+    ``strip_user_id_for_app_gate``."""
     operator, _ = resolve_operator(request, auth, db)
     show_expired_flag = show_expired if isinstance(show_expired, bool) else None
     filters = drop_none({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
@@ -477,6 +483,7 @@ def v1_list_memories(
                 detail="admin_api_key requires an explicit scope (user_id, agent_id, app_id, or run_id).",
             )
         filters = {"user_id": str(operator.id)}
+    filters = strip_user_id_for_app_gate(filters)
     filters = check_query_permission(filters, operator.id, db)
     kwargs: Dict[str, Any] = {"filters": filters}
     if show_expired_flag is not None:
@@ -634,9 +641,14 @@ def v1_get_entity_memories(
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
+    """Get memories for an entity (v1 compat).
+
+    App-primary-gate: when both ``user_id`` and ``app_id`` are present in
+    filters, ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
     field = get_entity_field(entity_type)  # validates entity_type (400 on invalid)
     filters: Dict[str, Any] = {field: entity_id}
+    filters = strip_user_id_for_app_gate(filters)
     filters = check_query_permission(filters, operator.id, db)
     kwargs: Dict[str, Any] = {"filters": filters}
     if isinstance(show_expired, bool):
@@ -654,6 +666,10 @@ def v1_search_memories(
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
+    """Search memories (v1 compat).
+
+    App-primary-gate: when both ``user_id`` and ``app_id`` are present,
+    ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
     warn_unsupported_fields(body.fields, "v1_search_memories")
     warn_ignored_compat_params("v1_search_memories", latest_only=body.latest_only)
@@ -665,6 +681,7 @@ def v1_search_memories(
         detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
     effective_filters = append_search_convenience_filters(effective_filters, metadata=body.metadata)
+    effective_filters = strip_user_id_for_app_gate(effective_filters)
     effective_filters = check_query_permission(effective_filters, operator.id, db)
 
     raw = get_memory_instance().search(
@@ -895,6 +912,10 @@ def v2_list_memories(
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
+    """List memories (v2 compat).
+
+    App-primary-gate: when both ``user_id`` and ``app_id`` are present in
+    filters, ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
     warn_unsupported_fields(body.fields, "v2_list_memories")
     warn_ignored_compat_params("v2_list_memories", latest_only=body.latest_only)
@@ -903,6 +924,7 @@ def v2_list_memories(
         detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
     )
     filters = build_list_filters(body, entity_params)
+    filters = strip_user_id_for_app_gate(filters)
     filters = check_query_permission(filters, operator.id, db)
     kwargs: Dict[str, Any] = {"filters": filters}
     if body.show_expired is not None:
@@ -925,6 +947,10 @@ def v2_search_memories(
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
+    """Search memories (v2 compat).
+
+    App-primary-gate: when both ``user_id`` and ``app_id`` are present,
+    ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
     warn_unsupported_fields(body.fields, "v2_search_memories")
     warn_ignored_compat_params("v2_search_memories", latest_only=body.latest_only)
@@ -936,6 +962,7 @@ def v2_search_memories(
         filters=body.filters,
         detail="At least one of the filters: agent_id, user_id, app_id or run_id is required!",
     )
+    effective_filters = strip_user_id_for_app_gate(effective_filters)
     effective_filters = check_query_permission(effective_filters, operator.id, db)
     raw = get_memory_instance().search(
         query=body.query,
@@ -1115,6 +1142,10 @@ def v3_get_all_memories(
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
+    """List memories (v3 compat).
+
+    App-primary-gate: when both ``user_id`` and ``app_id`` are present in
+    filters, ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
     warn_ignored_compat_params("v3_get_all_memories", latest_only=body.latest_only)
     entity_params = require_entity_scope(
@@ -1122,6 +1153,7 @@ def v3_get_all_memories(
         detail="One of the filters: user_id, agent_id, app_id or run_id is required!",
     )
     filters = build_list_filters(body, entity_params)
+    filters = strip_user_id_for_app_gate(filters)
     filters = check_query_permission(filters, operator.id, db)
     kwargs: Dict[str, Any] = {"filters": filters}
     if body.show_expired is not None:
@@ -1141,6 +1173,10 @@ def v3_search_memories(
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
+    """Search memories (v3 compat).
+
+    App-primary-gate: when both ``user_id`` and ``app_id`` are present,
+    ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
     warn_unsupported_fields(body.fields, "v3_search_memories")
     warn_ignored_compat_params(
@@ -1161,6 +1197,7 @@ def v3_search_memories(
         categories=body.categories,
         metadata=body.metadata,
     )
+    effective_filters = strip_user_id_for_app_gate(effective_filters)
     effective_filters = check_query_permission(effective_filters, operator.id, db)
     raw = get_memory_instance().search(
         query=body.query,

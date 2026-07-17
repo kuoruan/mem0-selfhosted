@@ -1,21 +1,32 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { format } from "date-fns";
 import { Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import PaginationBar from "@/components/shared/pagination-bar";
 import { DataTable } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
+import { orDash, isWildcard, WILDCARD, EMPTY_PAGE_RESULTS } from "@/utils/helpers";
 import { EmptyState } from "@/components/self-hosted/empty-state";
-import InfiniteScrollSentinel from "@/components/shared/infinite-scroll-sentinel";
 import DeleteConfirmationModal from "@/components/ui/delete-confirmation-modal";
 import { toast } from "@/components/ui/use-toast";
 import { api } from "@/utils/api";
 import { ENTITY_ENDPOINTS } from "@/utils/api-endpoints";
 import { getErrorMessage } from "@/lib/error-message";
-import { useInfiniteList } from "@/hooks/use-infinite-list";
+import { useApiQuery } from "@/hooks/use-api-query";
 import { useAuth } from "@/hooks/use-auth";
 import EntityScopeSelect from "@/components/shared/entity-scope-select";
 import type { Entity, EntityListResponse, UserInfo } from "@/types/api";
@@ -26,68 +37,77 @@ import EntityMemoryCount from "./entity-memory-count";
 import EntityActions from "./entity-actions";
 import ManagePermissionsSheet from "./manage-permissions-sheet";
 
+const PERMISSION_BADGES: Record<string, string> = {
+  owner: "border-amber-500/40 bg-amber-500/10 text-amber-700",
+  admin: "border-red-500/40 bg-red-500/10 text-red-700",
+  write: "border-blue-500/40 bg-blue-500/10 text-blue-700",
+  read: "border-slate-500/40 bg-slate-500/10 text-slate-700",
+};
+
+const TYPE_OPTIONS = [
+  { value: WILDCARD, label: "All" },
+  { value: "user", label: "User" },
+  { value: "agent", label: "Agent" },
+  { value: "app", label: "App" },
+  { value: "run", label: "Run" },
+];
+
+const PAGE_SIZE = 20;
+
 export default function EntitiesPage() {
   const { user, isAdmin } = useAuth();
   const ownUserId = user?.id ?? "";
+  const [page, setPage] = useState(0);
   const [manageEntity, setManageEntity] = useState<Entity | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [transferEntity, setTransferEntity] = useState<Entity | null>(null);
   const [editEntity, setEditEntity] = useState<Entity | null>(null);
   const [entityToDelete, setEntityToDelete] = useState<Entity | null>(null);
   const [showUnownedOnly, setShowUnownedOnly] = useState(false);
-  const [scopeUserId, setScopeUserId] = useState<string>("");
-  // Bump to reset the list to page 1 after a mutation (react-query invalidation).
+  const [scopeUserId, setScopeUserId] = useState<string>(WILDCARD);
+  const [typeFilter, setTypeFilter] = useState<string>(WILDCARD);
+
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const reload = () => setRefreshNonce((n) => n + 1);
+  const reload = () => { setRefreshNonce((n) => n + 1); setPage(0); };
 
   const {
-    items: entities = [],
+    data: pageData,
     isLoading,
-    hasMore,
-    loadMore,
-  } = useInfiniteList<Entity>({
-    fetchPage: async (page) => {
-      const params: Record<string, unknown> = { page, page_size: 50 };
+  } = useApiQuery<EntityListResponse>(
+    async () => {
+      const params: Record<string, unknown> = { page: page + 1, page_size: PAGE_SIZE };
       const effectiveScope = scopeUserId || ownUserId;
-      if (effectiveScope !== "all" && effectiveScope) {
+      if (!isWildcard(effectiveScope) && effectiveScope) {
         params.scope_user_id = effectiveScope;
+      }
+      if (!isWildcard(typeFilter)) {
+        params.type = typeFilter;
+      }
+      if (showUnownedOnly) {
+        params.unowned_only = true;
       }
       const res = await api.get<EntityListResponse>(ENTITY_ENDPOINTS.BASE, {
         params,
       });
-      return res.data ?? { results: [], next: null };
+      return res.data ?? EMPTY_PAGE_RESULTS;
     },
-    onError: (error) =>
-      toast({
-        title: "Failed to load entities",
-        description: getErrorMessage(error),
-        variant: "destructive",
-      }),
-    deps: [scopeUserId, ownUserId, refreshNonce],
-  });
+    {
+      enabled: !!ownUserId,
+      errorToast: "Failed to load entities",
+      initialData: EMPTY_PAGE_RESULTS,
+      deps: [page, scopeUserId, ownUserId, refreshNonce, typeFilter, showUnownedOnly],
+    },
+  );
 
-  // Infinite scroll: the sentinel fires `loadMore` on scroll-into-view.
-  // Duplicate fires are safe — `useInfiniteList`'s `loadMore` guards via refs.
-
-  const visibleEntities = useMemo(() => {
-    const list = showUnownedOnly
-      ? entities.filter((e) => e.owner == null)
-      : entities;
-    return [...list].sort((a, b) => {
-      const au = a.owner == null ? 0 : 1;
-      const bu = b.owner == null ? 0 : 1;
-      if (au !== bu) return au - bu;
-      if (a.type !== b.type) return a.type.localeCompare(b.type);
-      return a.id.localeCompare(b.id);
-    });
-  }, [entities, showUnownedOnly]);
+  const entities = pageData?.results ?? [];
+  const total = pageData?.count ?? 0;
 
   const handleDelete = async () => {
     if (!entityToDelete) return;
     try {
       await api.delete(
         ENTITY_ENDPOINTS.BY_ID(entityToDelete.type, entityToDelete.id),
-        { params: { namespace: entityToDelete.parent?.id } },
+        { params: { parent_id: entityToDelete.parent?.id } },
       );
       toast({ title: "Entity deleted", variant: "success" });
       setEntityToDelete(null);
@@ -115,10 +135,34 @@ export default function EntitiesPage() {
     {
       key: "id" as keyof Entity,
       label: "ID",
-      width: 240,
+      width: 200,
       render: (value: string) => (
         <span className="font-mono text-sm truncate">{value}</span>
       ),
+    },
+    {
+      key: "name" as keyof Entity,
+      label: "Name",
+      width: 140,
+      render: (value: string | null) => (
+        <span className="text-sm">{orDash(value)}</span>
+      ),
+    },
+    {
+      key: "parent" as keyof Entity,
+      label: "Parent",
+      width: 160,
+      render: (_value: Entity["parent"], row: Entity) =>
+        row.parent ? (
+          <span className="text-sm">
+            {row.parent.id}{" "}
+            <Badge variant="outline" className="text-[10px] px-1 py-0">
+              {row.parent.type}
+            </Badge>
+          </span>
+        ) : (
+          <span className="text-sm text-onSurface-default-tertiary">--</span>
+        ),
     },
     {
       key: "owner" as keyof Entity,
@@ -138,6 +182,22 @@ export default function EntitiesPage() {
           <span className="text-sm truncate" title={row.owner.email}>
             {row.owner.name}
           </span>
+        ),
+    },
+    {
+      key: "permission" as keyof Entity,
+      label: "Permission",
+      width: 100,
+      render: (value: Entity["permission"]) =>
+        value ? (
+          <Badge
+            variant="outline"
+            className={PERMISSION_BADGES[value] ?? ""}
+          >
+            {value}
+          </Badge>
+        ) : (
+          <span className="text-sm text-onSurface-default-tertiary">--</span>
         ),
     },
     {
@@ -181,30 +241,44 @@ export default function EntitiesPage() {
         </Button>
       </div>
 
-      {isAdmin && (
-        <div className="flex flex-wrap items-center gap-3">
-          <EntityScopeSelect
-            value={scopeUserId || ownUserId}
-            onChange={setScopeUserId}
-            ownUserId={ownUserId}
-            className="w-72"
-          />
-          <label className="flex items-center gap-2 text-sm text-onSurface-default-tertiary">
-            <input
-              type="checkbox"
-              className="size-4"
-              checked={showUnownedOnly}
-              disabled={(scopeUserId || ownUserId) !== "all"}
-              onChange={(e) => setShowUnownedOnly(e.target.checked)}
+      <div className="flex flex-wrap items-center gap-3">
+        {isAdmin && (
+          <>
+            <EntityScopeSelect
+              value={scopeUserId || ownUserId}
+              onChange={setScopeUserId}
+              ownUserId={ownUserId}
+              className="w-72"
             />
-            Unowned only
-          </label>
-        </div>
-      )}
+            <Label className="flex items-center gap-2 text-sm font-normal text-onSurface-default-tertiary">
+              <Checkbox
+                checked={showUnownedOnly}
+                disabled={!isWildcard(scopeUserId || ownUserId)}
+                onCheckedChange={(c) => setShowUnownedOnly(c === true)}
+              />
+              Unowned only
+            </Label>
+            <Separator orientation="vertical" className="h-5" />
+          </>
+        )}
+        <Label className="text-sm font-normal text-onSurface-default-tertiary">Type:</Label>
+        <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <SelectTrigger className="w-28">
+            <SelectValue placeholder="All" />
+          </SelectTrigger>
+          <SelectContent>
+            {TYPE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
 
       {isLoading && entities.length === 0 ? (
-        <TableSkeleton rows={5} columns={6} />
-      ) : visibleEntities.length === 0 ? (
+        <TableSkeleton rows={5} columns={9} />
+      ) : entities.length === 0 ? (
         <EmptyState
           title={showUnownedOnly ? "No unowned entities" : "No entities yet"}
           description={
@@ -217,16 +291,17 @@ export default function EntitiesPage() {
         <>
           <Card className="border-memBorder-primary overflow-hidden">
             <DataTable
-              data={visibleEntities}
+              data={entities}
               columns={columns}
               getRowKey={(row) => `${row.type}:${row.id}`}
             />
           </Card>
-          <InfiniteScrollSentinel
-            hasMore={hasMore}
-            isLoading={isLoading}
-            onLoadMore={loadMore}
-          />
+          <PaginationBar
+              page={page}
+              total={total}
+              pageSize={PAGE_SIZE}
+              onPageChange={setPage}
+            />
         </>
       )}
 

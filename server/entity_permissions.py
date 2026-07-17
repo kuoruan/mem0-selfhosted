@@ -51,7 +51,7 @@ from entity import (
 )
 from models import Entity, EntityPermission, User
 from server_state import get_memory_instance
-from utils.helpers import normalize_results, unwrap_result
+from utils.helpers import is_wildcard, normalize_results, unwrap_result
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,24 @@ MAX_OWNED_ENTITIES_PER_USER = int(os.environ.get("MAX_OWNED_ENTITIES_PER_USER", 
 
 # Vector-store scan cap for first-claim counts / delete prescans.
 _SCAN_TOP_K = 1_000_000
+
+
+def strip_user_id_for_app_gate(filters: Any) -> Any:
+    """Strip ``user_id`` when ``app_id`` is present in a flat filter dict.
+
+    The default ``check_query_permission`` path enforces a **dual-check** model:
+    when both ``user_id`` and ``app_id`` are in the filter, the caller must hold
+    read permission on **both** entities. The compat (``/v1/``, ``/v2/``, ``/v3/``)
+    and MCP paths call this helper first to restore the original **app-primary-gate**
+    behaviour — only the app permission is checked, and ``user_id`` becomes a
+    data tag rather than a gate.
+
+    Only operates on flat dicts. Nested structures (AND/OR) pass through unchanged
+    and receive the dual-check treatment.
+    """
+    if isinstance(filters, dict) and filters.get("user_id") and filters.get("app_id"):
+        return {k: v for k, v in filters.items() if k != "user_id"}
+    return filters
 
 
 # --------------------------------------------------------------------------- #
@@ -597,21 +615,8 @@ _MAX_FILTER_DEPTH = 10
 
 
 # --------------------------------------------------------------------------- #
-# Query filter rewriting (app-as-primary-gate)
+# Query filter rewriting
 # --------------------------------------------------------------------------- #
-def _filter_has_app_id(filters: Any) -> bool:
-    """Return True if *filters* contains ``app_id`` anywhere in the tree."""
-    if isinstance(filters, dict):
-        if "app_id" in filters:
-            return True
-        for key in ("AND", "OR"):
-            if _filter_has_app_id(filters.get(key)):
-                return True
-    elif isinstance(filters, list):
-        return any(_filter_has_app_id(item) for item in filters)
-    return False
-
-
 def _get_accessible_apps(user_id: uuid.UUID, db: Session) -> list[str]:
     """Return app entity ids a **non-admin** user can read (owner or explicitly granted).
 
@@ -639,6 +644,58 @@ def _get_accessible_apps(user_id: uuid.UUID, db: Session) -> list[str]:
     return sorted(set(db.scalars(owned.union(granted)).all()))
 
 
+def _get_accessible_users(user_id: uuid.UUID, db: Session) -> list[str]:
+    """Return user entity ids a **non-admin** user can read (owner or explicitly granted).
+
+    Non-orphaned users only — orphaned entities are admin-only. Admins never reach
+    here: ``user_id:"*"`` for an admin resolves to "no constraint" (drop user_id
+    entirely), since "accessible users" for an admin is the entire user set.
+
+    Always includes the caller's own UUID (implicit access via
+    ``check_entity_permission`` UUID-namespace rule), even when no entity row exists
+    for that UUID yet.
+    """
+    # Owned or explicitly granted (non-orphaned), combined in one round-trip.
+    owned = select(Entity.id).where(
+        Entity.type == "user",
+        Entity.owner_user_id == user_id,
+    )
+    granted = (
+        select(Entity.id)
+        .join(EntityPermission, EntityPermission.entity_pk == Entity.pk)
+        .where(
+            Entity.type == "user",
+            Entity.owner_user_id.is_not(None),
+            EntityPermission.user_id == user_id,
+            EntityPermission.permission.in_(["read", "write", "admin"]),
+        )
+    )
+    result = sorted(set(db.scalars(owned.union(granted)).all()))
+    # Always include the caller's own UUID (implicit access).
+    own_uuid = str(user_id)
+    if own_uuid not in result:
+        result.insert(0, own_uuid)
+    return result
+
+
+def _build_app_wildcard_expansion(apps: list[str], in_not: bool) -> dict[str, Any]:
+    """Build ``{"OR": [{"app_id": "a1"}, ...]}`` for app_id wildcard expansion.
+
+    Raises 403 if *apps* is empty, 400 if inside NOT with multiple apps.
+    """
+    if not apps:
+        raise HTTPException(
+            status_code=403,
+            detail="No accessible app scope for wildcard query.",
+        )
+    if in_not and len(apps) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="app_id wildcard ('*') inside NOT with multiple apps produces an unsupported filter.",
+        )
+    return {"OR": [{"app_id": app} for app in apps]}
+
+
 def _rewrite_query_filter(
     filters: Any,
     user_id: uuid.UUID,
@@ -646,28 +703,25 @@ def _rewrite_query_filter(
     *,
     bypass: bool = False,
 ) -> Any:
-    """Rewrite a query filter for the app-as-primary-gate model.
+    """Rewrite a query filter for the entity-permission model.
 
     Rules (applied in order):
 
-    1. ``app_id: "*"`` → expanded to ``{"OR": [{"app_id": "a"}, ...]}``
-       (403 if no accessible apps).
-    2. If a node directly contains ``app_id`` (not ``"*"``), drop ``user_id``
-       from that node.
-    3. Empty ``{}`` children are removed from AND/OR; empty AND/OR → ``{}``.
-    4. Recursion depth is capped at ``_MAX_FILTER_DEPTH`` (400 on overflow).
-    5. NOT subtrees are recursively rewritten (admin may pass ``NOT`` + ``"*"``).
-    6. Mixed dicts (both logical operators AND top-level entity fields) are
-       handled by processing logical operators first, then applying rule 2
-       to the top-level fields.
-
-    Within an AND combination (a flat dict, or an explicit ``AND`` list), if any
-    sibling carries ``app_id``, ``user_id`` is a pure data tag and is dropped from
-    every sibling — this handles ``{"AND": [{"user_id": "A"}, {"app_id": "x"}]}``.
-    OR siblings are intentionally left intact: each is a legitimate alternative
-    branch, so ``{"OR": [{"user_id": "A"}, {"app_id": "x"}]}`` keeps both.
-
-    7. For a non-bootstrap caller, a leaf carrying ``agent_id``/``run_id`` but no
+    1. ``user_id: "*"`` → expanded to ``{"OR": [{"user_id": "u1"}, ...]}``
+       (403 if no accessible users). Admin bypass drops the constraint entirely.
+    2. ``app_id: "*"`` → expanded to ``{"OR": [{"app_id": "a1"}, ...]}``
+       (403 if no accessible apps). Admin bypass enumerates all apps.
+    3. ``user_id`` is preserved alongside ``app_id`` (no longer dropped).
+       The dual app+user permission check is enforced in
+       ``check_memory_scope_permission``, not by stripping ``user_id`` from
+       the filter.
+    4. Empty ``{}`` children are removed from AND/OR; empty AND/OR → ``{}``.
+    5. Recursion depth is capped at ``_MAX_FILTER_DEPTH`` (400 on overflow).
+    6. NOT subtrees are recursively rewritten (admin may pass ``NOT`` + ``"*"``).
+    7. Mixed dicts (both logical operators AND top-level entity fields) are
+       handled by processing logical operators first, then applying the
+       wildcard expansions to the top-level fields.
+    8. For a non-bootstrap caller, a leaf carrying ``agent_id``/``run_id`` but no
        ``user_id`` and no ``app_id`` gets the caller's ``user_id`` injected.
        agent/run are unique per parent user (not globally), so without this the
        vector-store query would match every user's same-named agent/run memories
@@ -692,18 +746,6 @@ def _rewrite_query_filter(
                 accessible_apps = _get_accessible_apps(user_id, db)
         return accessible_apps
 
-    def _drop_user_id(node: Any, in_metadata: bool = False) -> Any:
-        """Strip entity-scope ``user_id`` from *node* (a ``metadata`` block's
-        ``user_id`` is user-defined and left intact)."""
-        if isinstance(node, list):
-            return [_drop_user_id(child, in_metadata) for child in node]
-        if not isinstance(node, dict):
-            return node
-        result = {k: _drop_user_id(v, in_metadata or k == "metadata") for k, v in node.items()}
-        if not in_metadata:
-            result.pop("user_id", None)
-        return result
-
     def _walk(node: Any, depth: int = 0, in_not: bool = False) -> Any:
         if depth > _MAX_FILTER_DEPTH:
             raise HTTPException(
@@ -725,13 +767,6 @@ def _rewrite_query_filter(
                     result.extend(rewritten)
                 else:
                     result.append(rewritten)
-            # app-as-primary-gate within this AND conjunction: if any sibling
-            # carries app_id, user_id is a pure data tag across the whole
-            # conjunction — drop it from every sibling. OR siblings are left
-            # intact (each is a legitimate alternative branch).
-            if any(_filter_has_app_id(child) for child in result):
-                result = [_drop_user_id(child) for child in result]
-                result = [child for child in result if not (isinstance(child, dict) and not child)]
             if len(result) == 0:
                 return {}
             if len(result) == 1:
@@ -788,35 +823,51 @@ def _rewrite_query_filter(
         # --- Rule 2 & Rule 1: handle top-level entity fields ---
         # Recursive: a nested app_id (e.g. inside an AND-subtree of this mixed
         # dict) also makes the top-level user_id a data tag.
-        has_app = _filter_has_app_id(result)
 
-        # When app_id is a *direct* key, every other key is in an implicit AND
-        # with it, so user_id is a data tag across the whole node. Strip user_id
-        # from sibling logical-operator subtrees (AND/OR/NOT) too — otherwise
-        # _cleanup could unwrap a single-child operator and promote user_id back
-        # to this level alongside app_id (violating app-as-primary-gate).
-        if "app_id" in result:
-            for key in list(result.keys()):
-                # app_id is the gate; metadata is user-defined data (its inner
-                # user_id is not entity scope). Strip user_id from everything else.
-                if key not in ("app_id", "metadata"):
-                    result[key] = _drop_user_id(result[key])
-            result.pop("user_id", None)
-
-            if result.get("app_id") == "*":
-                apps = _get_apps()
-                if not apps:
+        # --- Handle user_id wildcard ---
+        if is_wildcard(result.get("user_id")):
+            if bypass:
+                # Admin: user_id="*" → no user constraint (drop it)
+                del result["user_id"]
+                if "app_id" not in result:
+                    return result
+            else:
+                users = _get_accessible_users(user_id, db)
+                if not users:
                     raise HTTPException(
                         status_code=403,
-                        detail="No accessible app scope for wildcard query.",
+                        detail="No accessible user scope for wildcard query.",
                     )
-                if in_not and len(apps) > 1:
+                if in_not and len(users) > 1:
                     raise HTTPException(
                         status_code=400,
-                        detail="app_id wildcard ('*') inside NOT with multiple apps produces an unsupported filter.",
+                        detail="user_id wildcard ('*') inside NOT with multiple users produces an unsupported filter.",
                     )
-                expanded: dict[str, Any] = {"OR": [{"app_id": app} for app in apps]}
-                # Remove the wildcard (user_id already stripped above).
+                if len(users) == 1:
+                    result["user_id"] = users[0]
+                else:
+                    expanded: dict[str, Any] = {"OR": [{"user_id": u} for u in users]}
+                    del result["user_id"]
+                    # Also expand app_id wildcard if present in the sibling
+                    # result — user_id expansion returns early, so app_id
+                    # wildcard must be handled here rather than by the
+                    # app_id block below.
+                    if is_wildcard(result.get("app_id")):
+                        app_expanded = _build_app_wildcard_expansion(_get_apps(), in_not)
+                        del result["app_id"]
+                        expanded = {"AND": [expanded, app_expanded]}
+                    has_logical = rewritten_and is not None or rewritten_or is not None or rewritten_not is not None
+                    if has_logical or result:
+                        return {"AND": [expanded, result]}
+                    return expanded
+
+        # When app_id is a direct key, handle wildcard expansion. user_id is
+        # preserved alongside app_id (dual permission check is enforced in
+        # ``check_memory_scope_permission``).
+        if "app_id" in result:
+            if is_wildcard(result.get("app_id")):
+                expanded = _build_app_wildcard_expansion(_get_apps(), in_not)
+                # Remove the wildcard app_id key; user_id is preserved alongside it.
                 del result["app_id"]
                 has_logical = rewritten_and is not None or rewritten_or is not None or rewritten_not is not None
                 if has_logical or result:
@@ -825,22 +876,17 @@ def _rewrite_query_filter(
 
             return result
 
-        if has_app:
-            # app_id is nested (e.g. inside an AND-subtree), not a direct key:
-            # the top-level user_id is still a data tag and must be dropped.
-            result.pop("user_id", None)
-        else:
-            # Rule 7: no app scope — an agent_id/run_id-only query is ambiguous
-            # across user namespaces (agent/run are unique per parent user, not
-            # globally), so scope it to the caller's namespace. Bootstrap admin
-            # keeps the unscoped admin bypass. Recursion injects into nested
-            # AND/OR leaves too.
-            if (
-                not is_bootstrap_admin(user_id)
-                and ("agent_id" in result or "run_id" in result)
-                and "user_id" not in result
-            ):
-                result["user_id"] = str(user_id)
+        # Rule 7: no app scope — an agent_id/run_id-only query is ambiguous
+        # across user namespaces (agent/run are unique per parent user, not
+        # globally), so scope it to the caller's namespace. Bootstrap admin
+        # keeps the unscoped admin bypass. Recursion injects into nested
+        # AND/OR leaves too.
+        if (
+            not is_bootstrap_admin(user_id)
+            and ("agent_id" in result or "run_id" in result)
+            and "user_id" not in result
+        ):
+            result["user_id"] = str(user_id)
 
         return result
 
@@ -1030,16 +1076,17 @@ def check_memory_scope_permission(
 ) -> None:
     """Authorize a single memory's scope.
 
-    When scope contains ``app``, only the app entity is checked (app is the
-    primary permission gate). Otherwise READ=OR, WRITE/ADMIN=AND applies.
-    Empty scope: admin only.
+    When scope contains ``app``, the app entity is checked first (primary
+    permission gate). If ``user`` is also in scope, user permission is
+    additionally required (dual-check). Otherwise READ=OR, WRITE/ADMIN=AND
+    applies. Empty scope: admin only.
     """
     if not scope:
         if not bypass:
             raise HTTPException(status_code=403, detail="Memory has no entity scope; admin only.")
         return
 
-    # --- app as primary gate ---
+    # --- app as primary gate, with optional user dual-check ---
     if "app" in scope:
         ok = check_entity_permission(
             "app",
@@ -1054,6 +1101,21 @@ def check_memory_scope_permission(
                 status_code=403,
                 detail=f"You do not have '{required}' permission for app '{scope['app']}'.",
             )
+        # When user is also in scope, require user read too
+        if "user" in scope:
+            ok = check_entity_permission(
+                "user",
+                scope["user"],
+                user_id,
+                required,
+                db,
+                bypass=bypass,
+            )
+            if not ok:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"You do not have '{required}' permission for user '{scope['user']}'.",
+                )
         return
 
     # --- original logic: no app in scope ---
@@ -1186,8 +1248,8 @@ def check_query_permission(
 
     Steps:
 
-    1. Rewrite filter (drop ``user_id`` where ``app_id`` is present, expand
-       ``app_id: "*"`` to all accessible apps).
+    1. Rewrite filter (expand ``user_id:"*"`` and ``app_id:"*"`` wildcards to
+       accessible entities; ``user_id`` is preserved alongside ``app_id``).
     2. Extract positive scope branches from the rewritten filter.
     3. Check each branch with the single-memory READ rule.
     4. Return the rewritten filter.
@@ -1348,8 +1410,8 @@ def authorize_write(
     request that would 403 cannot first claim the brand-new namespaces in its scope.
     Pass 2 claims brand-new namespaces. Finally the whole scope is AND-checked.
 
-    When ``app`` is present in the scope, only the app entity is checked in Pass 1
-    (app is the primary permission gate); user/agent/run entities are still created
+    When ``app`` is present in the scope, app and user entities are checked in
+    Pass 1 (dual permission gate); agent/run entities are still created
     in Pass 2 as data tags.
 
     Bootstrap (admin_api_key) is rejected at the endpoint before reaching here, so
@@ -1362,8 +1424,8 @@ def authorize_write(
 
     # Pass 1: check existing entities for write permission
     for entity_type, entity_id in scope.items():
-        # When app is present, only check app entity (skip user/agent/run)
-        if has_app and entity_type != "app":
+        # When app is present, check app + user (dual-check), skip agent/run
+        if has_app and entity_type not in ("app", "user"):
             continue
 
         if is_scoped_entity_type(entity_type):
@@ -1743,6 +1805,7 @@ def get_visible_entities_paginated(
     *,
     bypass: bool = False,
     entity_type: str | None = None,
+    unowned_only: bool = False,
     page: int = 1,
     page_size: int = 100,
 ) -> tuple[list[Entity], int]:
@@ -1752,6 +1815,10 @@ def get_visible_entities_paginated(
     first (so the caller's own namespaces surface at the top of the list), then by
     type and id. ``entity_type`` optionally restricts to one type (e.g. ``"user"``)
     so the memories-page user picker can fetch only user entities.
+
+    When ``unowned_only`` is True, only entities without an owner
+    (``owner_user_id IS NULL``) are returned. Intended for admin dashboards to
+    surface unclaimed namespaces.
     """
     visibility = or_(
         Entity.owner_user_id == user_id,
@@ -1761,6 +1828,8 @@ def get_visible_entities_paginated(
     where_clause = [] if bypass else [visibility]
     if entity_type is not None:
         where_clause.append(Entity.type == entity_type)
+    if unowned_only:
+        where_clause.append(Entity.owner_user_id.is_(None))
 
     # Owned-first ordering: 0 for owned, 1 for everything else.
     owned_first = case((Entity.owner_user_id == user_id, 0), else_=1)
