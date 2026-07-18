@@ -107,7 +107,7 @@ class Entity(Base):
 
     __tablename__ = "entities"
     __table_args__ = (
-        Index("ix_entities_owner_user_id", "owner_user_id"),
+        Index("ix_entities_owner_id", "owner_id"),
         Index("ix_entities_parent_pk", "parent_pk"),
         # Partial unique indexes (mirror migration 007): user/app are globally
         # unique on (type, id); agent/run are unique per parent on
@@ -136,7 +136,7 @@ class Entity(Base):
     id: Mapped[str] = mapped_column(String(255))
     type: Mapped[str] = mapped_column(String(20))
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     parent_pk: Mapped[uuid.UUID | None] = mapped_column(
@@ -151,15 +151,15 @@ class EntityPermission(Base):
 
     __tablename__ = "entity_permissions"
     __table_args__ = (
-        UniqueConstraint("entity_pk", "user_id", name="uq_entity_permissions_entity_user"),
-        Index("ix_entity_permissions_user_id", "user_id"),
+        UniqueConstraint("entity_pk", "grantee_id", name="uq_entity_permissions_entity_grantee"),
+        Index("ix_entity_permissions_grantee_id", "grantee_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
     entity_pk: Mapped[uuid.UUID] = mapped_column(ForeignKey("entities.pk", ondelete="CASCADE"))
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    grantee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     permission: Mapped[str] = mapped_column(String(16))
-    granted_by: Mapped[uuid.UUID | None] = mapped_column(
+    grantor_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

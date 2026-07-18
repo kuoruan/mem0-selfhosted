@@ -1031,17 +1031,17 @@ def v2_delete_entity(
                 status_code=400,
                 detail=f"Cannot delete 'user/{entity_id}' because it has sub-namespaces or agent/run entities. Delete them first.",
             )
-    # For agent/run: resolve parent user id to scope the vector-store scan/delete
+    # For agent/run: resolve parent entity id to scope the vector-store scan/delete
     # (otherwise a same-named agent/run owned by another user is matched).
-    parent_user_id = None
+    parent_entity_id = None
     if entity is not None and is_scoped_entity_type(entity_type) and entity.parent_pk is not None:
         parent_entity = db.get(Entity, entity.parent_pk)
         if parent_entity is not None:
-            parent_user_id = parent_entity.id
+            parent_entity_id = parent_entity.id
     # Bulk destructive: prescan + admin-validate + delete inside the scope lock (TOCTOU).
     delete_params: dict[str, Any] = {field: entity_id}
-    if parent_user_id is not None:
-        delete_params["user_id"] = parent_user_id
+    if parent_entity_id is not None:
+        delete_params["user_id"] = parent_entity_id
 
     def _delete_all(memory):
         memory_ids = list_memory_ids_for_params(delete_params)

@@ -146,7 +146,7 @@ class TestBootstrapEntityPermissions:
         """admin_api_key can create an app entity owned by a real user (governance).
 
         The universal bootstrap-400 on POST /entities was relaxed to type-aware:
-        bootstrap can create `app` (with a real owner_user_id) but not `user`.
+        bootstrap can create `app` (with a real owner_id) but not `user`.
         """
         session = SessionLocal()
         session.execute(delete(User).where(User.email == "app-owner@test.local"))
@@ -160,7 +160,7 @@ class TestBootstrapEntityPermissions:
         try:
             resp = self.client.post(
                 "/entities",
-                json={"type": "app", "id": "myapp", "owner_user_id": owner_id},
+                json={"type": "app", "id": "myapp", "owner_id": owner_id},
                 headers=self._auth,
             )
             assert resp.status_code == 201, resp.text
@@ -232,7 +232,7 @@ class TestBootstrapEntityPermissions:
             for eid in ("app-a", "app-b"):
                 resp = self.client.post(
                     "/entities",
-                    json={"type": "app", "id": eid, "owner_user_id": owner_id},
+                    json={"type": "app", "id": eid, "owner_id": owner_id},
                     headers=self._auth,
                 )
                 assert resp.status_code == 201, resp.text
@@ -249,15 +249,35 @@ class TestBootstrapEntityPermissions:
             assert "page=2" in body["next"]
             assert "page_size=1" in body["next"]
 
-            # Admin scoping to another user keeps `user_id` in the next link.
-            resp = self.client.get(f"/entities?scope_user_id={owner_id}&page_size=1", headers=self._auth)
+            # Admin viewing as another user keeps `view_as` in the next link.
+            resp = self.client.get(f"/entities?view_as={owner_id}&page_size=1", headers=self._auth)
             assert resp.status_code == 200, resp.text
             scoped = resp.json()
             assert scoped["count"] == 2
             assert scoped["next"] is not None
-            assert f"scope_user_id={owner_id}" in scoped["next"]
+            assert f"view_as={owner_id}" in scoped["next"]
         finally:
             self._cleanup_owner_entities(["app-a", "app-b"])
+
+    def test_view_as_forbidden_for_non_admin(self):
+        """GET /entities?view_as=<other> is 403 for a non-admin operator.
+
+        Pairs with ``test_list_entities_returns_paginated_envelope`` (admin
+        path): the ``view_as`` scope is admin-only, so a non-admin operator
+        must be rejected before any scoping work runs. ``resolve_operator`` is
+        patched, so the operator object is never read and any UUID triggers
+        the guard — no DB row is needed.
+        """
+        import routers.entities as entities_router
+
+        view_as_id = "00000000-0000-0000-0000-000000000001"
+        with patch.object(entities_router, "resolve_operator", return_value=(object(), False)):
+            resp = self.client.get(
+                f"/entities?view_as={view_as_id}",
+                headers=self._auth,
+            )
+        assert resp.status_code == 403, resp.text
+        assert "only admins" in resp.json()["detail"].lower()
 
     def test_create_entity_rejects_uuid_user_id(self):
         """POST /entities with a UUID user_id is rejected; own UUID says 'already yours'."""
@@ -289,7 +309,7 @@ class TestBootstrapEntityPermissions:
                 json={
                     "type": "app",
                     "id": "named-app",
-                    "owner_user_id": owner_id,
+                    "owner_id": owner_id,
                     "name": "my entity",
                 },
                 headers=self._auth,
@@ -305,7 +325,7 @@ class TestBootstrapEntityPermissions:
         try:
             create = self.client.post(
                 "/entities",
-                json={"type": "app", "id": "patch-app", "owner_user_id": owner_id},
+                json={"type": "app", "id": "patch-app", "owner_id": owner_id},
                 headers=self._auth,
             )
             assert create.status_code == 201, create.text

@@ -46,7 +46,7 @@ export default function ManagePermissionsSheet({
 }: ManagePermissionsSheetProps) {
   const [permissions, setPermissions] = useState<EntityPermission[]>([]);
   const [loading, setLoading] = useState(false);
-  const [grantUserId, setGrantUserId] = useState("");
+  const [granteeId, setGranteeId] = useState("");
   const [grantLevel, setGrantLevel] = useState<EntityPermissionLevel>("read");
   const [submitting, setSubmitting] = useState(false);
 
@@ -83,10 +83,10 @@ export default function ManagePermissionsSheet({
     setSubmitting(true);
     try {
       await api.post(ENTITY_ENDPOINTS.PERMISSIONS(entity.type, entity.id), {
-        user_id: grantUserId.trim(),
+        grantee_id: granteeId.trim(),
         permission: grantLevel,
       });
-      setGrantUserId("");
+      setGranteeId("");
       setGrantLevel("read");
       // reload
       const res = await api.get<EntityPermission[]>(
@@ -111,10 +111,10 @@ export default function ManagePermissionsSheet({
         ENTITY_ENDPOINTS.PERMISSION_BY_USER(
           entity.type,
           entity.id,
-          perm.user.id,
+          perm.grantee.id,
         ),
       );
-      setPermissions((prev) => prev.filter((p) => p.user.id !== perm.user.id));
+      setPermissions((prev) => prev.filter((p) => p.grantee.id !== perm.grantee.id));
     } catch (error) {
       toast({
         title: "Failed to revoke permission",
@@ -143,8 +143,8 @@ export default function ManagePermissionsSheet({
             <Label className="text-xs">Grant access</Label>
             <div className="flex gap-2">
               <UserSelect
-                value={grantUserId}
-                onChange={setGrantUserId}
+                value={granteeId}
+                onChange={setGranteeId}
                 isAdmin={isAdmin}
                 className="flex-1"
               />
@@ -166,7 +166,7 @@ export default function ManagePermissionsSheet({
               <Button
                 size="sm"
                 onClick={handleGrant}
-                disabled={!grantUserId.trim() || submitting}
+                disabled={!granteeId.trim() || submitting}
               >
                 Add
               </Button>
@@ -191,16 +191,16 @@ export default function ManagePermissionsSheet({
                   >
                     <div className="min-w-0">
                       <p className="text-xs truncate">
-                        {p.user.name}
+                        {p.grantee.name}
                         <span className="text-onSurface-default-tertiary">
                           {" "}
-                          ({p.user.email})
+                          ({p.grantee.email})
                         </span>
                       </p>
                       <p className="text-xs text-onSurface-default-tertiary capitalize">
                         {p.permission}
-                        {p.granted_by
-                          ? ` · by ${p.granted_by.name}`
+                        {p.grantor
+                          ? ` · by ${p.grantor.name}`
                           : " · system"}
                       </p>
                     </div>

@@ -36,8 +36,8 @@ export const ENTITY_ENDPOINTS = {
     `/entities/${type}/${encodeURIComponent(id)}`,
   PERMISSIONS: (type: string, id: string) =>
     `/entities/${type}/${encodeURIComponent(id)}/permissions`,
-  PERMISSION_BY_USER: (type: string, id: string, userId: string) =>
-    `/entities/${type}/${encodeURIComponent(id)}/permissions/${userId}`,
+  PERMISSION_BY_USER: (type: string, id: string, granteeId: string) =>
+    `/entities/${type}/${encodeURIComponent(id)}/permissions/${granteeId}`,
   TRANSFER_OWNER: (type: string, id: string) =>
     `/entities/${type}/${encodeURIComponent(id)}/transfer-owner`,
   COUNT: (type: string, id: string) =>

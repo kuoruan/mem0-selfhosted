@@ -21,7 +21,7 @@ Permission model:
 - Bulk destructive      : prescan every matched memory and AND-check ADMIN on each.
 
 Owner vs admin:
-- owner (owner_user_id): full control — read/write, grant/revoke read+write, delete entity,
+- owner (owner_id): full control — read/write, grant/revoke read+write, delete entity,
   transfer owner.
 - admin (granted): read/write + grant/revoke read+write. Cannot delete entity, grant admin,
   or transfer owner.
@@ -122,18 +122,6 @@ def reject_bootstrap_memory_mutation(operator: User) -> None:
         )
 
 
-# --------------------------------------------------------------------------- #
-# Canonicalization
-# --------------------------------------------------------------------------- #
-# ``canonicalize_entity_id`` lives in the ``entity`` primitives module.
-
-
-# --------------------------------------------------------------------------- #
-# User entity helpers (hierarchical namespace)
-# --------------------------------------------------------------------------- #
-# ``top_level_user_id`` / ``user_prefixes`` live in the ``entity`` primitives module.
-
-
 def _subnamespace_prefix_condition(parent_id: str):
     """SQL condition matching user sub-namespaces of *parent_id* — ``Entity.id``
     starts with ``parent_id + ':'`` — with LIKE wildcards escaped.
@@ -154,21 +142,21 @@ def _get_user_entity_or_none(entity_id: str, db: Session) -> Entity | None:
     return db.scalar(select(Entity).where(Entity.type == "user", Entity.id == eid))
 
 
-def _resolve_parent_user_id(scope: dict[str, str], user_id: uuid.UUID) -> str | None:
+def _resolve_parent_entity_id(scope: dict[str, str], operator_id: uuid.UUID) -> str | None:
     """Resolve the parent user namespace for agent/run checks.
 
     Prefer an explicit ``user`` in the memory scope; fall back to the operator's
     own id (bootstrap admin has no real id, so it gets ``None`` — agent/run under
     a bootstrap write are not parent-resolvable).
     """
-    return scope.get("user") or (str(user_id) if not is_bootstrap_admin(user_id) else None)
+    return scope.get("user") or (str(operator_id) if not is_bootstrap_admin(operator_id) else None)
 
 
 def _resolve_user_owner(entity_id: str, db: Session) -> tuple[uuid.UUID | None, Entity | None]:
     """Find the owning user for a user entity_id via longest-prefix match.
 
-    Returns ``(owner_user_id, matched_entity)`` for the longest *owned* prefix
-    (skips orphaned entities, ``owner_user_id is None``). If no owned prefix
+    Returns ``(owner_id, matched_entity)`` for the longest *owned* prefix
+    (skips orphaned entities, ``owner_id is None``). If no owned prefix
     matches, returns ``(None, None)``. Skipping orphans keeps this consistent with
     ``check_entity_permission`` (orphan = admin-only, fall through to shorter
     prefixes) and avoids the longer-orphan masking a shorter owned prefix.
@@ -177,8 +165,8 @@ def _resolve_user_owner(entity_id: str, db: Session) -> tuple[uuid.UUID | None, 
     entities = {e.id: e for e in db.scalars(select(Entity).where(Entity.type == "user", Entity.id.in_(prefixes))).all()}
     for prefix in prefixes:
         entity = entities.get(prefix)
-        if entity is not None and entity.owner_user_id is not None:
-            return entity.owner_user_id, entity
+        if entity is not None and entity.owner_id is not None:
+            return entity.owner_id, entity
     return None, None
 
 
@@ -195,7 +183,7 @@ def _result_id(row: Any) -> str | None:
     return str(mid) if mid is not None else None
 
 
-def entity_parent_user_id(entity: Entity, db: Session) -> str | None:
+def get_parent_entity_id(entity: Entity, db: Session) -> str | None:
     """For an agent/run entity, the parent user entity's id (used to scope
     vector-store queries/counts since same-named agent/run are unique per parent).
     Returns ``None`` for user/app or when the parent row no longer exists."""
@@ -208,12 +196,12 @@ def entity_parent_user_id(entity: Entity, db: Session) -> str | None:
 
 def entity_filter_params(entity: Entity, db: Session) -> dict[str, str]:
     """Flat entity-param filter matching *entity*'s vector-store memories, scoped
-    by the parent user_id for agent/run (so a same-named agent/run owned by another
-    user is not matched)."""
+    by the parent entity id for agent/run (written to the memory ``user_id`` field,
+    so a same-named agent/run owned by another user is not matched)."""
     params: dict[str, str] = {TYPE_TO_FIELD[entity.type]: entity.id}
-    parent_user_id = entity_parent_user_id(entity, db)
-    if parent_user_id is not None:
-        params["user_id"] = parent_user_id
+    parent_entity_id = get_parent_entity_id(entity, db)
+    if parent_entity_id is not None:
+        params["user_id"] = parent_entity_id
     return params
 
 
@@ -221,11 +209,11 @@ def count_memories_for_entity(
     entity_type: str,
     entity_id: str,
     *,
-    parent_user_id: str | None = None,
+    parent_entity_id: str | None = None,
 ) -> int:
     """Count memories currently in the vector store for this entity.
 
-    For agent/run types, ``parent_user_id`` should be provided to scope the
+    For agent/run types, ``parent_entity_id`` should be provided to scope the
     count to the owning user's namespace (different users may have
     agent/run entities with the same id). Counts are advisory (not a security
     path), so a vector-store error is logged and reported as 0 rather than
@@ -233,8 +221,8 @@ def count_memories_for_entity(
     """
     field = TYPE_TO_FIELD[entity_type]
     filters: dict[str, Any] = {field: entity_id}
-    if is_scoped_entity_type(entity_type) and parent_user_id:
-        filters["user_id"] = parent_user_id
+    if is_scoped_entity_type(entity_type) and parent_entity_id:
+        filters["user_id"] = parent_entity_id
     try:
         raw = get_memory_instance().get_all(filters=filters, top_k=_SCAN_TOP_K)
     except Exception as exc:
@@ -333,7 +321,7 @@ def _get_scoped_entity_or_none(
     )
 
 
-def count_owned_entities(user_id: uuid.UUID, db: Session) -> int:
+def count_owned_entities(operator_id: uuid.UUID, db: Session) -> int:
     """Number of top-level user entities (no ``:``) a user owns.
 
     Only top-level user entities count toward the quota. agent/run/app are excluded.
@@ -343,7 +331,7 @@ def count_owned_entities(user_id: uuid.UUID, db: Session) -> int:
             select(func.count())
             .select_from(Entity)
             .where(
-                Entity.owner_user_id == user_id,
+                Entity.owner_id == operator_id,
                 Entity.type == "user",
                 ~Entity.id.contains(":"),
             )
@@ -359,7 +347,7 @@ def _create_entity_row(
     entity_type: str,
     entity_id: str,
     entity_name: str | None,
-    owner_user_id: uuid.UUID,
+    owner_id: uuid.UUID,
     parent_pk: uuid.UUID | None,
     db: Session,
 ) -> Entity:
@@ -369,7 +357,7 @@ def _create_entity_row(
             entity = Entity(
                 type=entity_type,
                 id=entity_id,
-                owner_user_id=owner_user_id,
+                owner_id=owner_id,
                 parent_pk=parent_pk,
                 name=entity_name,
             )
@@ -380,7 +368,7 @@ def _create_entity_row(
         raise
 
 
-def _assert_uuid_reservation(entity_id: str, user_id: uuid.UUID, bypass: bool) -> None:
+def _assert_uuid_reservation(entity_id: str, operator_id: uuid.UUID, bypass: bool) -> None:
     """Reject claiming a UUID-namespaced user entity owned by a different user.
 
     A user entity whose canonicalized id parses as a UUID is reserved for the
@@ -392,7 +380,7 @@ def _assert_uuid_reservation(entity_id: str, user_id: uuid.UUID, bypass: bool) -
         parsed = uuid.UUID(entity_id)
     except (ValueError, TypeError):
         return
-    if parsed != user_id and not bypass:
+    if parsed != operator_id and not bypass:
         raise HTTPException(
             status_code=403,
             detail=f"Entity 'user/{entity_id}' is reserved for the user with that ID and cannot be claimed.",
@@ -401,7 +389,7 @@ def _assert_uuid_reservation(entity_id: str, user_id: uuid.UUID, bypass: bool) -
 
 def _first_claim_toplevel(
     entity_id: str,
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     bypass: bool,
     db: Session,
 ) -> None:
@@ -414,9 +402,9 @@ def _first_claim_toplevel(
     top = top_level_user_id(entity_id)
     if top != entity_id:
         # The top-level segment must not be another user's UUID namespace.
-        _assert_uuid_reservation(top, user_id, bypass)
+        _assert_uuid_reservation(top, operator_id, bypass)
 
-    if not bypass and count_owned_entities(user_id, db) >= MAX_OWNED_ENTITIES_PER_USER:
+    if not bypass and count_owned_entities(operator_id, db) >= MAX_OWNED_ENTITIES_PER_USER:
         raise HTTPException(
             status_code=403,
             detail=(
@@ -426,17 +414,17 @@ def _first_claim_toplevel(
         )
 
     try:
-        _create_entity_row("user", top, None, user_id, None, db)
+        _create_entity_row("user", top, None, operator_id, None, db)
     except IntegrityError:
         # Race: another request created the top-level entity first.
         existing_top = _get_user_entity_or_none(top, db)
         if existing_top is None:
             raise
-        if existing_top.owner_user_id is None:
+        if existing_top.owner_id is None:
             # Orphaned top-level entity (e.g. owner deleted): claim it.
-            existing_top.owner_user_id = user_id
+            existing_top.owner_id = operator_id
             db.flush()
-        elif existing_top.owner_user_id != user_id and not bypass:
+        elif existing_top.owner_id != operator_id and not bypass:
             raise HTTPException(
                 status_code=403,
                 detail=f"Entity 'user/{top}' is already owned by another user.",
@@ -445,20 +433,20 @@ def _first_claim_toplevel(
 
 def _claim_or_get_user_entity(
     entity_id: str,
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     db: Session,
 ) -> Entity | None:
     """Return the user entity if it exists, claiming it if orphaned (owner=None)."""
     existing = _get_user_entity_or_none(entity_id, db)
-    if existing is not None and existing.owner_user_id is None and user_id is not None:
-        existing.owner_user_id = user_id
+    if existing is not None and existing.owner_id is None and operator_id is not None:
+        existing.owner_id = operator_id
         db.flush()
     return existing
 
 
 def _ensure_user_entity(
     entity_id: str,
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     db: Session,
     *,
     bypass: bool = False,
@@ -474,33 +462,33 @@ def _ensure_user_entity(
 
     # Exact match (already owned) short-circuits.
     existing = _get_user_entity_or_none(entity_id, db)
-    if existing is not None and existing.owner_user_id is not None:
+    if existing is not None and existing.owner_id is not None:
         return existing
 
     # UUID entity_id: only the user with that UUID can claim it.
-    _assert_uuid_reservation(entity_id, user_id, bypass)
+    _assert_uuid_reservation(entity_id, operator_id, bypass)
 
     # Resolve the longest owned prefix: if one exists the caller must own it,
     # otherwise first-claim the top-level segment.
     owner_id, matched_entity = _resolve_user_owner(entity_id, db)
     if owner_id is not None:
-        if owner_id != user_id and not bypass:
+        if owner_id != operator_id and not bypass:
             raise HTTPException(
                 status_code=403,
                 detail=f"Entity 'user/{entity_id}' falls under 'user/{matched_entity.id}' which is owned by another user.",
             )
     else:
-        _first_claim_toplevel(entity_id, user_id, bypass, db)
+        _first_claim_toplevel(entity_id, operator_id, bypass, db)
 
     # Create / claim the exact entity_id when it is a sub-namespace.
     if entity_id != top_level_user_id(entity_id):
-        existing = _claim_or_get_user_entity(entity_id, user_id, db)
+        existing = _claim_or_get_user_entity(entity_id, operator_id, db)
         if existing is not None:
             return existing
         try:
-            return _create_entity_row("user", entity_id, None, user_id, None, db)
+            return _create_entity_row("user", entity_id, None, operator_id, None, db)
         except IntegrityError:
-            existing = _claim_or_get_user_entity(entity_id, user_id, db)
+            existing = _claim_or_get_user_entity(entity_id, operator_id, db)
             if existing is None:
                 raise
             return existing
@@ -520,7 +508,7 @@ def _ensure_agent_or_run_entity(
 ) -> Entity:
     """Auto-create an agent/run entity under the given user parent entity."""
     entity_id = canonicalize_entity_id(entity_type, entity_id)
-    owner_user_id = parent_entity.owner_user_id
+    owner_id = parent_entity.owner_id
     parent_pk = parent_entity.pk
 
     existing = _get_scoped_entity_or_none(entity_type, parent_pk, entity_id, db)
@@ -528,7 +516,7 @@ def _ensure_agent_or_run_entity(
         return existing
 
     try:
-        return _create_entity_row(entity_type, entity_id, None, owner_user_id, parent_pk, db)
+        return _create_entity_row(entity_type, entity_id, None, owner_id, parent_pk, db)
     except IntegrityError:
         existing = _get_scoped_entity_or_none(entity_type, parent_pk, entity_id, db)
         if existing is None:
@@ -539,7 +527,7 @@ def _ensure_agent_or_run_entity(
 def ensure_entity_owner(
     entity_type: str,
     entity_id: str,
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     db: Session,
     *,
     bypass: bool = False,
@@ -552,7 +540,7 @@ def ensure_entity_owner(
     - agent/run: auto-created under the user entity specified by ``parent_entity_id``.
     """
     if entity_type == "user":
-        return _ensure_user_entity(entity_id, user_id, db, bypass=bypass)
+        return _ensure_user_entity(entity_id, operator_id, db, bypass=bypass)
 
     if entity_type == "app":
         entity = get_entity_or_none("app", entity_id, db)
@@ -561,7 +549,7 @@ def ensure_entity_owner(
                 status_code=403,
                 detail=f"App '{entity_id}' has not been created yet. Ask an admin to create it.",
             )
-        if entity.owner_user_id is None:
+        if entity.owner_id is None:
             raise HTTPException(
                 status_code=403,
                 detail=f"App '{entity_id}' has no owner yet. Ask an admin to assign one.",
@@ -571,15 +559,15 @@ def ensure_entity_owner(
     if is_scoped_entity_type(entity_type):
         # Resolve parent user entity
         if parent_entity_id is None:
-            parent_entity_id = _resolve_parent_user_id({}, user_id)
+            parent_entity_id = _resolve_parent_entity_id({}, operator_id)
             if parent_entity_id is None:
                 raise HTTPException(
                     status_code=400,
                     detail="Cannot resolve parent user for agent/run without a real user identity.",
                 )
-        parent_entity = ensure_entity_owner("user", parent_entity_id, user_id, db, bypass=bypass)
+        parent_entity = ensure_entity_owner("user", parent_entity_id, operator_id, db, bypass=bypass)
         # Verify caller owns the parent user entity
-        if not bypass and parent_entity.owner_user_id != user_id:
+        if not bypass and parent_entity.owner_id != operator_id:
             raise HTTPException(
                 status_code=403,
                 detail=f"You do not own 'user/{parent_entity_id}', so you cannot create {entity_type}/{entity_id} under it.",
@@ -589,17 +577,17 @@ def ensure_entity_owner(
     raise HTTPException(status_code=400, detail=f"Unknown entity type: '{entity_type}'.")
 
 
-def create_app_entity(entity_id: str, owner_user_id: uuid.UUID, db: Session, *, name: str | None = None) -> Entity:
-    """Create an app entity owned by *owner_user_id* (admin-only manual creation).
+def create_app_entity(entity_id: str, owner_id: uuid.UUID, db: Session, *, name: str | None = None) -> Entity:
+    """Create an app entity owned by *owner_id* (admin-only manual creation).
 
-    Validates that *owner_user_id* is an existing user (404 otherwise) and that
+    Validates that *owner_id* is an existing user (404 otherwise) and that
     the app does not already exist (409 otherwise). Race-safe via the partial
     unique index. Commits. The caller is responsible for the admin-role check.
     """
-    if db.get(User, owner_user_id) is None:
-        raise HTTPException(status_code=404, detail=f"User '{owner_user_id}' not found.")
+    if db.get(User, owner_id) is None:
+        raise HTTPException(status_code=404, detail=f"User '{owner_id}' not found.")
     try:
-        entity = _create_entity_row("app", entity_id, name, owner_user_id, None, db)
+        entity = _create_entity_row("app", entity_id, name, owner_id, None, db)
     except IntegrityError:
         if get_entity_or_none("app", entity_id, db) is not None:
             raise HTTPException(status_code=409, detail=f"App '{entity_id}' already exists.")
@@ -614,10 +602,7 @@ def create_app_entity(entity_id: str, owner_user_id: uuid.UUID, db: Session, *, 
 _MAX_FILTER_DEPTH = 10
 
 
-# --------------------------------------------------------------------------- #
-# Query filter rewriting
-# --------------------------------------------------------------------------- #
-def _get_accessible_apps(user_id: uuid.UUID, db: Session) -> list[str]:
+def _get_accessible_apps(operator_id: uuid.UUID, db: Session) -> list[str]:
     """Return app entity ids a **non-admin** user can read (owner or explicitly granted).
 
     Non-orphaned apps only — orphaned entities are admin-only. Admins never reach
@@ -629,22 +614,22 @@ def _get_accessible_apps(user_id: uuid.UUID, db: Session) -> list[str]:
     # Owned or explicitly granted (non-orphaned), combined in one round-trip.
     owned = select(Entity.id).where(
         Entity.type == "app",
-        Entity.owner_user_id == user_id,
+        Entity.owner_id == operator_id,
     )
     granted = (
         select(Entity.id)
         .join(EntityPermission, EntityPermission.entity_pk == Entity.pk)
         .where(
             Entity.type == "app",
-            Entity.owner_user_id.is_not(None),
-            EntityPermission.user_id == user_id,
+            Entity.owner_id.is_not(None),
+            EntityPermission.grantee_id == operator_id,
             EntityPermission.permission.in_(["read", "write", "admin"]),
         )
     )
     return sorted(set(db.scalars(owned.union(granted)).all()))
 
 
-def _get_accessible_users(user_id: uuid.UUID, db: Session) -> list[str]:
+def _get_accessible_users(operator_id: uuid.UUID, db: Session) -> list[str]:
     """Return user entity ids a **non-admin** user can read (owner or explicitly granted).
 
     Non-orphaned users only — orphaned entities are admin-only. Admins never reach
@@ -658,21 +643,21 @@ def _get_accessible_users(user_id: uuid.UUID, db: Session) -> list[str]:
     # Owned or explicitly granted (non-orphaned), combined in one round-trip.
     owned = select(Entity.id).where(
         Entity.type == "user",
-        Entity.owner_user_id == user_id,
+        Entity.owner_id == operator_id,
     )
     granted = (
         select(Entity.id)
         .join(EntityPermission, EntityPermission.entity_pk == Entity.pk)
         .where(
             Entity.type == "user",
-            Entity.owner_user_id.is_not(None),
-            EntityPermission.user_id == user_id,
+            Entity.owner_id.is_not(None),
+            EntityPermission.grantee_id == operator_id,
             EntityPermission.permission.in_(["read", "write", "admin"]),
         )
     )
     result = sorted(set(db.scalars(owned.union(granted)).all()))
     # Always include the caller's own UUID (implicit access).
-    own_uuid = str(user_id)
+    own_uuid = str(operator_id)
     if own_uuid not in result:
         result.insert(0, own_uuid)
     return result
@@ -698,7 +683,7 @@ def _build_app_wildcard_expansion(apps: list[str], in_not: bool) -> dict[str, An
 
 def _rewrite_query_filter(
     filters: Any,
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     db: Session,
     *,
     bypass: bool = False,
@@ -743,7 +728,7 @@ def _rewrite_query_filter(
                 # the non-admin _get_accessible_apps helper.
                 accessible_apps = sorted(db.scalars(select(Entity.id).where(Entity.type == "app")).all())
             else:
-                accessible_apps = _get_accessible_apps(user_id, db)
+                accessible_apps = _get_accessible_apps(operator_id, db)
         return accessible_apps
 
     def _walk(node: Any, depth: int = 0, in_not: bool = False) -> Any:
@@ -832,7 +817,7 @@ def _rewrite_query_filter(
                 if "app_id" not in result:
                     return result
             else:
-                users = _get_accessible_users(user_id, db)
+                users = _get_accessible_users(operator_id, db)
                 if not users:
                     raise HTTPException(
                         status_code=403,
@@ -882,11 +867,11 @@ def _rewrite_query_filter(
         # keeps the unscoped admin bypass. Recursion injects into nested
         # AND/OR leaves too.
         if (
-            not is_bootstrap_admin(user_id)
+            not is_bootstrap_admin(operator_id)
             and ("agent_id" in result or "run_id" in result)
             and "user_id" not in result
         ):
-            result["user_id"] = str(user_id)
+            result["user_id"] = str(operator_id)
 
         return result
 
@@ -946,14 +931,14 @@ def _rewrite_query_filter(
 def check_entity_permission(
     entity_type: str,
     entity_id: str,
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     required: str,
     db: Session,
     *,
     bypass: bool = False,
     parent_entity_id: str | None = None,
 ) -> bool:
-    """Whether ``user_id`` has ``required`` permission on the entity. Never raises."""
+    """Whether ``operator_id`` has ``required`` permission on the entity. Never raises."""
     entity_id = canonicalize_entity_id(entity_type, entity_id)
 
     if bypass:
@@ -966,9 +951,9 @@ def check_entity_permission(
     # hierarchical ownership/grant check below (so the new owner can revoke it).
     if entity_type == "user":
         try:
-            if uuid.UUID(top_level_user_id(entity_id)) == user_id:
+            if uuid.UUID(top_level_user_id(entity_id)) == operator_id:
                 top_entity = _get_user_entity_or_none(top_level_user_id(entity_id), db)
-                if top_entity is None or top_entity.owner_user_id is None or top_entity.owner_user_id == user_id:
+                if top_entity is None or top_entity.owner_id is None or top_entity.owner_id == operator_id:
                     return True
                 # Transferred to another user: fall through to the hierarchical
                 # ownership/grant check below.
@@ -985,7 +970,7 @@ def check_entity_permission(
         entity = _get_scoped_entity_or_none(entity_type, parent_entity.pk, entity_id, db)
         if entity is None:
             return False
-        if entity.owner_user_id == user_id:
+        if entity.owner_id == operator_id:
             return True
         # agent/run do not support explicit grants
         return False
@@ -1009,7 +994,7 @@ def check_entity_permission(
                 for p in db.scalars(
                     select(EntityPermission).where(
                         EntityPermission.entity_pk.in_([e.pk for e in prefix_entities.values()]),
-                        EntityPermission.user_id == user_id,
+                        EntityPermission.grantee_id == operator_id,
                     )
                 ).all()
             }
@@ -1022,10 +1007,10 @@ def check_entity_permission(
         effective_owner: uuid.UUID | None = None
         for prefix in canonical_prefixes:  # longest-first
             prefix_entity = prefix_entities.get(prefix)
-            if prefix_entity is not None and prefix_entity.owner_user_id is not None:
-                effective_owner = prefix_entity.owner_user_id
+            if prefix_entity is not None and prefix_entity.owner_id is not None:
+                effective_owner = prefix_entity.owner_id
                 break
-        if effective_owner == user_id:
+        if effective_owner == operator_id:
             return True
         # Grant path: a sufficient grant on any existing non-orphan prefix covers
         # this entity and all of its sub-namespaces (including unclaimed ones).
@@ -1036,9 +1021,9 @@ def check_entity_permission(
         # above for the ownership path).
         for prefix in canonical_prefixes:  # longest-first
             prefix_entity = prefix_entities.get(prefix)
-            if prefix_entity is None or prefix_entity.owner_user_id is None:
+            if prefix_entity is None or prefix_entity.owner_id is None:
                 continue  # missing or orphaned: skip, keep scanning for a grant
-            if prefix_entity.owner_user_id != effective_owner:
+            if prefix_entity.owner_id != effective_owner:
                 continue  # defense-in-depth: mismatched owner → skip grant
             perm = prefix_grants.get(prefix_entity.pk)
             if perm is not None and _LEVELS.get(perm.permission, 0) >= _LEVELS.get(required, 0):
@@ -1049,16 +1034,16 @@ def check_entity_permission(
     entity = get_entity_or_none(entity_type, entity_id, db)
     if entity is None:
         return False  # unclaimed entity: non-admins cannot access
-    if entity.owner_user_id is None:
+    if entity.owner_id is None:
         return False  # owner deleted / not yet assigned: admin only
-    if entity.owner_user_id == user_id:
+    if entity.owner_id == operator_id:
         return True
 
     # Check explicit grants
     perm = db.scalar(
         select(EntityPermission).where(
             EntityPermission.entity_pk == entity.pk,
-            EntityPermission.user_id == user_id,
+            EntityPermission.grantee_id == operator_id,
         )
     )
     if perm is None:
@@ -1068,7 +1053,7 @@ def check_entity_permission(
 
 def check_memory_scope_permission(
     scope: dict[str, str],
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     required: str,
     db: Session,
     *,
@@ -1091,7 +1076,7 @@ def check_memory_scope_permission(
         ok = check_entity_permission(
             "app",
             scope["app"],
-            user_id,
+            operator_id,
             required,
             db,
             bypass=bypass,
@@ -1106,7 +1091,7 @@ def check_memory_scope_permission(
             ok = check_entity_permission(
                 "user",
                 scope["user"],
-                user_id,
+                operator_id,
                 required,
                 db,
                 bypass=bypass,
@@ -1119,13 +1104,13 @@ def check_memory_scope_permission(
         return
 
     # --- original logic: no app in scope ---
-    parent_entity_id = _resolve_parent_user_id(scope, user_id)
+    parent_entity_id = _resolve_parent_entity_id(scope, operator_id)
 
     results = [
         check_entity_permission(
             et,
             eid,
-            user_id,
+            operator_id,
             required,
             db,
             bypass=bypass,
@@ -1142,9 +1127,6 @@ def check_memory_scope_permission(
         )
 
 
-# --------------------------------------------------------------------------- #
-# Query (filter-tree) authorization
-# --------------------------------------------------------------------------- #
 def extract_query_scope_branches(filters: Any) -> tuple[list[dict[str, str]], bool]:
     """Extract positive entity-scope branches from a filter tree.
 
@@ -1239,7 +1221,7 @@ def extract_query_scope_branches(filters: Any) -> tuple[list[dict[str, str]], bo
 
 def check_query_permission(
     filters: Any,
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     db: Session,
     *,
     bypass: bool = False,
@@ -1258,7 +1240,7 @@ def check_query_permission(
     scope -> admin only.
     """
     # Step 1: Rewrite filter
-    rewritten = _rewrite_query_filter(filters, user_id, db, bypass=bypass)
+    rewritten = _rewrite_query_filter(filters, operator_id, db, bypass=bypass)
 
     # Step 2: Extract branches from rewritten filter
     branches, has_not = extract_query_scope_branches(rewritten)
@@ -1277,7 +1259,7 @@ def check_query_permission(
 
     # Step 3: Check each branch
     for branch in branches:
-        check_memory_scope_permission(branch, user_id, "read", db, bypass=bypass)
+        check_memory_scope_permission(branch, operator_id, "read", db, bypass=bypass)
 
     # Step 4: Return rewritten filter
     return rewritten
@@ -1309,7 +1291,7 @@ def resolve_memory_entities(memory_id: str) -> dict[str, str]:
 
 def validate_bulk_admin_operation(
     memory_ids: list[str],
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     db: Session,
     *,
     bypass: bool = False,
@@ -1330,11 +1312,11 @@ def validate_bulk_admin_operation(
     if bypass:
         return
     if scope_hint and "app" in scope_hint:
-        check_memory_scope_permission(scope_hint, user_id, "admin", db, bypass=bypass)
+        check_memory_scope_permission(scope_hint, operator_id, "admin", db, bypass=bypass)
         return
     for memory_id in memory_ids:
         scope = resolve_memory_entities(memory_id)
-        check_memory_scope_permission(scope, user_id, "admin", db, bypass=bypass)
+        check_memory_scope_permission(scope, operator_id, "admin", db, bypass=bypass)
 
 
 def bulk_delete_memories(
@@ -1363,12 +1345,6 @@ def bulk_delete_memories(
         scope_hint=scope_hint,
     )
     memory.delete_all(**params)
-
-
-# --------------------------------------------------------------------------- #
-# Write-path authorization (shared by REST compat, main, and MCP)
-# --------------------------------------------------------------------------- #
-# ``params_to_entities`` lives in the ``entity`` primitives module.
 
 
 def inject_default_user_id(
@@ -1418,7 +1394,7 @@ def authorize_write(
     this always runs the full two-pass + AND-check for a real-user operator.
     """
     scope = params_to_entities(entity_params)
-    parent_entity_id = _resolve_parent_user_id(scope, operator.id)
+    parent_entity_id = _resolve_parent_entity_id(scope, operator.id)
 
     has_app = "app" in scope
 
@@ -1484,7 +1460,7 @@ def _assert_can_manage(
     callers can apply the stricter owner-only rule (grant/revoke admin). Raises
     403 otherwise.
     """
-    is_owner = entity.owner_user_id is not None and entity.owner_user_id == operator_id
+    is_owner = entity.owner_id is not None and entity.owner_id == operator_id
     operator_has_admin = (
         bypass
         or is_owner
@@ -1510,22 +1486,22 @@ def is_owner_or_global_admin(
     not enough. Contrast with ``_assert_can_manage`` (grant/revoke/list), which
     also accepts an explicit admin grant.
     """
-    return bypass or (entity.owner_user_id is not None and entity.owner_user_id == operator_id)
+    return bypass or (entity.owner_id is not None and entity.owner_id == operator_id)
 
 
 def upsert_permission(
     entity_pk: uuid.UUID,
-    user_id: uuid.UUID,
+    grantee_id: uuid.UUID,
     permission: str,
     *,
-    granted_by: uuid.UUID | None,
+    grantor_id: uuid.UUID | None,
     db: Session,
 ) -> EntityPermission:
     """Insert or update a permission row (DB-agnostic; race-safe via rollback+retry)."""
     existing = db.scalar(
         select(EntityPermission).where(
             EntityPermission.entity_pk == entity_pk,
-            EntityPermission.user_id == user_id,
+            EntityPermission.grantee_id == grantee_id,
         )
     )
     if existing is None:
@@ -1533,9 +1509,9 @@ def upsert_permission(
             with db.begin_nested():
                 perm = EntityPermission(
                     entity_pk=entity_pk,
-                    user_id=user_id,
+                    grantee_id=grantee_id,
                     permission=permission,
-                    granted_by=granted_by,
+                    grantor_id=grantor_id,
                 )
                 db.add(perm)
                 db.flush()
@@ -1544,13 +1520,13 @@ def upsert_permission(
             existing = db.scalar(
                 select(EntityPermission).where(
                     EntityPermission.entity_pk == entity_pk,
-                    EntityPermission.user_id == user_id,
+                    EntityPermission.grantee_id == grantee_id,
                 )
             )
             if existing is None:
                 raise
     existing.permission = permission
-    existing.granted_by = granted_by
+    existing.grantor_id = grantor_id
     db.flush()
     return existing
 
@@ -1595,8 +1571,8 @@ def grant_entity_permission(
     if grantee is None:
         raise HTTPException(status_code=404, detail=f"User '{grantee_user_id}' not found.")
 
-    granted_by = None if is_bootstrap_admin(operator_id) else operator_id
-    perm = upsert_permission(entity.pk, grantee_user_id, permission, granted_by=granted_by, db=db)
+    grantor_id = None if is_bootstrap_admin(operator_id) else operator_id
+    perm = upsert_permission(entity.pk, grantee_user_id, permission, grantor_id=grantor_id, db=db)
     db.commit()
     return perm
 
@@ -1618,7 +1594,7 @@ def revoke_entity_permission(
         )
 
     entity = _get_entity_or_404(entity_type, entity_id, db)
-    if entity.owner_user_id is not None and entity.owner_user_id == grantee_user_id:
+    if entity.owner_id is not None and entity.owner_id == grantee_user_id:
         raise HTTPException(
             status_code=400,
             detail="Cannot revoke the owner's permissions.",
@@ -1630,7 +1606,7 @@ def revoke_entity_permission(
     perm = db.scalar(
         select(EntityPermission).where(
             EntityPermission.entity_pk == entity.pk,
-            EntityPermission.user_id == grantee_user_id,
+            EntityPermission.grantee_id == grantee_user_id,
         )
     )
     if perm is not None:
@@ -1681,7 +1657,7 @@ def list_entity_permissions(
 def transfer_entity_owner(
     entity_type: str,
     entity_id: str,
-    new_owner_user_id: uuid.UUID,
+    new_owner_id: uuid.UUID,
     *,
     operator_id: uuid.UUID | None,
     bypass: bool,
@@ -1692,7 +1668,7 @@ def transfer_entity_owner(
     - Only user and app entities support transfer.
     - Only the owner or global admin can transfer.
     - For user entities, only top-level transfer is allowed; all sub-entities
-      (user sub-namespaces, agent, run) have their owner_user_id cascaded.
+      (user sub-namespaces, agent, run) have their owner_id cascaded.
     - The previous owner keeps an explicit admin grant.
     """
     if is_scoped_entity_type(entity_type):
@@ -1716,21 +1692,21 @@ def transfer_entity_owner(
             detail="Only top-level user entities can be transferred. Transfer the parent entity instead.",
         )
 
-    new_owner = db.get(User, new_owner_user_id)
+    new_owner = db.get(User, new_owner_id)
     if new_owner is None:
-        raise HTTPException(status_code=404, detail=f"User '{new_owner_user_id}' not found.")
+        raise HTTPException(status_code=404, detail=f"User '{new_owner_id}' not found.")
 
     # Quota check for non-admin recipients. Skip when the target is already the
     # owner (no-op transfer / re-assignment) — count_owned_entities would include
     # this entity and incorrectly 403 if the current owner is at their limit.
-    if new_owner.role != "admin" and entity_type == "user" and entity.owner_user_id != new_owner_user_id:
-        if count_owned_entities(new_owner_user_id, db) >= MAX_OWNED_ENTITIES_PER_USER:
+    if new_owner.role != "admin" and entity_type == "user" and entity.owner_id != new_owner_id:
+        if count_owned_entities(new_owner_id, db) >= MAX_OWNED_ENTITIES_PER_USER:
             raise HTTPException(
                 status_code=403,
                 detail=f"Target user already owns the maximum number of entities ({MAX_OWNED_ENTITIES_PER_USER}).",
             )
 
-    previous_owner_id = entity.owner_user_id
+    previous_owner_id = entity.owner_id
 
     # For user entities: cascade to all sub-entities
     if entity_type == "user":
@@ -1747,7 +1723,7 @@ def transfer_entity_owner(
             .all()
         )
         for sub in sub_users:
-            sub.owner_user_id = new_owner_user_id
+            sub.owner_id = new_owner_id
 
         # Find all agent/run entities whose parent_pk points to any of these user entities
         affected_user_ids = [entity.pk] + [sub.pk for sub in sub_users]
@@ -1762,15 +1738,15 @@ def transfer_entity_owner(
             .all()
         )
         for child in children:
-            child.owner_user_id = new_owner_user_id
+            child.owner_id = new_owner_id
 
     # Transfer the entity itself
-    entity.owner_user_id = new_owner_user_id
+    entity.owner_id = new_owner_id
 
     # Grant previous owner explicit admin
-    if previous_owner_id and previous_owner_id != new_owner_user_id:
-        granted_by = None if is_bootstrap_admin(operator_id) else operator_id
-        upsert_permission(entity.pk, previous_owner_id, "admin", granted_by=granted_by, db=db)
+    if previous_owner_id and previous_owner_id != new_owner_id:
+        grantor_id = None if is_bootstrap_admin(operator_id) else operator_id
+        upsert_permission(entity.pk, previous_owner_id, "admin", grantor_id=grantor_id, db=db)
 
     db.commit()
     return entity
@@ -1779,18 +1755,18 @@ def transfer_entity_owner(
 # --------------------------------------------------------------------------- #
 # Visibility (list)
 # --------------------------------------------------------------------------- #
-def get_visible_entities(user_id: uuid.UUID, db: Session, *, bypass: bool = False) -> list[Entity]:
+def get_visible_entities(operator_id: uuid.UUID, db: Session, *, bypass: bool = False) -> list[Entity]:
     """Entities the user can see: owned + explicitly granted (admins see all)."""
     if bypass:
         return db.execute(select(Entity)).scalars().all()
 
-    permitted_ids = select(EntityPermission.entity_pk).where(EntityPermission.user_id == user_id)
+    permitted_ids = select(EntityPermission.entity_pk).where(EntityPermission.grantee_id == operator_id)
     return (
         db.execute(
             select(Entity).where(
                 or_(
-                    Entity.owner_user_id == user_id,
-                    Entity.owner_user_id.is_not(None) & Entity.pk.in_(permitted_ids),
+                    Entity.owner_id == operator_id,
+                    Entity.owner_id.is_not(None) & Entity.pk.in_(permitted_ids),
                 )
             )
         )
@@ -1800,7 +1776,7 @@ def get_visible_entities(user_id: uuid.UUID, db: Session, *, bypass: bool = Fals
 
 
 def get_visible_entities_paginated(
-    user_id: uuid.UUID,
+    operator_id: uuid.UUID,
     db: Session,
     *,
     bypass: bool = False,
@@ -1811,28 +1787,28 @@ def get_visible_entities_paginated(
 ) -> tuple[list[Entity], int]:
     """Paginated variant of :func:`get_visible_entities`.
 
-    Returns ``(page_items, total)``. Ordering puts entities owned by ``user_id``
+    Returns ``(page_items, total)``. Ordering puts entities owned by ``operator_id``
     first (so the caller's own namespaces surface at the top of the list), then by
     type and id. ``entity_type`` optionally restricts to one type (e.g. ``"user"``)
     so the memories-page user picker can fetch only user entities.
 
     When ``unowned_only`` is True, only entities without an owner
-    (``owner_user_id IS NULL``) are returned. Intended for admin dashboards to
+    (``owner_id IS NULL``) are returned. Intended for admin dashboards to
     surface unclaimed namespaces.
     """
     visibility = or_(
-        Entity.owner_user_id == user_id,
-        Entity.owner_user_id.is_not(None)
-        & Entity.pk.in_(select(EntityPermission.entity_pk).where(EntityPermission.user_id == user_id)),
+        Entity.owner_id == operator_id,
+        Entity.owner_id.is_not(None)
+        & Entity.pk.in_(select(EntityPermission.entity_pk).where(EntityPermission.grantee_id == operator_id)),
     )
     where_clause = [] if bypass else [visibility]
     if entity_type is not None:
         where_clause.append(Entity.type == entity_type)
     if unowned_only:
-        where_clause.append(Entity.owner_user_id.is_(None))
+        where_clause.append(Entity.owner_id.is_(None))
 
     # Owned-first ordering: 0 for owned, 1 for everything else.
-    owned_first = case((Entity.owner_user_id == user_id, 0), else_=1)
+    owned_first = case((Entity.owner_id == operator_id, 0), else_=1)
 
     count_stmt = select(func.count(Entity.pk))
     items_stmt = select(Entity)

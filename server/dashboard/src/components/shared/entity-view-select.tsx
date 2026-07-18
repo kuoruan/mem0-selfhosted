@@ -6,7 +6,7 @@ import Combobox from "@/components/shared/combobox";
 import { WILDCARD } from "@/utils/helpers";
 import type { ComboboxOption } from "@/components/shared/combobox";
 
-interface EntityScopeSelectProps {
+interface EntityViewSelectProps {
   value: string;
   onChange: (value: string) => void;
   ownUserId: string;
@@ -14,19 +14,19 @@ interface EntityScopeSelectProps {
 }
 
 /**
- * Entity-scope selector for the Entities page (admin only).
+ * Entity-view selector for the Entities page (admin only).
  *
  * Presents "My entities" (the operator's own namespace), "All entities"
  * (admin bypass — includes unowned), and the paginated dashboard user list
  * from ``/users``. The operator's own user is excluded from the user list
  * to avoid duplicating "My entities".
  */
-export default function EntityScopeSelect({
+export default function EntityViewSelect({
   value,
   onChange,
   ownUserId,
   className,
-}: EntityScopeSelectProps) {
+}: EntityViewSelectProps) {
   const { users, isLoading, hasMore, loadMore } = useUsers(true);
 
   const options: ComboboxOption[] = useMemo(() => {
@@ -52,8 +52,8 @@ export default function EntityScopeSelect({
       isLoading={isLoading}
       hasMore={hasMore}
       onLoadMore={loadMore}
-      placeholder="Scope"
-      searchPlaceholder="Search user..."
+      placeholder="View as"
+      searchPlaceholder="Search user to view as..."
       emptyText="No user found."
       className={className}
     />

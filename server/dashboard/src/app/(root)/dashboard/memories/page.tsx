@@ -36,7 +36,7 @@ const MEMORY_FETCH_LIMIT = 1000;
 export default function MemoriesPage() {
   const { user } = useAuth();
   const ownUserId = user?.id ?? "";
-  const [userScope, setUserScope] = useState(ownUserId);
+  const [selectedUserId, setSelectedUserId] = useState(ownUserId);
   const [appId, setAppId] = useState("");
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
@@ -44,7 +44,7 @@ export default function MemoriesPage() {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
 
   useEffect(() => {
-    if (ownUserId) setUserScope((prev) => (prev === "" ? ownUserId : prev));
+    if (ownUserId) setSelectedUserId((prev) => (prev === "" ? ownUserId : prev));
   }, [ownUserId]);
 
   const {
@@ -55,7 +55,7 @@ export default function MemoriesPage() {
     async () => {
       const params: Record<string, unknown> = {
         top_k: MEMORY_FETCH_LIMIT,
-        user_id: userScope,
+        user_id: selectedUserId,
       };
       if (appId) {
         params.app_id = appId;
@@ -67,12 +67,12 @@ export default function MemoriesPage() {
     {
       errorToast: "Failed to load memories",
       initialData: [],
-      deps: [userScope, appId],
+      deps: [selectedUserId, appId],
     },
   );
 
-  const selectUserScope = (id: string) => {
-    setUserScope(id);
+  const handleUserChange = (id: string) => {
+    setSelectedUserId(id);
     setPage(0);
   };
 
@@ -151,8 +151,8 @@ export default function MemoriesPage() {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold font-fustat">Memories</h1>
         <MemoryUserSelect
-          value={userScope}
-          onChange={selectUserScope}
+          value={selectedUserId}
+          onChange={handleUserChange}
           ownUserId={ownUserId}
           className="w-72"
         />
@@ -174,7 +174,7 @@ export default function MemoriesPage() {
             {`curl -X POST ${apiUrl}/memories \\
   -H "X-API-Key: <your-key>" \\
   -H "Content-Type: application/json" \\
-  -d '{"messages": [{"role": "user", "content": "I like hiking"}], "user_id": "${isWildcard(userScope) ? ownUserId : userScope || 'alice'}"`}
+  -d '{"messages": [{"role": "user", "content": "I like hiking"}], "user_id": "${isWildcard(selectedUserId) ? ownUserId : selectedUserId || 'alice'}"`}
           </pre>
         </EmptyState>
       ) : (

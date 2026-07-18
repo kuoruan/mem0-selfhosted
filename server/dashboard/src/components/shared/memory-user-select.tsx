@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Combobox, { type ComboboxOption } from "@/components/shared/combobox";
-import { useEntityUsers } from "@/hooks/use-entity-users";
+import { useUserEntities } from "@/hooks/use-user-entities";
 import { WILDCARD } from "@/utils/helpers";
 
 interface MemoryUserSelectProps {
@@ -27,7 +27,7 @@ export default function MemoryUserSelect({
   className,
   disabled,
 }: MemoryUserSelectProps) {
-  const { users: entityUsers, isLoading, hasMore, loadMore } = useEntityUsers();
+  const { userEntities, isLoading, hasMore, loadMore } = useUserEntities();
 
   const options: ComboboxOption[] = useMemo(() => {
     const presets: ComboboxOption[] = [
@@ -42,7 +42,7 @@ export default function MemoryUserSelect({
         search: "All user IDs",
       },
     ];
-    const entityOpts: ComboboxOption[] = entityUsers
+    const entityOpts: ComboboxOption[] = userEntities
       .filter((e) => e.id !== ownUserId)
       .map((e) => ({
         value: e.id,
@@ -50,7 +50,7 @@ export default function MemoryUserSelect({
         search: e.id,
       }));
     return [...presets, ...entityOpts];
-  }, [entityUsers, ownUserId]);
+  }, [userEntities, ownUserId]);
 
   return (
     <Combobox

@@ -6,8 +6,8 @@ import type { Entity, EntityListResponse } from "@/types/api";
 
 const PAGE_SIZE = 100;
 
-export interface UseEntityUsersResult {
-  users: Entity[];
+export interface UseUserEntitiesResult {
+  userEntities: Entity[];
   isLoading: boolean;
   hasMore: boolean;
   loadMore: () => void;
@@ -21,7 +21,7 @@ export interface UseEntityUsersResult {
  * Owned entities sort first server-side. Errors are swallowed silently (the
  * picker just shows what it has).
  */
-export function useEntityUsers(): UseEntityUsersResult {
+export function useUserEntities(): UseUserEntitiesResult {
   const { items, isLoading, hasMore, loadMore } = useInfiniteList<Entity>({
     fetchPage: async (page) => {
       const res = await api.get<EntityListResponse>(ENTITY_ENDPOINTS.BASE, {
@@ -30,5 +30,5 @@ export function useEntityUsers(): UseEntityUsersResult {
       return res.data ?? EMPTY_PAGE_RESULTS;
     },
   });
-  return { users: items, isLoading, hasMore, loadMore };
+  return { userEntities: items, isLoading, hasMore, loadMore };
 }

@@ -204,7 +204,7 @@ def test_ensure_user_entity_first_claim(db, make_user):
     user = make_user()
     entity = ep.ensure_entity_owner("user", "alice", user.id, db)
     db.commit()
-    assert entity.owner_user_id == user.id
+    assert entity.owner_id == user.id
     assert entity.id == "alice"
     assert entity.parent_pk is None
 
@@ -226,12 +226,12 @@ def test_ensure_user_entity_sub_namespace(db, make_user):
     entity = ep.ensure_entity_owner("user", "alice:laptop", user.id, db)
     db.commit()
     assert entity.id == "alice:laptop"
-    assert entity.owner_user_id == user.id
+    assert entity.owner_id == user.id
 
     # Top-level should also exist
     top = ep._get_user_entity_or_none("alice", db)
     assert top is not None
-    assert top.owner_user_id == user.id
+    assert top.owner_id == user.id
 
 
 def test_ensure_user_entity_sub_namespace_prefix_owned_by_other(db, make_user):
@@ -257,26 +257,26 @@ def test_ensure_user_entity_ui_create_no_colon(db, make_user):
 def test_ensure_user_entity_claims_orphaned_toplevel(db, make_user):
     """An orphaned top-level entity (owner=None, e.g. after owner deletion) is
     claimable by a non-admin rather than returning 403."""
-    db.add(Entity(type="user", id="alice", owner_user_id=None))
+    db.add(Entity(type="user", id="alice", owner_id=None))
     db.flush()
     user = make_user()
     entity = ep.ensure_entity_owner("user", "alice", user.id, db)
     db.commit()
     assert entity.id == "alice"
-    assert entity.owner_user_id == user.id
+    assert entity.owner_id == user.id
 
 
 def test_orphan_subnamespace_under_owned_toplevel_is_claimable(db, make_user):
     """An orphaned sub-namespace (owner=None) under a top-level entity the caller
     owns is claimable by the caller (orphan is skipped, owned prefix wins)."""
     owner = make_user()
-    db.add(Entity(type="user", id="alice", owner_user_id=owner.id))
-    db.add(Entity(type="user", id="alice:laptop", owner_user_id=None))
+    db.add(Entity(type="user", id="alice", owner_id=owner.id))
+    db.add(Entity(type="user", id="alice:laptop", owner_id=None))
     db.flush()
     entity = ep.ensure_entity_owner("user", "alice:laptop", owner.id, db)
     db.commit()
     assert entity.id == "alice:laptop"
-    assert entity.owner_user_id == owner.id
+    assert entity.owner_id == owner.id
 
 
 def test_orphan_subnamespace_under_other_user_toplevel_rejected(db, make_user):
@@ -284,8 +284,8 @@ def test_orphan_subnamespace_under_other_user_toplevel_rejected(db, make_user):
     claimed by a non-owner."""
     owner = make_user()
     other = make_user()
-    db.add(Entity(type="user", id="alice", owner_user_id=owner.id))
-    db.add(Entity(type="user", id="alice:laptop", owner_user_id=None))
+    db.add(Entity(type="user", id="alice", owner_id=owner.id))
+    db.add(Entity(type="user", id="alice:laptop", owner_id=None))
     db.flush()
     with pytest.raises(HTTPException) as exc:
         ep.ensure_entity_owner("user", "alice:laptop", other.id, db)
@@ -297,8 +297,8 @@ def test_check_permission_skips_orphan_falls_to_owned_prefix(db, make_user):
     *owned* prefix (orphan skipped, not treated as admin-only)."""
     owner = make_user()
     other = make_user()
-    db.add(Entity(type="user", id="alice", owner_user_id=owner.id))
-    db.add(Entity(type="user", id="alice:laptop", owner_user_id=None))
+    db.add(Entity(type="user", id="alice", owner_id=owner.id))
+    db.add(Entity(type="user", id="alice:laptop", owner_id=None))
     db.flush()
     assert ep.check_entity_permission("user", "alice:laptop", owner.id, "read", db) is True
     assert ep.check_entity_permission("user", "alice:laptop", other.id, "read", db) is False
@@ -322,7 +322,7 @@ def test_ensure_app_entity_admin_creates(db, make_user):
     db.commit()
     # Now owner can write
     entity = ep.ensure_entity_owner("app", "my-repo", owner.id, db)
-    assert entity.owner_user_id == owner.id
+    assert entity.owner_id == owner.id
 
 
 # --------------------------------------------------------------------------- #
@@ -338,7 +338,7 @@ def test_ensure_agent_entity(db, make_user):
     db.commit()
     assert entity.type == "agent"
     assert entity.id == "riley"
-    assert entity.owner_user_id == user.id
+    assert entity.owner_id == user.id
     assert entity.parent_pk is not None
 
 
@@ -353,8 +353,8 @@ def test_ensure_agent_entity_different_users(db, make_user):
     agent_b = ep.ensure_entity_owner("agent", "riley", b.id, db, parent_entity_id="bob")
     db.commit()
     assert agent_a.pk != agent_b.pk
-    assert agent_a.owner_user_id == a.id
-    assert agent_b.owner_user_id == b.id
+    assert agent_a.owner_id == a.id
+    assert agent_b.owner_id == b.id
 
 
 def test_ensure_agent_entity_wrong_parent(db, make_user):
@@ -556,9 +556,9 @@ def test_get_entity_or_none_scopes_agent_by_parent(db, make_user):
     db.commit()
 
     a_agent = ep.get_entity_or_none("agent", "riley", db, parent_entity_id=str(alice.id))
-    assert a_agent is not None and a_agent.owner_user_id == alice.id
+    assert a_agent is not None and a_agent.owner_id == alice.id
     b_agent = ep.get_entity_or_none("agent", "riley", db, parent_entity_id=str(bob.id))
-    assert b_agent is not None and b_agent.owner_user_id == bob.id
+    assert b_agent is not None and b_agent.owner_id == bob.id
     assert a_agent.pk != b_agent.pk
     # user/app are globally unique -> parent_entity_id ignored
     assert ep.get_entity_or_none("user", str(alice.id), db, parent_entity_id=str(bob.id)) is not None
@@ -775,8 +775,8 @@ def test_delete_permission_scopes_agent_by_parent(db, make_user):
         "agent", "riley", bob.id, False, db,
         parent_entity_id=str(bob.id),
     )
-    assert a_entity is not None and a_entity.owner_user_id == alice.id
-    assert b_entity is not None and b_entity.owner_user_id == bob.id
+    assert a_entity is not None and a_entity.owner_id == alice.id
+    assert b_entity is not None and b_entity.owner_id == bob.id
     # Same name, different owners -> distinct parent-scoped rows.
     assert a_entity.pk != b_entity.pk
 
@@ -1037,14 +1037,14 @@ def test_resolve_memory_entities_missing_is_404(fake_memory):
 
 
 # --------------------------------------------------------------------------- #
-# ORM constraints mirror the Alembic migration (008)
+# ORM constraints mirror the Alembic migration (007)
 # --------------------------------------------------------------------------- #
 def test_entity_models_declare_orm_indexes():
     """ORM __table_args__ have the correct indexes."""
     from server.models import Entity, EntityPermission
 
     ent_indexes = {i.name for i in Entity.__table__.indexes if i.name}
-    assert "ix_entities_owner_user_id" in ent_indexes
+    assert "ix_entities_owner_id" in ent_indexes
     assert "ix_entities_parent_pk" in ent_indexes
     # Partial unique indexes (mirror migration 007)
     assert "uq_entities_type_id_global" in ent_indexes
@@ -1052,8 +1052,8 @@ def test_entity_models_declare_orm_indexes():
 
     perm_constraints = {c.name for c in EntityPermission.__table__.constraints if c.name}
     perm_indexes = {i.name for i in EntityPermission.__table__.indexes if i.name}
-    assert "uq_entity_permissions_entity_user" in perm_constraints
-    assert "ix_entity_permissions_user_id" in perm_indexes
+    assert "uq_entity_permissions_entity_grantee" in perm_constraints
+    assert "ix_entity_permissions_grantee_id" in perm_indexes
 
 
 # --------------------------------------------------------------------------- #
@@ -1121,7 +1121,7 @@ class TestRewriteQueryFilter:
         """app_id:* should expand to OR of accessible apps."""
         user = make_user()
         # Create an app entity owned by the user
-        app = Entity(type="app", id="my-app", owner_user_id=user.id)
+        app = Entity(type="app", id="my-app", owner_id=user.id)
         db.add(app)
         db.flush()
         result = ep._rewrite_query_filter({"app_id": "*"}, user.id, db)
@@ -1139,8 +1139,8 @@ class TestRewriteQueryFilter:
         admin = make_user(role="admin")
         other = make_user()
         # Apps owned by another user; admin owns/grants none.
-        db.add(Entity(type="app", id="app-a", owner_user_id=other.id))
-        db.add(Entity(type="app", id="app-b", owner_user_id=other.id))
+        db.add(Entity(type="app", id="app-a", owner_id=other.id))
+        db.add(Entity(type="app", id="app-b", owner_id=other.id))
         db.flush()
         # Direct rewrite with bypass -> expands to all apps (no 403).
         result = ep._rewrite_query_filter({"app_id": "*"}, admin.id, db, bypass=True)
@@ -1151,7 +1151,7 @@ class TestRewriteQueryFilter:
 
     def test_wildcard_nested_and(self, db, make_user):
         user = make_user()
-        app = Entity(type="app", id="my-app", owner_user_id=user.id)
+        app = Entity(type="app", id="my-app", owner_id=user.id)
         db.add(app)
         db.flush()
         result = ep._rewrite_query_filter(
@@ -1167,7 +1167,7 @@ class TestRewriteQueryFilter:
     def test_wildcard_mixed_dict_with_logical_operators(self, db, make_user):
         """MCP path: mixed dict with both AND and top-level app_id:*."""
         user = make_user()
-        app = Entity(type="app", id="my-app", owner_user_id=user.id)
+        app = Entity(type="app", id="my-app", owner_id=user.id)
         db.add(app)
         db.flush()
         result = ep._rewrite_query_filter(
@@ -1181,7 +1181,7 @@ class TestRewriteQueryFilter:
     def test_not_subtree_expands_wildcard(self, db, make_user):
         """NOT subtree should also expand app_id:*."""
         user = make_user()
-        app = Entity(type="app", id="my-app", owner_user_id=user.id)
+        app = Entity(type="app", id="my-app", owner_id=user.id)
         db.add(app)
         db.flush()
         result = ep._rewrite_query_filter(
@@ -1222,7 +1222,7 @@ class TestRewriteQueryFilter:
         """An empty AND/OR after cleanup must not discard sibling keys
         (created_at, metadata)."""
         user = make_user()
-        app = Entity(type="app", id="x", owner_user_id=user.id)
+        app = Entity(type="app", id="x", owner_id=user.id)
         db.add(app)
         db.flush()
         # AND with app_id:"*" (expands) + a sibling created_at filter.
@@ -1327,8 +1327,8 @@ class TestRewriteQueryFilter:
         rejected — the expansion would produce NOT OR which most vector stores
         do not support."""
         user = make_user()
-        db.add(Entity(type="app", id="app-a", owner_user_id=user.id))
-        db.add(Entity(type="app", id="app-b", owner_user_id=user.id))
+        db.add(Entity(type="app", id="app-a", owner_id=user.id))
+        db.add(Entity(type="app", id="app-b", owner_id=user.id))
         db.flush()
         with pytest.raises(HTTPException) as exc:
             ep._rewrite_query_filter(
@@ -1354,14 +1354,14 @@ def test_get_accessible_apps_returns_owned_and_granted(db, make_user):
     in a single query."""
     owner = make_user()
     grantee = make_user()
-    db.add(Entity(type="app", id="owned-app", owner_user_id=owner.id))
-    db.add(Entity(type="app", id="shared-app", owner_user_id=owner.id))
+    db.add(Entity(type="app", id="owned-app", owner_id=owner.id))
+    db.add(Entity(type="app", id="shared-app", owner_id=owner.id))
     db.flush()
     shared = db.scalar(
         select(Entity).where(Entity.type == "app", Entity.id == "shared-app")
     )
     db.add(EntityPermission(
-        entity_pk=shared.pk, user_id=grantee.id, permission="read",
+        entity_pk=shared.pk, grantee_id=grantee.id, permission="read",
     ))
     db.flush()
 
@@ -1384,11 +1384,11 @@ class TestAppPrimaryGate:
         """ both app read AND user read are required when both are in scope."""
         owner = make_user()
         reader = make_user()
-        app = Entity(type="app", id="project-x", owner_user_id=owner.id)
+        app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
         from server.models import EntityPermission
-        db.add(EntityPermission(entity_pk=app.pk, user_id=reader.id, permission="read"))
+        db.add(EntityPermission(entity_pk=app.pk, grantee_id=reader.id, permission="read"))
         db.flush()
         # reader has app read but NOT user read for "some-other-user" -> 403
         with pytest.raises(HTTPException) as exc:
@@ -1402,11 +1402,11 @@ class TestAppPrimaryGate:
         """write also requires both app and user permission."""
         owner = make_user()
         writer = make_user()
-        app = Entity(type="app", id="project-x", owner_user_id=owner.id)
+        app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
         from server.models import EntityPermission
-        db.add(EntityPermission(entity_pk=app.pk, user_id=writer.id, permission="write"))
+        db.add(EntityPermission(entity_pk=app.pk, grantee_id=writer.id, permission="write"))
         db.flush()
         # writer has app write but NOT user write -> 403
         with pytest.raises(HTTPException) as exc:
@@ -1419,7 +1419,7 @@ class TestAppPrimaryGate:
     def test_write_without_app_permission_raises_403(self, db, make_user):
         owner = make_user()
         writer = make_user()
-        app = Entity(type="app", id="project-x", owner_user_id=owner.id)
+        app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
         # No grant for writer
@@ -1443,7 +1443,7 @@ class TestAppPrimaryGate:
     def test_read_with_app_owner_but_not_user_owner_fails(self, db, make_user):
         """app owner also needs user read permission for the scoped user."""
         owner = make_user()
-        app = Entity(type="app", id="project-x", owner_user_id=owner.id)
+        app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
         # owner owns app but not the user entity "some-other-user" -> 403
@@ -1462,7 +1462,7 @@ class TestCheckQueryPermission:
     def test_returns_rewritten_filter_with_user_id_preserved(self, db, make_user):
         """user_id is preserved in rewritten filter."""
         user = make_user()
-        app = Entity(type="app", id="x", owner_user_id=user.id)
+        app = Entity(type="app", id="x", owner_id=user.id)
         db.add(app)
         db.flush()
         # Use user's own UUID so user read check passes
@@ -1477,11 +1477,11 @@ class TestCheckQueryPermission:
         """app read alone is insufficient; user read is also required."""
         owner = make_user()
         reader = make_user()
-        app = Entity(type="app", id="project-x", owner_user_id=owner.id)
+        app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
         from server.models import EntityPermission
-        db.add(EntityPermission(entity_pk=app.pk, user_id=reader.id, permission="read"))
+        db.add(EntityPermission(entity_pk=app.pk, grantee_id=reader.id, permission="read"))
         db.flush()
         # reader has app read but not user read for "A" -> 403
         with pytest.raises(HTTPException) as exc:
@@ -1501,14 +1501,14 @@ class TestAuthorizeWriteApp:
         owner = make_user()
         writer = make_user()
         # Create user entity owned by someone else
-        user_entity = Entity(type="user", id="alice", owner_user_id=owner.id)
+        user_entity = Entity(type="user", id="alice", owner_id=owner.id)
         db.add(user_entity)
         # Create app entity with writer having write permission
-        app = Entity(type="app", id="project-x", owner_user_id=owner.id)
+        app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
         from server.models import EntityPermission
-        db.add(EntityPermission(entity_pk=app.pk, user_id=writer.id, permission="write"))
+        db.add(EntityPermission(entity_pk=app.pk, grantee_id=writer.id, permission="write"))
         db.flush()
         # writer has app write but NOT user write for "alice" -> 403
         with pytest.raises(HTTPException) as exc:
@@ -1522,7 +1522,7 @@ class TestAuthorizeWriteApp:
         monkeypatch.setattr(ep, "is_bootstrap_admin", lambda _uid: False)
         owner = make_user()
         writer = make_user()
-        app = Entity(type="app", id="project-x", owner_user_id=owner.id)
+        app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
         # No write grant for writer
@@ -1538,15 +1538,15 @@ class TestAuthorizeWriteApp:
         owner = make_user()
         writer = make_user()
         # Create user entity with writer having write grant
-        user_entity = Entity(type="user", id="alice", owner_user_id=owner.id)
+        user_entity = Entity(type="user", id="alice", owner_id=owner.id)
         db.add(user_entity)
         # Create app entity with writer having write grant
-        app = Entity(type="app", id="project-x", owner_user_id=owner.id)
+        app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
         from server.models import EntityPermission
-        db.add(EntityPermission(entity_pk=user_entity.pk, user_id=writer.id, permission="write"))
-        db.add(EntityPermission(entity_pk=app.pk, user_id=writer.id, permission="write"))
+        db.add(EntityPermission(entity_pk=user_entity.pk, grantee_id=writer.id, permission="write"))
+        db.add(EntityPermission(entity_pk=app.pk, grantee_id=writer.id, permission="write"))
         db.flush()
         # writer has both app write and user write grants -> should pass
         ep.authorize_write(
@@ -1623,11 +1623,11 @@ class TestSecurityRegressions:
         monkeypatch.setattr(ep, "is_bootstrap_admin", lambda _uid: False)
         owner = make_user()
         reader = make_user()
-        app = Entity(type="app", id="project-x", owner_user_id=owner.id)
+        app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
         from server.models import EntityPermission
-        db.add(EntityPermission(entity_pk=app.pk, user_id=reader.id, permission="read"))
+        db.add(EntityPermission(entity_pk=app.pk, grantee_id=reader.id, permission="read"))
         db.flush()
         out = ep.check_query_permission(
             {"app_id": "project-x", "agent_id": "riley"}, reader.id, db
@@ -1679,8 +1679,8 @@ class TestSecurityRegressions:
         bob = make_user()
         # bob owns the top-level "alice"; alice owns the sub-namespace
         # "alice:laptop" (cannot arise via the normal API; set up directly).
-        db.add(Entity(type="user", id="alice", owner_user_id=bob.id))
-        db.add(Entity(type="user", id="alice:laptop", owner_user_id=alice.id))
+        db.add(Entity(type="user", id="alice", owner_id=bob.id))
+        db.add(Entity(type="user", id="alice:laptop", owner_id=alice.id))
         db.commit()
         # bob owns "alice" but must NOT read alice's private "alice:laptop"
         assert not ep.check_entity_permission("user", "alice:laptop", bob.id, "read", db)
@@ -1697,15 +1697,15 @@ class TestSecurityRegressions:
         bob = make_user()
         charlie = make_user()
         # bob owns "alice"; alice owns "alice:laptop" (corrupted state)
-        db.add(Entity(type="user", id="alice", owner_user_id=bob.id))
-        db.add(Entity(type="user", id="alice:laptop", owner_user_id=alice.id))
+        db.add(Entity(type="user", id="alice", owner_id=bob.id))
+        db.add(Entity(type="user", id="alice:laptop", owner_id=alice.id))
         db.commit()
         # bob grants charlie read on "alice"
         alice_entity = db.scalar(
             select(Entity).where(Entity.type == "user", Entity.id == "alice")
         )
         db.add(EntityPermission(
-            entity_pk=alice_entity.pk, user_id=charlie.id, permission="read",
+            entity_pk=alice_entity.pk, grantee_id=charlie.id, permission="read",
         ))
         db.commit()
         # charlie can read "alice" via the grant
@@ -1736,8 +1736,8 @@ class TestGetEntityOrNone:
 
         a = ep.get_entity_or_none("agent", "riley", db, parent_entity_id=str(alice.id))
         b = ep.get_entity_or_none("agent", "riley", db, parent_entity_id=str(bob.id))
-        assert a is not None and a.owner_user_id == alice.id
-        assert b is not None and b.owner_user_id == bob.id
+        assert a is not None and a.owner_id == alice.id
+        assert b is not None and b.owner_id == bob.id
         assert a.pk != b.pk
 
     def test_agent_unscoped_returns_any(self, db, make_user):
@@ -1781,8 +1781,8 @@ class TestGetEntityOrNone:
 
         a = ep.get_entity_or_none("run", "run-1", db, parent_entity_id=str(alice.id))
         b = ep.get_entity_or_none("run", "run-1", db, parent_entity_id=str(bob.id))
-        assert a is not None and a.owner_user_id == alice.id
-        assert b is not None and b.owner_user_id == bob.id
+        assert a is not None and a.owner_id == alice.id
+        assert b is not None and b.owner_id == bob.id
 
     def test_parent_entity_id_resolves_correct_namespace(self, db, make_user):
         """One user owns two namespaces, each with agent/riley → parent_entity_id
@@ -1862,7 +1862,7 @@ class TestClientZoneNoAdminBypass:
     def test_check_entity_permission_bypass_flag_only(self, db, make_user):
         admin = make_user(role="admin")
         other = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=other.id))
+        db.add(Entity(type="user", id="alice", owner_id=other.id))
         db.flush()
         # bypass=True (management zone): role=admin bypasses.
         assert ep.check_entity_permission("user", "alice", admin.id, "read", db, bypass=True)
@@ -1874,8 +1874,8 @@ class TestClientZoneNoAdminBypass:
     def test_get_visible_entities_bypass_flag_only(self, db, make_user):
         admin = make_user(role="admin")
         other = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=other.id))
-        db.add(Entity(type="user", id="bob", owner_user_id=admin.id))
+        db.add(Entity(type="user", id="alice", owner_id=other.id))
+        db.add(Entity(type="user", id="bob", owner_id=admin.id))
         db.flush()
         # bypass=True: role=admin sees ALL entities.
         assert len(ep.get_visible_entities(admin.id, db, bypass=True)) == 2
@@ -1916,8 +1916,8 @@ class TestClientZoneNoAdminBypass:
         apps only (vs bypass=True which sees ALL apps)."""
         admin = make_user(role="admin")
         other = make_user()
-        db.add(Entity(type="app", id="app-a", owner_user_id=other.id))
-        db.add(Entity(type="app", id="app-b", owner_user_id=other.id))
+        db.add(Entity(type="app", id="app-a", owner_id=other.id))
+        db.add(Entity(type="app", id="app-b", owner_id=other.id))
         db.flush()
         # bypass=True: admin sees ALL apps.
         out = ep._rewrite_query_filter({"app_id": "*"}, admin.id, db, bypass=True)
@@ -1930,7 +1930,7 @@ class TestClientZoneNoAdminBypass:
         # Grant admin read on app-a -> wildcard lists only app-a.
         db.add(EntityPermission(entity_pk=db.scalar(
             select(Entity.pk).where(Entity.type == "app", Entity.id == "app-a")
-        ), user_id=admin.id, permission="read"))
+        ), grantee_id=admin.id, permission="read"))
         db.flush()
         out = ep._rewrite_query_filter({"app_id": "*"}, admin.id, db, bypass=False)
         assert out == {"app_id": "app-a"}
@@ -1957,7 +1957,7 @@ class TestResolveUserOwner:
     def test_returns_owner_for_hierarchical_user_id(self, db, make_user):
         """alice:laptop finds alice's owner via prefix match."""
         owner = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=owner.id))
+        db.add(Entity(type="user", id="alice", owner_id=owner.id))
         db.flush()
 
         owner_id, entity = ep._resolve_user_owner("alice:laptop", db)
@@ -1967,7 +1967,7 @@ class TestResolveUserOwner:
     def test_returns_owner_for_exact_match(self, db, make_user):
         """Exact user id finds its own owner."""
         owner = make_user()
-        db.add(Entity(type="user", id="bob", owner_user_id=owner.id))
+        db.add(Entity(type="user", id="bob", owner_id=owner.id))
         db.flush()
 
         owner_id, entity = ep._resolve_user_owner("bob", db)
@@ -1975,10 +1975,10 @@ class TestResolveUserOwner:
         assert entity.id == "bob"
 
     def test_skips_orphaned_prefix(self, db, make_user):
-        """Orphaned prefix (owner_user_id=None) is skipped; next shorter owned prefix wins."""
+        """Orphaned prefix (owner_id=None) is skipped; next shorter owned prefix wins."""
         owner = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=None))  # orphan
-        db.add(Entity(type="user", id="alice:laptop", owner_user_id=owner.id))
+        db.add(Entity(type="user", id="alice", owner_id=None))  # orphan
+        db.add(Entity(type="user", id="alice:laptop", owner_id=owner.id))
         db.flush()
 
         owner_id, entity = ep._resolve_user_owner("alice:laptop:agent1", db)
@@ -1994,7 +1994,7 @@ class TestResolveUserOwner:
 
     def test_returns_none_when_all_prefixes_orphaned(self, db):
         """All matching prefixes are orphaned."""
-        db.add(Entity(type="user", id="alice", owner_user_id=None))
+        db.add(Entity(type="user", id="alice", owner_id=None))
         db.flush()
 
         owner_id, entity = ep._resolve_user_owner("alice:laptop", db)
@@ -2004,7 +2004,7 @@ class TestResolveUserOwner:
     def test_batch_query_uses_in_clause(self, db, mocker):
         """Batch query fires a single IN clause, not one query per prefix."""
         spy = mocker.spy(ep, "select")
-        db.add(Entity(type="user", id="alice", owner_user_id=uuid.uuid4()))
+        db.add(Entity(type="user", id="alice", owner_id=uuid.uuid4()))
         db.flush()
 
         ep._resolve_user_owner("alice:laptop:agent1", db)
@@ -2019,7 +2019,7 @@ class TestAssertCanManage:
     def test_owner_short_circuits_skips_permission_check(self, db, make_user, mocker):
         """When operator is the owner, check_entity_permission is never called."""
         owner = make_user()
-        entity = Entity(type="app", id="my-app", owner_user_id=owner.id)
+        entity = Entity(type="app", id="my-app", owner_id=owner.id)
         db.add(entity)
         db.flush()
 
@@ -2032,7 +2032,7 @@ class TestAssertCanManage:
 
     def test_bypass_true_short_circuits(self, db, make_user, mocker):
         """bypass=True skips both owner check and permission check."""
-        entity = Entity(type="app", id="shared-app", owner_user_id=None)
+        entity = Entity(type="app", id="shared-app", owner_id=None)
         db.add(entity)
         db.flush()
 
@@ -2047,11 +2047,11 @@ class TestAssertCanManage:
         """Non-owner with admin grant passes the permission check."""
         owner = make_user()
         other = make_user()
-        entity = Entity(type="app", id="app-x", owner_user_id=owner.id)
+        entity = Entity(type="app", id="app-x", owner_id=owner.id)
         db.add(entity)
         db.flush()  # populate entity.pk
         db.add(EntityPermission(
-            entity_pk=entity.pk, user_id=other.id, permission="admin",
+            entity_pk=entity.pk, grantee_id=other.id, permission="admin",
         ))
         db.flush()
 
@@ -2064,7 +2064,7 @@ class TestAssertCanManage:
         """Non-owner without admin grant gets 403."""
         owner = make_user()
         other = make_user()
-        entity = Entity(type="app", id="app-y", owner_user_id=owner.id)
+        entity = Entity(type="app", id="app-y", owner_id=owner.id)
         db.add(entity)
         db.flush()
 
@@ -2081,35 +2081,35 @@ class TestIsOwnerOrGlobalAdmin:
     def test_owner_returns_true(self):
         """Owner passes regardless of bypass."""
         owner_id = uuid.uuid4()
-        entity = Entity(type="user", id="alice", owner_user_id=owner_id)
+        entity = Entity(type="user", id="alice", owner_id=owner_id)
         assert ep.is_owner_or_global_admin(entity, owner_id, bypass=False) is True
         assert ep.is_owner_or_global_admin(entity, owner_id, bypass=True) is True
 
     def test_bypass_true_returns_true(self):
         """Global admin bypass passes even for non-owner."""
-        entity = Entity(type="user", id="alice", owner_user_id=uuid.uuid4())
+        entity = Entity(type="user", id="alice", owner_id=uuid.uuid4())
         assert ep.is_owner_or_global_admin(entity, uuid.uuid4(), bypass=True) is True
 
     def test_non_owner_no_bypass_returns_false(self):
         """Non-owner without bypass fails."""
-        entity = Entity(type="user", id="alice", owner_user_id=uuid.uuid4())
+        entity = Entity(type="user", id="alice", owner_id=uuid.uuid4())
         assert ep.is_owner_or_global_admin(entity, uuid.uuid4(), bypass=False) is False
 
     def test_orphan_entity_no_bypass_returns_false(self):
-        """Orphan entity (owner_user_id=None) fails for non-bypass."""
-        entity = Entity(type="user", id="alice", owner_user_id=None)
+        """Orphan entity (owner_id=None) fails for non-bypass."""
+        entity = Entity(type="user", id="alice", owner_id=None)
         assert ep.is_owner_or_global_admin(entity, uuid.uuid4(), bypass=False) is False
 
     def test_orphan_entity_bypass_true_returns_true(self):
         """Orphan entity passes with bypass."""
-        entity = Entity(type="user", id="alice", owner_user_id=None)
+        entity = Entity(type="user", id="alice", owner_id=None)
         assert ep.is_owner_or_global_admin(entity, uuid.uuid4(), bypass=True) is True
 
     def test_granted_admin_returns_false(self):
         """Explicit admin grant does NOT pass — only owner or global admin."""
         owner_id = uuid.uuid4()
         grantee_id = uuid.uuid4()
-        entity = Entity(type="app", id="app-x", owner_user_id=owner_id)
+        entity = Entity(type="app", id="app-x", owner_id=owner_id)
         # granted admin ≠ owner, bypass=False → False
         assert ep.is_owner_or_global_admin(entity, grantee_id, bypass=False) is False
 
@@ -2122,10 +2122,10 @@ class TestGetVisibleEntitiesPaginated:
 
     def _seed(self, db, owner):
         """A mix of owned + foreign user/agent entities for ordering checks."""
-        owned_user = Entity(type="user", id="default", owner_user_id=owner.id)
-        owned_sub = Entity(type="user", id="default:laptop", owner_user_id=owner.id)
-        foreign_user = Entity(type="user", id="bob", owner_user_id=uuid.uuid4())
-        owned_agent = Entity(type="agent", id="bot", owner_user_id=owner.id)
+        owned_user = Entity(type="user", id="default", owner_id=owner.id)
+        owned_sub = Entity(type="user", id="default:laptop", owner_id=owner.id)
+        foreign_user = Entity(type="user", id="bob", owner_id=uuid.uuid4())
+        owned_agent = Entity(type="agent", id="bot", owner_id=owner.id)
         db.add_all([owned_user, owned_sub, foreign_user, owned_agent])
         db.flush()
         return owned_user, owned_sub, foreign_user, owned_agent
@@ -2163,7 +2163,7 @@ class TestGetVisibleEntitiesPaginated:
         owner = make_user()
         # 5 owned user entities
         for i in range(5):
-            db.add(Entity(type="user", id=f"u{i}", owner_user_id=owner.id))
+            db.add(Entity(type="user", id=f"u{i}", owner_id=owner.id))
         db.flush()
 
         items, total = ep.get_visible_entities_paginated(
@@ -2182,14 +2182,14 @@ class TestGetVisibleEntitiesPaginated:
         """Without bypass, a user sees owned + explicitly granted entities only."""
         owner = make_user()
         other = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=owner.id))
-        granted = Entity(type="app", id="shared-app", owner_user_id=other.id)
+        db.add(Entity(type="user", id="alice", owner_id=owner.id))
+        granted = Entity(type="app", id="shared-app", owner_id=other.id)
         db.add(granted)
-        db.add(Entity(type="user", id="carol", owner_user_id=other.id))  # invisible
+        db.add(Entity(type="user", id="carol", owner_id=other.id))  # invisible
         db.flush()
         # Grant 'other' read on owner's alice entity.
         db.add(EntityPermission(
-            entity_pk=granted.pk, user_id=owner.id, permission="read",
+            entity_pk=granted.pk, grantee_id=owner.id, permission="read",
         ))
         db.flush()
 
@@ -2211,11 +2211,11 @@ class TestGetVisibleEntitiesPaginated:
         assert total == 0
 
     def test_unowned_only_filters_to_null_owner(self, db, make_user):
-        """unowned_only=True returns only entities with owner_user_id IS NULL."""
+        """unowned_only=True returns only entities with owner_id IS NULL."""
         owner = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=owner.id))
-        db.add(Entity(type="app", id="orphan-app", owner_user_id=None))
-        db.add(Entity(type="user", id="orphan-user", owner_user_id=None))
+        db.add(Entity(type="user", id="alice", owner_id=owner.id))
+        db.add(Entity(type="app", id="orphan-app", owner_id=None))
+        db.add(Entity(type="user", id="orphan-user", owner_id=None))
         db.flush()
 
         items, total = ep.get_visible_entities_paginated(
@@ -2227,8 +2227,8 @@ class TestGetVisibleEntitiesPaginated:
     def test_unowned_only_combined_with_type_filter(self, db, make_user):
         """unowned_only + entity_type combines both filters."""
         owner = make_user()
-        db.add(Entity(type="app", id="orphan-app", owner_user_id=None))
-        db.add(Entity(type="user", id="orphan-user", owner_user_id=None))
+        db.add(Entity(type="app", id="orphan-app", owner_id=None))
+        db.add(Entity(type="user", id="orphan-user", owner_id=None))
         db.flush()
 
         items, total = ep.get_visible_entities_paginated(
@@ -2245,8 +2245,8 @@ class TestGetVisibleEntitiesPaginated:
 class TestGetAccessibleUsers:
     def test_returns_owned_user_entities(self, db, make_user):
         user = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=user.id))
-        db.add(Entity(type="user", id="bob", owner_user_id=user.id))
+        db.add(Entity(type="user", id="alice", owner_id=user.id))
+        db.add(Entity(type="user", id="bob", owner_id=user.id))
         db.flush()
 
         result = ep._get_accessible_users(user.id, db)
@@ -2256,10 +2256,10 @@ class TestGetAccessibleUsers:
     def test_returns_granted_user_entities(self, db, make_user):
         user = make_user()
         owner = make_user()
-        ent = Entity(type="user", id="alice", owner_user_id=owner.id)
+        ent = Entity(type="user", id="alice", owner_id=owner.id)
         db.add(ent)
         db.flush()
-        db.add(EntityPermission(entity_pk=ent.pk, user_id=user.id, permission="read"))
+        db.add(EntityPermission(entity_pk=ent.pk, grantee_id=user.id, permission="read"))
         db.flush()
 
         result = ep._get_accessible_users(user.id, db)
@@ -2267,7 +2267,7 @@ class TestGetAccessibleUsers:
 
     def test_excludes_orphaned_entities(self, db, make_user):
         user = make_user()
-        db.add(Entity(type="user", id="orphan", owner_user_id=None))
+        db.add(Entity(type="user", id="orphan", owner_id=None))
         db.flush()
 
         result = ep._get_accessible_users(user.id, db)
@@ -2281,8 +2281,8 @@ class TestGetAccessibleUsers:
 
     def test_returns_sub_namespaces(self, db, make_user):
         user = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=user.id))
-        db.add(Entity(type="user", id="alice:laptop", owner_user_id=user.id))
+        db.add(Entity(type="user", id="alice", owner_id=user.id))
+        db.add(Entity(type="user", id="alice:laptop", owner_id=user.id))
         db.flush()
 
         result = ep._get_accessible_users(user.id, db)
@@ -2314,8 +2314,8 @@ class TestUserWildcard:
 
     def test_member_expands_to_accessible_users(self, db, make_user):
         user = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=user.id))
-        db.add(Entity(type="user", id="bob", owner_user_id=user.id))
+        db.add(Entity(type="user", id="alice", owner_id=user.id))
+        db.add(Entity(type="user", id="bob", owner_id=user.id))
         db.flush()
 
         result = ep._rewrite_query_filter(
@@ -2348,7 +2348,7 @@ class TestUserWildcard:
 
     def test_member_with_app_id_combines_and(self, db, make_user):
         user = make_user()
-        db.add(Entity(type="user", id="alice", owner_user_id=user.id))
+        db.add(Entity(type="user", id="alice", owner_id=user.id))
         db.flush()
 
         result = ep._rewrite_query_filter(
@@ -2374,7 +2374,7 @@ class TestEntityResponsePermission:
         from server.routers.entities import _entities_to_response_batch
 
         user = make_user()
-        ent = Entity(type="app", id="my-app", owner_user_id=user.id)
+        ent = Entity(type="app", id="my-app", owner_id=user.id)
         db.add(ent)
         db.flush()
 
@@ -2386,10 +2386,10 @@ class TestEntityResponsePermission:
 
         owner = make_user()
         grantee = make_user()
-        ent = Entity(type="app", id="shared-app", owner_user_id=owner.id)
+        ent = Entity(type="app", id="shared-app", owner_id=owner.id)
         db.add(ent)
         db.flush()
-        db.add(EntityPermission(entity_pk=ent.pk, user_id=grantee.id, permission="write"))
+        db.add(EntityPermission(entity_pk=ent.pk, grantee_id=grantee.id, permission="write"))
         db.flush()
 
         results = _entities_to_response_batch([ent], grantee.id, db, bypass=False)
@@ -2400,7 +2400,7 @@ class TestEntityResponsePermission:
 
         admin = make_user(role="admin")
         owner = make_user()
-        ent = Entity(type="app", id="some-app", owner_user_id=owner.id)
+        ent = Entity(type="app", id="some-app", owner_id=owner.id)
         db.add(ent)
         db.flush()
 
@@ -2412,7 +2412,7 @@ class TestEntityResponsePermission:
 
         viewer = make_user()
         owner = make_user()
-        ent = Entity(type="app", id="other-app", owner_user_id=owner.id)
+        ent = Entity(type="app", id="other-app", owner_id=owner.id)
         db.add(ent)
         db.flush()
         # viewer has no grant and is not owner — but the entity could be
@@ -2425,7 +2425,7 @@ class TestEntityResponsePermission:
         from server.routers.entities import EntityResponse
 
         user = make_user()
-        ent = Entity(type="app", id="test-app", owner_user_id=user.id)
+        ent = Entity(type="app", id="test-app", owner_id=user.id)
         db.add(ent)
         db.flush()
 
@@ -2493,7 +2493,7 @@ class TestCheckMemoryScopePermissionDualCheck:
         """When scope has both app and user, both must pass read check."""
         user = make_user()
         # Create app entity owned by user
-        app = Entity(type="app", id="my-app", owner_user_id=user.id)
+        app = Entity(type="app", id="my-app", owner_id=user.id)
         db.add(app)
         db.flush()
         # User owns their own UUID namespace implicitly
@@ -2506,10 +2506,10 @@ class TestCheckMemoryScopePermissionDualCheck:
         """When app read passes but user read fails, should raise 403."""
         owner = make_user()
         viewer = make_user()
-        app = Entity(type="app", id="my-app", owner_user_id=owner.id)
+        app = Entity(type="app", id="my-app", owner_id=owner.id)
         db.add(app)
         db.flush()
-        db.add(EntityPermission(entity_pk=app.pk, user_id=viewer.id, permission="read"))
+        db.add(EntityPermission(entity_pk=app.pk, grantee_id=viewer.id, permission="read"))
         db.flush()
         # viewer has app read but no user read for owner's namespace
         with pytest.raises(HTTPException) as exc:
@@ -2521,7 +2521,7 @@ class TestCheckMemoryScopePermissionDualCheck:
     def test_app_only_still_works(self, db, make_user):
         """Scope with only app (no user) still works as before."""
         user = make_user()
-        app = Entity(type="app", id="my-app", owner_user_id=user.id)
+        app = Entity(type="app", id="my-app", owner_id=user.id)
         db.add(app)
         db.flush()
         ep.check_memory_scope_permission(
@@ -2531,7 +2531,7 @@ class TestCheckMemoryScopePermissionDualCheck:
     def test_app_with_agent_skips_user_check(self, db, make_user):
         """Scope with app+agent (no user) only checks app."""
         user = make_user()
-        app = Entity(type="app", id="my-app", owner_user_id=user.id)
+        app = Entity(type="app", id="my-app", owner_id=user.id)
         db.add(app)
         db.flush()
         ep.check_memory_scope_permission(
@@ -2542,10 +2542,10 @@ class TestCheckMemoryScopePermissionDualCheck:
         """Write/admin paths also do dual check (stricter, not a regression)."""
         owner = make_user()
         other = make_user()
-        app = Entity(type="app", id="my-app", owner_user_id=owner.id)
+        app = Entity(type="app", id="my-app", owner_id=owner.id)
         db.add(app)
         db.flush()
-        db.add(EntityPermission(entity_pk=app.pk, user_id=other.id, permission="write"))
+        db.add(EntityPermission(entity_pk=app.pk, grantee_id=other.id, permission="write"))
         db.flush()
         # other has app write but no user write for owner's namespace
         with pytest.raises(HTTPException) as exc:
@@ -2604,7 +2604,7 @@ class TestEnsureUserEntity:
         user = make_user()
         entity = ep._ensure_user_entity("ab", user.id, db)
         assert entity.id == "ab"
-        assert entity.owner_user_id == user.id
+        assert entity.owner_id == user.id
 
     def test_uuid_still_works(self, db, make_user):
         user = make_user()

@@ -1144,19 +1144,19 @@ def test_list_entities_returns_payload(mcp_testbed):
 def test_list_events_filter_and_pagination(mcp_testbed):
     _, client, _ = mcp_testbed
     now = "2026-01-01T00:00:00+00:00"
-    event_cache_put("e1", {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_user_id": "alice"})
+    event_cache_put("e1", {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_id": "alice"})
     event_cache_put(
         "e2",
         {
             **make_event_obj("e2", [], now_iso="2026-01-02T00:00:00+00:00", status="SUCCEEDED"),
-            "owner_user_id": "bob",
+            "owner_id": "bob",
         },
     )
     event_cache_put(
         "e3",
         {
             **make_event_obj("e3", [], now_iso="2026-01-03T00:00:00+00:00", status="PENDING"),
-            "owner_user_id": "alice",
+            "owner_id": "alice",
         },
     )
 
@@ -1174,13 +1174,13 @@ def test_list_events_filters_by_authenticated_user(mcp_testbed_authed):
     now = "2026-01-01T00:00:00+00:00"
     event_cache_put(
         "e1",
-        {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_user_id": auth_uid},
+        {**make_event_obj("e1", [], now_iso=now, status="SUCCEEDED"), "owner_id": auth_uid},
     )
     event_cache_put(
         "e2",
         {
             **make_event_obj("e2", [], now_iso="2026-01-02T00:00:00+00:00", status="SUCCEEDED"),
-            "owner_user_id": "other-user",
+            "owner_id": "other-user",
         },
     )
 
@@ -1230,7 +1230,7 @@ def test_get_event_status_denied_for_other_user_event(mcp_testbed_authed):
     _, client, _, _ = mcp_testbed_authed
     event = {
         **make_event_obj("e-other", [], now_iso="2026-01-01T00:00:00+00:00", status="SUCCEEDED"),
-        "owner_user_id": "someone-else",
+        "owner_id": "someone-else",
     }
     event_cache_put("e-other", event)
 

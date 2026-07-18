@@ -33,17 +33,17 @@ export default function TransferOwnerDialog({
   isAdmin,
   onTransferred,
 }: TransferOwnerDialogProps) {
-  const [transferUserId, setTransferUserId] = useState("");
+  const [newOwnerId, setNewOwnerId] = useState("");
 
   useEffect(() => {
-    setTransferUserId("");
+    setNewOwnerId("");
   }, [entity]);
 
   const handleTransfer = async () => {
     if (!entity) return;
     try {
       await api.post(ENTITY_ENDPOINTS.TRANSFER_OWNER(entity.type, entity.id), {
-        user_id: transferUserId.trim(),
+        owner_id: newOwnerId.trim(),
       });
       toast({ title: "Ownership transferred", variant: "success" });
       onClose();
@@ -83,8 +83,8 @@ export default function TransferOwnerDialog({
               </Label>
               <UserSelect
                 id="transfer-user"
-                value={transferUserId}
-                onChange={setTransferUserId}
+                value={newOwnerId}
+                onChange={setNewOwnerId}
                 isAdmin={isAdmin}
                 inputPlaceholder="dashboard user id"
               />
@@ -95,7 +95,7 @@ export default function TransferOwnerDialog({
               </DialogClose>
               <Button
                 onClick={handleTransfer}
-                disabled={!transferUserId.trim()}
+                disabled={!newOwnerId.trim()}
               >
                 {entity.owner ? "Transfer" : "Assign"}
               </Button>

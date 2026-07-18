@@ -28,7 +28,7 @@ import { ENTITY_ENDPOINTS } from "@/utils/api-endpoints";
 import { getErrorMessage } from "@/lib/error-message";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { useAuth } from "@/hooks/use-auth";
-import EntityScopeSelect from "@/components/shared/entity-scope-select";
+import EntityViewSelect from "@/components/shared/entity-view-select";
 import type { Entity, EntityListResponse, UserInfo } from "@/types/api";
 import CreateEntityDialog from "./create-entity-dialog";
 import TransferOwnerDialog from "./transfer-owner-dialog";
@@ -64,7 +64,7 @@ export default function EntitiesPage() {
   const [editEntity, setEditEntity] = useState<Entity | null>(null);
   const [entityToDelete, setEntityToDelete] = useState<Entity | null>(null);
   const [showUnownedOnly, setShowUnownedOnly] = useState(false);
-  const [scopeUserId, setScopeUserId] = useState<string>(WILDCARD);
+  const [viewAs, setViewAs] = useState<string>(WILDCARD);
   const [typeFilter, setTypeFilter] = useState<string>(WILDCARD);
 
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -76,9 +76,9 @@ export default function EntitiesPage() {
   } = useApiQuery<EntityListResponse>(
     async () => {
       const params: Record<string, unknown> = { page: page + 1, page_size: PAGE_SIZE };
-      const effectiveScope = scopeUserId || ownUserId;
-      if (!isWildcard(effectiveScope) && effectiveScope) {
-        params.scope_user_id = effectiveScope;
+      const effectiveViewAs = viewAs || ownUserId;
+      if (!isWildcard(effectiveViewAs) && effectiveViewAs) {
+        params.view_as = effectiveViewAs;
       }
       if (!isWildcard(typeFilter)) {
         params.type = typeFilter;
@@ -95,7 +95,7 @@ export default function EntitiesPage() {
       enabled: !!ownUserId,
       errorToast: "Failed to load entities",
       initialData: EMPTY_PAGE_RESULTS,
-      deps: [page, scopeUserId, ownUserId, refreshNonce, typeFilter, showUnownedOnly],
+      deps: [page, viewAs, ownUserId, refreshNonce, typeFilter, showUnownedOnly],
     },
   );
 
@@ -244,16 +244,16 @@ export default function EntitiesPage() {
       <div className="flex flex-wrap items-center gap-3">
         {isAdmin && (
           <>
-            <EntityScopeSelect
-              value={scopeUserId || ownUserId}
-              onChange={setScopeUserId}
+            <EntityViewSelect
+              value={viewAs || ownUserId}
+              onChange={setViewAs}
               ownUserId={ownUserId}
               className="w-72"
             />
             <Label className="flex items-center gap-2 text-sm font-normal text-onSurface-default-tertiary">
               <Checkbox
                 checked={showUnownedOnly}
-                disabled={!isWildcard(scopeUserId || ownUserId)}
+                disabled={!isWildcard(viewAs || ownUserId)}
                 onCheckedChange={(c) => setShowUnownedOnly(c === true)}
               />
               Unowned only

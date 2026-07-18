@@ -42,7 +42,7 @@ VALID_ENTITY_TYPES: frozenset[str] = frozenset(TYPE_TO_FIELD)
 ENTITY_PARAMS: frozenset[str] = frozenset(TYPE_TO_FIELD.values())
 
 # Entity types unique per parent user (not globally): ``agent`` / ``run``. They
-# are auto-created on first write under a user entity, need a ``parent_user_id``
+# are auto-created on first write under a user entity, need a ``parent_entity_id``
 # to scope lookups/counts, and do not support explicit grants or ownership
 # transfer. Contrast with ``user`` / ``app`` (globally unique, grantable).
 SCOPED_ENTITY_TYPES: frozenset[str] = frozenset({"agent", "run"})

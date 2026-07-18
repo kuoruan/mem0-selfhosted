@@ -74,9 +74,9 @@ export interface UserInfo {
 
 export interface EntityPermission {
   id: string;
-  user: UserInfo;
+  grantee: UserInfo;
   permission: EntityPermissionLevel;
-  granted_by: UserInfo | null;
+  grantor: UserInfo | null;
   created_at: string;
 }
 

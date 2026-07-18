@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Combobox, { type ComboboxOption } from "@/components/shared/combobox";
-import { useEntityApps } from "@/hooks/use-entity-apps";
+import { useAppEntities } from "@/hooks/use-app-entities";
 
 interface MemoryAppSelectProps {
   value: string;
@@ -15,6 +15,11 @@ interface MemoryAppSelectProps {
  * Picker for an ``app_id`` namespace on the memories page. Delegates
  * rendering/scroll to ``Combobox``; the first option is "All apps" (empty
  * string — no app filter), and owned apps are marked "(yours)".
+ *
+ * "All apps" is the empty string rather than the ``*`` wildcard on purpose:
+ * any ``app_id`` filter (``*`` included) only matches memories that carry an
+ * ``app_id``, excluding app-less memories. An empty value omits ``app_id`` so
+ * the app dimension is left unconstrained.
  */
 export default function MemoryAppSelect({
   value,
@@ -22,19 +27,19 @@ export default function MemoryAppSelect({
   className,
   disabled,
 }: MemoryAppSelectProps) {
-  const { apps: entityApps, isLoading, hasMore, loadMore } = useEntityApps();
+  const { appEntities, isLoading, hasMore, loadMore } = useAppEntities();
 
   const options: ComboboxOption[] = useMemo(() => {
     const all: ComboboxOption[] = [
       { value: "", label: "All apps", search: "All apps" },
     ];
-    const entityOpts: ComboboxOption[] = entityApps.map((e) => ({
+    const entityOpts: ComboboxOption[] = appEntities.map((e) => ({
       value: e.id,
       label: e.is_owner ? `${e.id} (yours)` : e.id,
       search: e.id,
     }));
     return [...all, ...entityOpts];
-  }, [entityApps]);
+  }, [appEntities]);
 
   return (
     <Combobox

@@ -14,7 +14,7 @@ from entity_permissions import (
     create_app_entity,
     ensure_entity_owner,
     entity_filter_params,
-    entity_parent_user_id,
+    get_parent_entity_id,
     get_entity_or_none,
     get_visible_entities_paginated,
     grant_entity_permission,
@@ -70,9 +70,9 @@ class EntityResponse(BaseModel):
 
 class EntityPermissionResponse(BaseModel):
     id: str
-    user: UserInfo
+    grantee: UserInfo
     permission: PermissionType
-    granted_by: Optional[UserInfo] = None
+    grantor: Optional[UserInfo] = None
     created_at: datetime
 
 
@@ -88,17 +88,17 @@ class EntityListResponse(BaseModel):
 class CreateEntityInput(BaseModel):
     type: EntityType
     id: str
-    owner_user_id: Optional[str] = None  # admin only, for app creation
+    owner_id: Optional[str] = None  # admin only, for app creation
     name: Optional[str] = Field(None, max_length=255)
 
 
 class GrantPermissionInput(BaseModel):
-    user_id: str
+    grantee_id: str
     permission: PermissionType
 
 
 class TransferOwnerInput(BaseModel):
-    user_id: str
+    owner_id: str
 
 
 class UpdateEntityInput(BaseModel):
@@ -137,9 +137,9 @@ def _entities_to_response_batch(
     for e in entities:
         if e.parent_pk is not None:
             parent_pks.add(e.parent_pk)
-        if e.owner_user_id is not None:
-            owner_ids.add(e.owner_user_id)
-        if e.owner_user_id != operator_id:
+        if e.owner_id is not None:
+            owner_ids.add(e.owner_id)
+        if e.owner_id != operator_id:
             grant_pks.add(e.pk)
 
     # Batch-fetch parents
@@ -158,7 +158,7 @@ def _entities_to_response_batch(
             for p in db.execute(
                 select(EntityPermission).where(
                     EntityPermission.entity_pk.in_(grant_pks),
-                    EntityPermission.user_id == operator_id,
+                    EntityPermission.grantee_id == operator_id,
                     EntityPermission.permission.in_(["read", "write", "admin"]),
                 )
             ).scalars().all()
@@ -178,7 +178,7 @@ def _entities_to_response_batch(
                 )
         # Resolve permission
         permission: Optional[Literal["owner", "admin", "write", "read"]] = None
-        if entity.owner_user_id == operator_id:
+        if entity.owner_id == operator_id:
             permission = "owner"
         elif entity.pk in grants:
             permission = grants[entity.pk]
@@ -192,9 +192,9 @@ def _entities_to_response_batch(
                 name=entity.name,
                 created_at=entity.created_at,
                 updated_at=entity.updated_at,
-                owner=owners.get(entity.owner_user_id) if entity.owner_user_id else None,
+                owner=owners.get(entity.owner_id) if entity.owner_id else None,
                 parent=parent,
-                is_owner=entity.owner_user_id == operator_id,
+                is_owner=entity.owner_id == operator_id,
                 permission=permission,
             )
         )
@@ -209,15 +209,15 @@ def _entity_to_response(
 
 
 def _permission_to_response(perm: EntityPermission, db: Session) -> EntityPermissionResponse:
-    granted_by: Optional[UserInfo] = None
-    if perm.granted_by is not None:
-        granted_by = _user_info(perm.granted_by, db)
+    grantor: Optional[UserInfo] = None
+    if perm.grantor_id is not None:
+        grantor = _user_info(perm.grantor_id, db)
 
     return EntityPermissionResponse(
         id=str(perm.id),
-        user=_user_info(perm.user_id, db),
+        grantee=_user_info(perm.grantee_id, db),
         permission=perm.permission,
-        granted_by=granted_by,
+        grantor=grantor,
         created_at=perm.created_at,
     )
 
@@ -226,18 +226,18 @@ def _permissions_to_response_batch(perms: list[EntityPermission], db: Session) -
     """Batch-resolve all user references in one query instead of N+1."""
     user_ids: set[uuid.UUID] = set()
     for p in perms:
-        if p.user_id is not None:
-            user_ids.add(p.user_id)
-        if p.granted_by is not None:
-            user_ids.add(p.granted_by)
+        if p.grantee_id is not None:
+            user_ids.add(p.grantee_id)
+        if p.grantor_id is not None:
+            user_ids.add(p.grantor_id)
     users = _user_info_batch(user_ids, db)
 
     return [
         EntityPermissionResponse(
             id=str(p.id),
-            user=users[p.user_id],
+            grantee=users[p.grantee_id],
             permission=p.permission,
-            granted_by=users.get(p.granted_by) if p.granted_by else None,
+            grantor=users.get(p.grantor_id) if p.grantor_id else None,
             created_at=p.created_at,
         )
         for p in perms
@@ -263,7 +263,7 @@ def list_entities(
     entity_type: Optional[EntityType] = Query(
         None, alias="type", description="Filter to one entity type (e.g. 'user')."
     ),
-    scope_user_id: Optional[str] = Query(None, description="Admin-only: scope to entities visible to this user (UUID)."),
+    view_as: Optional[str] = Query(None, description="Admin-only: view entities visible to this user (UUID)."),
     unowned_only: bool = Query(False, description="Only return entities without an owner."),
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
@@ -275,19 +275,19 @@ def list_entities(
     type — the memories-page user picker uses ``type=user`` to fetch only user
     namespaces.
 
-    When ``scope_user_id`` is provided (admin only), the list is scoped to entities
+    When ``view_as`` is provided (admin only), the list is scoped to entities
     visible to that user (owned + explicitly granted). Without it, behaviour is
     unchanged: admins see all, non-admins see their own.
 
-    ``unowned_only`` returns entities whose ``owner_user_id`` is NULL — useful for
+    ``unowned_only`` returns entities whose ``owner_id`` is NULL — useful for
     surfacing unclaimed namespaces on the dashboard.
     """
     operator, is_admin = resolve_operator(request, auth, db)
 
-    if scope_user_id is not None:
+    if view_as is not None:
         if not is_admin:
             raise HTTPException(status_code=403, detail="Only admins can scope to another user.")
-        target_id = _parse_uuid(scope_user_id, label="scope_user_id")
+        target_id = _parse_uuid(view_as, label="view_as")
         items, total = get_visible_entities_paginated(
             target_id,
             db,
@@ -371,7 +371,7 @@ def create_entity(
                 detail="Cannot create a user entity without a real owner.",
             )
         entity = ensure_entity_owner(body.type, entity_id, operator.id, db, bypass=is_admin)
-        if entity.owner_user_id != operator.id:
+        if entity.owner_id != operator.id:
             raise HTTPException(
                 status_code=403,
                 detail=f"Entity '{body.type}/{entity_id}' is already owned by another user.",
@@ -381,19 +381,19 @@ def create_entity(
         db.commit()
         return _entity_to_response(entity, operator.id, db, bypass=is_admin)
 
-    # app: admin only, must specify owner_user_id
+    # app: admin only, must specify owner_id
     if body.type == "app":
         if not is_admin:
             raise HTTPException(
                 status_code=403,
                 detail="Only administrators can create app entities.",
             )
-        if body.owner_user_id is None:
+        if body.owner_id is None:
             raise HTTPException(
                 status_code=400,
-                detail="owner_user_id is required when creating an app entity.",
+                detail="owner_id is required when creating an app entity.",
             )
-        owner_id = _parse_uuid(body.owner_user_id, label="owner_user_id")
+        owner_id = _parse_uuid(body.owner_id, label="owner_id")
         entity = create_app_entity(entity_id, owner_id, db, name=entity_name)
         return _entity_to_response(entity, operator.id, db, bypass=is_admin)
 
@@ -421,7 +421,7 @@ def count_entity_memories(
 
     # Bootstrap admin without parent_id: global count across all users.
     if is_bootstrap_admin(operator.id) and not parent_id:
-        count = count_memories_for_entity(entity_type, entity_id, parent_user_id=None)
+        count = count_memories_for_entity(entity_type, entity_id, parent_entity_id=None)
         return {"total_memories": count}
 
     # Resolve the parent entity id for scoped agent/run lookup.
@@ -440,7 +440,7 @@ def count_entity_memories(
         raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
     # For agent/run: resolve the parent namespace to scope both the permission
     # check and the vector store query (agent/run are unique per parent, not globally).
-    parent_user_id = entity_parent_user_id(entity, db)
+    parent_entity_id = get_parent_entity_id(entity, db)
     if not check_entity_permission(
         entity_type,
         entity_id,
@@ -448,10 +448,10 @@ def count_entity_memories(
         "read",
         db,
         bypass=is_admin,
-        parent_entity_id=parent_user_id,
+        parent_entity_id=parent_entity_id,
     ):
         raise HTTPException(status_code=403, detail="You do not have read permission for this entity.")
-    count = count_memories_for_entity(entity_type, entity_id, parent_user_id=parent_user_id)
+    count = count_memories_for_entity(entity_type, entity_id, parent_entity_id=parent_entity_id)
     return {"total_memories": count}
 
 
@@ -484,7 +484,7 @@ def grant_permission(
     db: Session = Depends(get_db),
 ):
     operator, is_admin = resolve_operator(request, auth, db)
-    grantee_id = _parse_uuid(body.user_id, label="user_id")
+    grantee_id = _parse_uuid(body.grantee_id, label="grantee_id")
     perm = grant_entity_permission(
         entity_type,
         entity_id,
@@ -497,17 +497,17 @@ def grant_permission(
     return _permission_to_response(perm, db)
 
 
-@router.delete("/{entity_type}/{entity_id}/permissions/{user_id}", response_model=MessageResponse)
+@router.delete("/{entity_type}/{entity_id}/permissions/{grantee_id}", response_model=MessageResponse)
 def revoke_permission(
     entity_type: EntityType,
     entity_id: str,
-    user_id: str,
+    grantee_id: str,
     request: Request,
     auth=Depends(verify_auth),
     db: Session = Depends(get_db),
 ):
     operator, is_admin = resolve_operator(request, auth, db)
-    grantee_id = _parse_uuid(user_id, label="user_id")
+    grantee_id = _parse_uuid(grantee_id, label="grantee_id")
     revoke_entity_permission(
         entity_type,
         entity_id,
@@ -532,7 +532,7 @@ def transfer_owner_endpoint(
     db: Session = Depends(get_db),
 ):
     operator, is_admin = resolve_operator(request, auth, db)
-    new_owner_id = _parse_uuid(body.user_id, label="user_id")
+    new_owner_id = _parse_uuid(body.owner_id, label="owner_id")
     entity = transfer_entity_owner(
         entity_type,
         entity_id,
@@ -589,7 +589,7 @@ def delete_entity(
                 detail=f"Cannot delete 'user/{entity_id}' because it has sub-namespaces or agent/run entities. Delete them first.",
             )
         # Admin: cascade-delete child memories + entity rows. agent/run children
-        # must be scoped by their parent user_id so a same-named agent/run owned
+        # must be scoped by their parent entity_id so a same-named agent/run owned
         # by another user is not swept into the deletion.
         for child in children:
             child_params: dict[str, Any] = entity_filter_params(child, db)
@@ -605,7 +605,7 @@ def delete_entity(
                 raise upstream_error()
             db.delete(child)
 
-    # For agent/run: scope the vector-store scan by parent user_id to avoid
+    # For agent/run: scope the vector-store scan by parent entity_id to avoid
     # matching other users' memories with the same agent/run id.
     delete_params: dict[str, Any] = entity_filter_params(entity, db)
 
@@ -663,7 +663,7 @@ def update_entity(
         raise HTTPException(status_code=404, detail=f"Entity '{entity_type}/{entity_id}' not found.")
 
     # Only the owner or a system admin may edit.
-    if entity.owner_user_id != operator.id and not is_admin:
+    if entity.owner_id != operator.id and not is_admin:
         raise HTTPException(status_code=403, detail="Only the owner or an admin can edit this entity.")
 
     if "name" in body.model_fields_set:

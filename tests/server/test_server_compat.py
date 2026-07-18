@@ -757,7 +757,7 @@ class TestEventCacheCopies:
         assert fresh is not None
         assert fresh["status"] == "SUCCEEDED"
 
-    def test_update_preserves_owner_user_id(self):
+    def test_update_preserves_owner_id(self):
         event_cache_put(
             "evt-1",
             {
@@ -772,16 +772,16 @@ class TestEventCacheCopies:
                 "started_at": "2024-01-01T00:00:00+00:00",
                 "completed_at": None,
                 "latency": None,
-                "owner_user_id": "user-1",
+                "owner_id": "user-1",
             },
         )
 
-        updated = event_cache_update("evt-1", status="SUCCEEDED", owner_user_id="user-2")
+        updated = event_cache_update("evt-1", status="SUCCEEDED", owner_id="user-2")
         assert updated is not None
-        assert updated["owner_user_id"] == "user-1"
+        assert updated["owner_id"] == "user-1"
 
     def test_update_rejects_invalid_status(self):
-        event_cache_put("evt-1", CompatEvent.pending("evt-1", owner_user_id="user-1"))
+        event_cache_put("evt-1", CompatEvent.pending("evt-1", owner_id="user-1"))
         with pytest.raises(ValidationError):
             event_cache_update("evt-1", status="NOT_A_STATUS")
 
@@ -1690,7 +1690,7 @@ class TestSyntheticEvents:
         listed = v1_list_events(request=req, page=1, page_size=10, auth=user1)
         assert listed["count"] == 1
         assert len(listed["results"]) == 1
-        assert listed["results"][0]["owner_user_id"] == "user-1"
+        assert listed["results"][0]["owner_id"] == "user-1"
 
     def test_v3_add_infer_false_returns_results_immediately(self, monkeypatch):
         mem = MagicMock()

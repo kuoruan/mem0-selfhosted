@@ -32,14 +32,14 @@ interface CreateEntityForm {
   type: EntityType;
   id: string;
   name: string;
-  ownerUserId: string;
+  ownerId: string;
 }
 
 const EMPTY_FORM: CreateEntityForm = {
   type: "user",
   id: "",
   name: "",
-  ownerUserId: "",
+  ownerId: "",
 };
 
 interface CreateEntityDialogProps {
@@ -70,20 +70,24 @@ export default function CreateEntityDialog({
     value: CreateEntityForm[K],
   ) => setForm((prev) => ({ ...prev, [key]: value }));
 
-  const isUuid = form.type === "user" && isUuidString(form.id.trim());
-  const isOwnUuid = isUuid && form.id.trim() === user?.id;
+  const values = {
+    type: form.type,
+    id: form.id.trim(),
+    name: form.name.trim(),
+    ownerId: form.ownerId.trim(),
+  };
+  const isUuid = values.type === "user" && isUuidString(values.id);
+  const isOwnUuid = isUuid && values.id === user?.id;
 
   const handleCreate = async () => {
     try {
       const body: Record<string, unknown> = {
-        type: form.type,
-        id: form.id.trim(),
+        type: values.type,
+        id: values.id,
       };
-      if (form.name.trim()) {
-        body.name = form.name.trim();
-      }
-      if (form.type === "app" && form.ownerUserId.trim()) {
-        body.owner_user_id = form.ownerUserId.trim();
+      if (values.name) body.name = values.name;
+      if (values.type === "app" && values.ownerId) {
+        body.owner_id = values.ownerId;
       }
       await api.post(ENTITY_ENDPOINTS.BASE, body);
       toast({ title: "Entity created", variant: "success" });
@@ -174,8 +178,8 @@ export default function CreateEntityDialog({
               <Label htmlFor="owner-id">Owner user ID</Label>
               <UserSelect
                 id="owner-id"
-                value={form.ownerUserId}
-                onChange={(v) => updateField("ownerUserId", v)}
+                value={form.ownerId}
+                onChange={(v) => updateField("ownerId", v)}
                 isAdmin={isAdmin}
               />
             </div>
@@ -183,10 +187,9 @@ export default function CreateEntityDialog({
           <Button
             onClick={handleCreate}
             disabled={
-              !form.id.trim() ||
+              !values.id ||
               isUuid ||
-              (form.type === "app" && !isAdmin) ||
-              (form.type === "app" && !form.ownerUserId.trim())
+              (values.type === "app" && !(isAdmin && !!values.ownerId))
             }
             className="w-full"
           >
