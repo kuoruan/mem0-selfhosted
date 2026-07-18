@@ -1,0 +1,97 @@
+name: Server CI
+
+# Server API tests + Dashboard UI checks.
+#
+# On PRs this is invoked by ci-gate.yml (the single required check);
+# push-to-main and manual runs remain standalone.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, selfhosted]
+    paths:
+      - 'server/**'
+      - 'tests/server/**'
+      - '.github/workflows/server-ci.yml'
+  workflow_call:
+
+jobs:
+  server-tests:
+    name: Server API tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mem0_app
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      APP_DB_NAME: mem0_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[test,nlp,vector_stores,llms,extras]"
+          pip install -r server/requirements.txt
+
+      - name: Run database migrations
+        run: cd server && alembic upgrade head
+
+      - name: Run server tests
+        run: pytest tests/server/
+
+  dashboard:
+    name: Dashboard UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: server/dashboard/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: server/dashboard
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        working-directory: server/dashboard
+        run: pnpm run lint
+
+      - name: Type check
+        working-directory: server/dashboard
+        run: pnpm run typecheck
+
+      - name: Build
+        working-directory: server/dashboard
+        run: pnpm run build
