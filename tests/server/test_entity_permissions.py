@@ -500,6 +500,117 @@ def test_scope_empty_admin_only(db, make_user):
 
 
 # --------------------------------------------------------------------------- #
+# App-admin authority over user-scoped memories (app-admin trumps user scope)
+# --------------------------------------------------------------------------- #
+def test_app_admin_trumps_user_scope_for_all_levels(db, make_user):
+    """An app-admin can read/write/admin a memory scoped to (app, other_user)
+    without needing permission on the other user (single-memory ops only;
+    bulk delete_all still requires the app owner)."""
+    owner = make_user()
+    app_admin = make_user()
+    other = make_user()
+    ep.ensure_entity_owner("user", str(other.id), other.id, db)
+    app = ep._create_entity_row("app", "my-app", None, owner.id, None, db)
+    db.commit()
+    ep.grant_entity_permission(
+        "app", "my-app", app_admin.id, "admin", operator_id=owner.id, bypass=False, db=db,
+    )
+    db.commit()
+    scope = {"app": "my-app", "user": str(other.id)}
+    for level in ("read", "write", "admin"):
+        ep.check_memory_scope_permission(scope, app_admin.id, level, db)  # no 403
+    assert app.owner_id == owner.id
+
+
+def test_app_non_admin_perm_still_requires_user_scope(db, make_user):
+    """A non-admin app permission (read/write) does NOT trump the user scope:
+    the dual-check still applies, so app-read alone cannot read another user's
+    memory scoped under the app."""
+    owner = make_user()
+    app_reader = make_user()
+    other = make_user()
+    ep.ensure_entity_owner("user", str(other.id), other.id, db)
+    ep._create_entity_row("app", "my-app", None, owner.id, None, db)
+    db.commit()
+    ep.grant_entity_permission(
+        "app", "my-app", app_reader.id, "read", operator_id=owner.id, bypass=False, db=db,
+    )
+    db.commit()
+    scope = {"app": "my-app", "user": str(other.id)}
+    with pytest.raises(HTTPException) as exc:
+        ep.check_memory_scope_permission(scope, app_reader.id, "read", db)
+    assert exc.value.status_code == 403
+    assert "user" in exc.value.detail  # blocked at the user (dual) check, not app
+
+
+def test_app_admin_trump_does_not_bypass_app_gate_for_unauthorized(db, make_user):
+    """Sanity: the app-admin trump must not bypass the app gate for a caller
+    with no app standing at all — still 403."""
+    owner = make_user()
+    nobody = make_user()
+    other = make_user()
+    ep.ensure_entity_owner("user", str(other.id), other.id, db)
+    ep._create_entity_row("app", "my-app", None, owner.id, None, db)
+    db.commit()
+    scope = {"app": "my-app", "user": str(other.id)}
+    with pytest.raises(HTTPException) as exc:
+        ep.check_memory_scope_permission(scope, nobody.id, "admin", db)
+    assert exc.value.status_code == 403
+
+
+def test_bulk_app_owner_only_app_admin_single_delete_ok(db, make_user, fake_memory):
+    """Bulk delete_all?app_id=X is app-OWNER only; an app-admin (granted admin)
+    is 403 on bulk but can still single-delete (app-admin trump on the single
+    path). No privilege escalation via the bulk route."""
+    owner = make_user()
+    app_admin = make_user()
+    other = make_user()
+    ep.ensure_entity_owner("user", str(other.id), other.id, db)
+    ep._create_entity_row("app", "my-app", None, owner.id, None, db)
+    db.commit()
+    ep.grant_entity_permission(
+        "app", "my-app", app_admin.id, "admin", operator_id=owner.id, bypass=False, db=db,
+    )
+    db.commit()
+    fake_memory.add("m1", {"user_id": str(other.id), "app_id": "my-app", "data": "x"})
+    # Single-memory delete (write-level, as main.delete_memory uses) on the
+    # full (app, user) scope -> app-admin OK (trump).
+    ep.check_memory_scope_permission(
+        {"app": "my-app", "user": str(other.id)}, app_admin.id, "write", db
+    )
+    # Bulk delete_all?app_id=my-app -> app-admin is NOT owner -> 403.
+    with pytest.raises(HTTPException) as exc:
+        ep.validate_bulk_admin_operation(
+            ["m1"], app_admin.id, db, scope_hint={"app": "my-app"},
+        )
+    assert exc.value.status_code == 403
+    # Bulk by the app owner -> passes.
+    ep.validate_bulk_admin_operation(
+        ["m1"], owner.id, db, scope_hint={"app": "my-app"},
+    )
+
+
+def test_bulk_app_admin_blocked_without_scope_hint(db, make_user, fake_memory):
+    """MCP-style bulk (no scope_hint) resolves per memory and still requires
+    app-OWNER on app-scoped memories — an app-admin cannot bulk-delete even
+    when the scope is discovered per-memory rather than passed as a hint."""
+    owner = make_user()
+    app_admin = make_user()
+    other = make_user()
+    ep.ensure_entity_owner("user", str(other.id), other.id, db)
+    ep._create_entity_row("app", "my-app", None, owner.id, None, db)
+    db.commit()
+    ep.grant_entity_permission(
+        "app", "my-app", app_admin.id, "admin", operator_id=owner.id, bypass=False, db=db,
+    )
+    db.commit()
+    fake_memory.add("m1", {"user_id": str(other.id), "app_id": "my-app", "data": "x"})
+    with pytest.raises(HTTPException) as exc:
+        ep.validate_bulk_admin_operation(["m1"], app_admin.id, db)
+    assert exc.value.status_code == 403
+
+
+# --------------------------------------------------------------------------- #
 # Cross-user agent/run isolation (agent/run are unique per parent, not global)
 # --------------------------------------------------------------------------- #
 def test_inject_default_user_id_always_injects(make_user, monkeypatch):
@@ -1465,19 +1576,20 @@ class TestAppPrimaryGate:
                 {"user": str(owner.id)}, other.id, "write", db,
             )
 
-    def test_read_with_app_owner_but_not_user_owner_fails(self, db, make_user):
-        """app owner also needs user read permission for the scoped user."""
+    def test_read_with_app_owner_trumps_user_scope(self, db, make_user):
+        """App-admin (here: the app owner) can read a (app, other_user)-scoped
+        memory without needing permission on the other user — the app-admin has
+        full authority over the app namespace. Non-admin app perms still require
+        the user scope (see test_read_with_app_and_user_permission_required)."""
         owner = make_user()
         app = Entity(type="app", id="project-x", owner_id=owner.id)
         db.add(app)
         db.flush()
-        # owner owns app but not the user entity "some-other-user" -> 403
-        with pytest.raises(HTTPException) as exc:
-            ep.check_memory_scope_permission(
-                {"user": "some-other-user", "app": "project-x"},
-                owner.id, "read", db,
-            )
-        assert exc.value.status_code == 403
+        # owner owns app (app-admin) but not the user entity "some-other-user" -> read passes
+        ep.check_memory_scope_permission(
+            {"user": "some-other-user", "app": "project-x"},
+            owner.id, "read", db,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -2635,3 +2747,109 @@ class TestEnsureUserEntity:
         user = make_user()
         entity = ep._ensure_user_entity(str(user.id), user.id, db)
         assert entity.id == str(user.id)
+
+
+# --------------------------------------------------------------------------- #
+# Non-admin parent_id resolution (Finding 3: 404-vs-403 oracle on agent/run)
+# --------------------------------------------------------------------------- #
+class TestResolveNonAdminParent:
+    """Non-admins may target a user namespace they own or have read on, but never
+    a foreign one; a foreign ``parent_id`` must 404 (not 403) so entity
+    existence can't be probed."""
+
+    _OWN = uuid.UUID("12345678-1234-1234-1234-123456789012")
+
+    def test_none_resolves_to_self(self, db):
+        from server.routers.entities import _resolve_non_admin_parent
+
+        assert _resolve_non_admin_parent("agent", None, self._OWN, db) == str(self._OWN)
+
+    def test_own_top_namespace_passes_through(self, db):
+        from server.routers.entities import _resolve_non_admin_parent
+
+        own = str(self._OWN)
+        assert _resolve_non_admin_parent("agent", own, self._OWN, db) == own
+
+    def test_own_uppercase_uuid_canonicalized_and_passes(self, db):
+        from server.routers.entities import _resolve_non_admin_parent
+
+        own = str(self._OWN)
+        # A client-supplied uppercase (or whitespace-padded) own UUID must be
+        # canonicalized, not misclassified as foreign -> 404.
+        assert _resolve_non_admin_parent("agent", own.upper(), self._OWN, db) == own
+        assert _resolve_non_admin_parent("agent", "  " + own + "  ", self._OWN, db) == own
+
+    def test_own_sub_namespace_passes_through(self, db):
+        from server.routers.entities import _resolve_non_admin_parent
+
+        own = str(self._OWN)
+        assert _resolve_non_admin_parent("agent", own + ":laptop", self._OWN, db) == own + ":laptop"
+
+    def test_foreign_namespace_404s(self, db):
+        from server.routers.entities import _resolve_non_admin_parent
+
+        foreign = "00000000-0000-0000-0000-000000000001"
+        with pytest.raises(HTTPException) as exc:
+            _resolve_non_admin_parent("agent", foreign, self._OWN, db)
+        assert exc.value.status_code == 404
+
+    def test_foreign_sub_namespace_404s(self, db):
+        from server.routers.entities import _resolve_non_admin_parent
+
+        foreign = "00000000-0000-0000-0000-000000000001:laptop"
+        with pytest.raises(HTTPException) as exc:
+            _resolve_non_admin_parent("agent", foreign, self._OWN, db)
+        assert exc.value.status_code == 404
+
+    def test_run_entity_foreign_404s(self, db):
+        from server.routers.entities import _resolve_non_admin_parent
+
+        foreign = "00000000-0000-0000-0000-000000000001"
+        with pytest.raises(HTTPException) as exc:
+            _resolve_non_admin_parent("run", foreign, self._OWN, db)
+        assert exc.value.status_code == 404
+
+    def test_non_scoped_type_passes_foreign_through(self, db):
+        """user/app are globally unique and ignore parent_entity_id downstream —
+        no per-parent oracle to close, so foreign parent_id is returned as-is."""
+        from server.routers.entities import _resolve_non_admin_parent
+
+        foreign = "00000000-0000-0000-0000-000000000001"
+        assert _resolve_non_admin_parent("user", foreign, self._OWN, db) == foreign
+        assert _resolve_non_admin_parent("app", foreign, self._OWN, db) == foreign
+
+    def test_owned_custom_user_namespace_passes_through(self, db):
+        """A non-admin owning a custom (non-UUID) user entity may target it as a
+        parent namespace — not just their own UUID namespace."""
+        from server.routers.entities import _resolve_non_admin_parent
+
+        ep.ensure_entity_owner("user", "alice", self._OWN, db)
+        db.commit()
+        assert _resolve_non_admin_parent("agent", "alice", self._OWN, db) == "alice"
+
+    def test_granted_user_namespace_passes_through(self, db, make_user):
+        """A non-admin with an explicit read grant on another user's namespace
+        may target it as a parent (no oracle: authorized namespaces are visible)."""
+        from server.routers.entities import _resolve_non_admin_parent
+
+        alice = make_user()
+        grantee = make_user()
+        ep.ensure_entity_owner("user", "alice", alice.id, db)
+        db.commit()
+        ep.grant_entity_permission(
+            "user", "alice", grantee.id, "read", operator_id=alice.id, bypass=False, db=db,
+        )
+        db.commit()
+        assert _resolve_non_admin_parent("agent", "alice", grantee.id, db) == "alice"
+
+    def test_unauthorized_custom_user_namespace_404s(self, db, make_user):
+        """A custom user namespace owned by another user, with no grant, must 404."""
+        from server.routers.entities import _resolve_non_admin_parent
+
+        alice = make_user()
+        other = make_user()
+        ep.ensure_entity_owner("user", "alice", alice.id, db)
+        db.commit()
+        with pytest.raises(HTTPException) as exc:
+            _resolve_non_admin_parent("agent", "alice", other.id, db)
+        assert exc.value.status_code == 404

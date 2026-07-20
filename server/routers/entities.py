@@ -5,7 +5,7 @@ from typing import Any, Literal, Optional
 
 from auth import is_bootstrap_admin, verify_auth
 from db import get_db
-from entity import EntityType, is_scoped_entity_type
+from entity import EntityType, canonicalize_entity_id, is_scoped_entity_type
 from entity_permissions import (
     check_entity_delete_permission,
     check_entity_permission,
@@ -41,6 +41,38 @@ router = APIRouter(prefix="/entities", tags=["entities"])
 logger = logging.getLogger(__name__)
 
 PermissionType = Literal["read", "write", "admin"]
+
+
+def _resolve_non_admin_parent(entity_type: str, parent_id: Optional[str], operator_id: uuid.UUID, db: Session) -> str:
+    """Scope a non-admin's agent/run lookup to a user namespace it may see.
+
+    Non-admins may target their own namespace (own UUID or a sub-namespace like
+    ``"<uuid>:laptop"``, or a custom user entity they own, or one they've been
+    granted ``read`` on) but never a foreign namespace; an unauthorized or
+    non-existent ``parent_id`` is rejected with 404 so the existence of another
+    user's agent/run cannot be probed via a 404-vs-403 oracle. ``None`` resolves
+    to the operator's own top-level namespace. For non-scoped entity types
+    (user/app) ``parent_id`` is returned as-is — those are globally unique and
+    ignore ``parent_entity_id`` downstream, so no per-parent oracle to close.
+    """
+    own = str(operator_id)
+    if parent_id is None:
+        return own
+    if not is_scoped_entity_type(entity_type):
+        return parent_id
+    # Normalize (strip whitespace, lowercase UUID). A client-supplied
+    # uppercase/whitespace UUID must not be misclassified as foreign. A malformed
+    # parent_id canonicalizes to a 400; surface it as 404 so validation detail
+    # doesn't leak and the oracle stays closed.
+    try:
+        canonical_parent = canonicalize_entity_id("user", parent_id)
+    except HTTPException as exc:
+        raise HTTPException(status_code=404, detail=f"Entity '{entity_type}' not found in your namespace.") from exc
+    # Authorize the parent namespace: own UUID, owned custom entity, or an
+    # explicit read grant all pass — a foreign namespace with no standing 404s.
+    if check_entity_permission("user", canonical_parent, operator_id, "read", db):
+        return canonical_parent
+    raise HTTPException(status_code=404, detail=f"Entity '{entity_type}' not found in your namespace.")
 
 
 # --------------------------------------------------------------------------- #
@@ -307,7 +339,12 @@ def list_entities(
             page=page,
             page_size=page_size,
         )
-    results = _entities_to_response_batch(items, operator.id, db, bypass=is_admin)
+    # When viewing as another user, reflect that user's perspective in the
+    # permission badges (owner/grant), not the admin's (bypass) view.
+    if view_as is not None:
+        results = _entities_to_response_batch(items, target_id, db, bypass=False)
+    else:
+        results = _entities_to_response_batch(items, operator.id, db, bypass=is_admin)
     return paginate_response(request, results, page, page_size, total=total)
 
 
@@ -428,7 +465,7 @@ def count_entity_memories(
     if is_admin and parent_id is not None:
         resolved_parent = parent_id
     else:
-        resolved_parent = parent_id or str(operator.id)
+        resolved_parent = _resolve_non_admin_parent(entity_type, parent_id, operator.id, db)
 
     entity = get_entity_or_none(
         entity_type,
@@ -569,7 +606,7 @@ def delete_entity(
     elif is_bootstrap_admin(operator.id):
         resolved_parent = parent_id  # None → unscoped, or explicit scope
     else:
-        resolved_parent = parent_id or str(operator.id)
+        resolved_parent = _resolve_non_admin_parent(entity_type, parent_id, operator.id, db)
 
     entity = check_entity_delete_permission(
         entity_type,
@@ -656,7 +693,7 @@ def update_entity(
     elif is_bootstrap_admin(operator.id):
         resolved_parent = parent_id
     else:
-        resolved_parent = parent_id or str(operator.id)
+        resolved_parent = _resolve_non_admin_parent(entity_type, parent_id, operator.id, db)
 
     entity = get_entity_or_none(entity_type, entity_id, db, parent_entity_id=resolved_parent)
     if entity is None:

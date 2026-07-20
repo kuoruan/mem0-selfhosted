@@ -253,6 +253,33 @@ class TestBootstrapEntityPermissions:
         assert resp.status_code == 403, resp.text
         assert "only admins" in resp.json()["detail"].lower()
 
+    def test_view_as_permission_reflects_target_perspective(self):
+        """When an admin views as another user, permission badges reflect the
+        target's perspective (owner/grant), not the admin's admin-bypass view.
+
+        Regression: the response builder used to pass ``bypass=is_admin`` even
+        under ``view_as``, labeling every row ``permission="admin"``. It must
+        instead build from the target's identity with ``bypass=False``.
+        """
+        owner_id = self._make_owner()
+        try:
+            resp = self.client.post(
+                "/entities",
+                json={"type": "app", "id": "owned-app", "owner_id": owner_id},
+                headers=self._auth,
+            )
+            assert resp.status_code == 201, resp.text
+
+            resp = self.client.get(f"/entities?view_as={owner_id}", headers=self._auth)
+            assert resp.status_code == 200, resp.text
+            rows = resp.json()["results"]
+            owned = [r for r in rows if r["id"] == "owned-app"]
+            assert owned, "owned-app must be visible when viewing as its owner"
+            assert owned[0]["permission"] == "owner"
+            assert owned[0]["is_owner"] is True
+        finally:
+            self._cleanup_owner_entities(["owned-app"])
+
     def test_create_entity_rejects_uuid_user_id(self):
         """POST /entities with a UUID user_id is rejected; own UUID says 'already yours'."""
         other_uuid = "12345678-1234-1234-1234-123456789012"

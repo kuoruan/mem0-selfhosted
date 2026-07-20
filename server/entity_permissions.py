@@ -1062,9 +1062,14 @@ def check_memory_scope_permission(
     """Authorize a single memory's scope.
 
     When scope contains ``app``, the app entity is checked first (primary
-    permission gate). If ``user`` is also in scope, user permission is
-    additionally required (dual-check). Otherwise READ=OR, WRITE/ADMIN=AND
-    applies. Empty scope: admin only.
+    permission gate). App-admin has full authority over the app namespace,
+    including any user-scoped memory within it: a memory that carries an
+    ``app_id`` is, by design, readable/writable/deletable by the app's admin,
+    so the user-scope check is skipped (single-memory ops only — bulk
+    ``delete_all`` still requires the app OWNER, see
+    ``validate_bulk_admin_operation``). Non-admin app permission (read/write)
+    still requires the user scope too (dual-check). Otherwise READ=OR,
+    WRITE/ADMIN=AND applies. Empty scope: admin only.
     """
     if not scope:
         if not bypass:
@@ -1073,6 +1078,10 @@ def check_memory_scope_permission(
 
     # --- app as primary gate, with optional user dual-check ---
     if "app" in scope:
+        # App-admin trumps the user dimension: covers read/write/admin of any
+        # user-scoped memory under this app. Short-circuit before the dual-check.
+        if check_entity_permission("app", scope["app"], operator_id, "admin", db, bypass=bypass):
+            return
         ok = check_entity_permission(
             "app",
             scope["app"],
@@ -1086,7 +1095,7 @@ def check_memory_scope_permission(
                 status_code=403,
                 detail=f"You do not have '{required}' permission for app '{scope['app']}'.",
             )
-        # When user is also in scope, require user read too
+        # Non-admin app permission: require user permission too (dual-check).
         if "user" in scope:
             ok = check_entity_permission(
                 "user",
@@ -1297,26 +1306,57 @@ def validate_bulk_admin_operation(
     bypass: bool = False,
     scope_hint: dict[str, str] | None = None,
 ) -> None:
-    """Bulk destructive ops must AND-check ADMIN on every matched memory's full scope.
+    """Bulk destructive ops require the OWNER of the governing app namespace.
+
+    Bulk delete is strictly owner-tier on the app scope: an app-admin (granted
+    admin) may single-delete memories under the app (see ``check_memory_scope_permission``'s
+    app-admin trump) but may NOT bulk-delete — only the app owner (or a global
+    admin via ``bypass``) can delete_all across an app namespace. Non-app scopes
+    (user/agent/run) keep admin-tier: those have no app-admin analogue, and the
+    operator deleting their own user-scoped memories is already the owner.
 
     Fast path: when *scope_hint* contains ``app`` (e.g., app-scoped
-    ``delete_all``), the app-primary gate makes the admin check identical for
-    every matched memory, so we check once instead of issuing one vector-store
-    lookup per memory (which can be millions for large namespaces). Non-app
-    scopes fall back to per-memory resolution because each memory may carry
-    different agent/run scopes that also require admin.
+    ``delete_all``), the owner check is identical for every matched memory, so
+    we check once instead of issuing one vector-store lookup per memory (which
+    can be millions for large namespaces). Non-app scopes fall back to per-memory
+    resolution because each memory may carry different agent/run scopes.
     """
-    # Admins have global access — every memory is in their admin scope — so the
-    # per-memory admin check (and the resolve_memory_entities vector-store read
-    # it requires) is entirely redundant. Short-circuit before the loop.
+    # Global admins have full authority — short-circuit before any scope work.
     if bypass:
         return
     if scope_hint and "app" in scope_hint:
-        check_memory_scope_permission(scope_hint, operator_id, "admin", db, bypass=bypass)
+        _assert_bulk_app_owner(scope_hint["app"], operator_id, db, bypass=bypass)
         return
+    # Cache verified app_ids: many memories can share one app, and each
+    # _assert_bulk_app_owner issues a DB fetch for the app entity.
+    checked_apps: set[str] = set()
     for memory_id in memory_ids:
         scope = resolve_memory_entities(memory_id)
-        check_memory_scope_permission(scope, operator_id, "admin", db, bypass=bypass)
+        if "app" in scope:
+            app_id = scope["app"]
+            if app_id not in checked_apps:
+                _assert_bulk_app_owner(app_id, operator_id, db, bypass=bypass)
+                checked_apps.add(app_id)
+        else:
+            check_memory_scope_permission(scope, operator_id, "admin", db, bypass=bypass)
+
+
+def _assert_bulk_app_owner(
+    app_id: str, operator_id: uuid.UUID, db: Session, *, bypass: bool
+) -> None:
+    """Bulk destructive ops on an app namespace require the app OWNER.
+
+    An app-admin (granted admin) can single-delete but not bulk-delete; only the
+    owner (or a global admin via ``bypass``) can. Raises 403 otherwise.
+    """
+    if bypass:
+        return
+    app = get_entity_or_none("app", app_id, db)
+    if app is None or not is_owner_or_global_admin(app, operator_id, bypass):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only the app owner can bulk-delete memories of app '{app_id}'.",
+        )
 
 
 def bulk_delete_memories(
