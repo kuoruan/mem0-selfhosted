@@ -93,10 +93,7 @@ export default function TransferOwnerDialog({
               <DialogClose asChild>
                 <Button variant="outline">Cancel</Button>
               </DialogClose>
-              <Button
-                onClick={handleTransfer}
-                disabled={!newOwnerId.trim()}
-              >
+              <Button onClick={handleTransfer} disabled={!newOwnerId.trim()}>
                 {entity.owner ? "Transfer" : "Assign"}
               </Button>
             </DialogFooter>

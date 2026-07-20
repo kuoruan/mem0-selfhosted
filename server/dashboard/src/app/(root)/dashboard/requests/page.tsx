@@ -246,11 +246,11 @@ export default function RequestsPage() {
             />
           </Card>
           <PaginationBar
-                page={page}
-                total={logs.length}
-                pageSize={PAGE_SIZE}
-                onPageChange={setPage}
-              />
+            page={page}
+            total={logs.length}
+            pageSize={PAGE_SIZE}
+            onPageChange={setPage}
+          />
         </>
       )}
     </div>

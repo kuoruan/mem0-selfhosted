@@ -21,8 +21,8 @@ export default function PaginationBar({
   return (
     <div className="flex items-center justify-between text-sm text-onSurface-default-tertiary">
       <span>
-        {page * pageSize + 1}–
-        {Math.min((page + 1) * pageSize, total)} of {total}
+        {page * pageSize + 1}–{Math.min((page + 1) * pageSize, total)} of{" "}
+        {total}
       </span>
       <div className="flex gap-2">
         <Button

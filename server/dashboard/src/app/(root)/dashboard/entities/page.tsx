@@ -19,7 +19,12 @@ import { Separator } from "@/components/ui/separator";
 import PaginationBar from "@/components/shared/pagination-bar";
 import { DataTable } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
-import { orDash, isWildcard, WILDCARD, EMPTY_PAGE_RESULTS } from "@/utils/helpers";
+import {
+  orDash,
+  isWildcard,
+  WILDCARD,
+  EMPTY_PAGE_RESULTS,
+} from "@/utils/helpers";
 import { EmptyState } from "@/components/self-hosted/empty-state";
 import DeleteConfirmationModal from "@/components/ui/delete-confirmation-modal";
 import { toast } from "@/components/ui/use-toast";
@@ -68,14 +73,17 @@ export default function EntitiesPage() {
   const [typeFilter, setTypeFilter] = useState<string>(WILDCARD);
 
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const reload = () => { setRefreshNonce((n) => n + 1); setPage(0); };
+  const reload = () => {
+    setRefreshNonce((n) => n + 1);
+    setPage(0);
+  };
 
-  const {
-    data: pageData,
-    isLoading,
-  } = useApiQuery<EntityListResponse>(
+  const { data: pageData, isLoading } = useApiQuery<EntityListResponse>(
     async () => {
-      const params: Record<string, unknown> = { page: page + 1, page_size: PAGE_SIZE };
+      const params: Record<string, unknown> = {
+        page: page + 1,
+        page_size: PAGE_SIZE,
+      };
       const effectiveViewAs = viewAs || ownUserId;
       if (!isWildcard(effectiveViewAs) && effectiveViewAs) {
         params.view_as = effectiveViewAs;
@@ -95,7 +103,14 @@ export default function EntitiesPage() {
       enabled: !!ownUserId,
       errorToast: "Failed to load entities",
       initialData: EMPTY_PAGE_RESULTS,
-      deps: [page, viewAs, ownUserId, refreshNonce, typeFilter, showUnownedOnly],
+      deps: [
+        page,
+        viewAs,
+        ownUserId,
+        refreshNonce,
+        typeFilter,
+        showUnownedOnly,
+      ],
     },
   );
 
@@ -190,10 +205,7 @@ export default function EntitiesPage() {
       width: 100,
       render: (value: Entity["permission"]) =>
         value ? (
-          <Badge
-            variant="outline"
-            className={PERMISSION_BADGES[value] ?? ""}
-          >
+          <Badge variant="outline" className={PERMISSION_BADGES[value] ?? ""}>
             {value}
           </Badge>
         ) : (
@@ -261,7 +273,9 @@ export default function EntitiesPage() {
             <Separator orientation="vertical" className="h-5" />
           </>
         )}
-        <Label className="text-sm font-normal text-onSurface-default-tertiary">Type:</Label>
+        <Label className="text-sm font-normal text-onSurface-default-tertiary">
+          Type:
+        </Label>
         <Select value={typeFilter} onValueChange={setTypeFilter}>
           <SelectTrigger className="w-28">
             <SelectValue placeholder="All" />
@@ -297,11 +311,11 @@ export default function EntitiesPage() {
             />
           </Card>
           <PaginationBar
-              page={page}
-              total={total}
-              pageSize={PAGE_SIZE}
-              onPageChange={setPage}
-            />
+            page={page}
+            total={total}
+            pageSize={PAGE_SIZE}
+            onPageChange={setPage}
+          />
         </>
       )}
 

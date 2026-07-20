@@ -13,7 +13,12 @@ export const isWildcard = (value: unknown): boolean => value === WILDCARD;
 export const orDash = (v: string | undefined | null): string => v ?? "--";
 
 /** Empty paginated response fallback (``results: [], count: 0, next: null, previous: null``). */
-export const EMPTY_PAGE_RESULTS = { results: [], count: 0, next: null, previous: null };
+export const EMPTY_PAGE_RESULTS = {
+  results: [],
+  count: 0,
+  next: null,
+  previous: null,
+};
 
 /**
  * Return a safe relative redirect path, or the fallback if the input is unsafe.
@@ -21,7 +26,10 @@ export const EMPTY_PAGE_RESULTS = { results: [], count: 0, next: null, previous:
  * Blocks: absolute URLs, protocol-relative URLs (//), backslashes,
  * and whitespace/control characters (which browsers normalize, enabling open-redirect attacks).
  */
-export const safeRedirectPath = (raw: string | null, fallback = "/dashboard/requests"): string => {
+export const safeRedirectPath = (
+  raw: string | null,
+  fallback = "/dashboard/requests",
+): string => {
   if (!raw) return fallback;
   if (!raw.startsWith("/")) return fallback;
   if (raw.startsWith("//")) return fallback;

@@ -221,28 +221,28 @@ export function MainNav({
                 ]
                   .filter((item) => !item.adminOnly || isAdmin)
                   .map((item) => (
-                  <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton
-                      asChild
-                      collapsed={isSidebarCollapsed}
-                      active={item.active}
-                      tooltip={isSidebarCollapsed ? item.title : undefined}
-                    >
-                      <Link
-                        href={item.url}
-                        className={cn(
-                          "flex items-center w-full",
-                          isSidebarCollapsed
-                            ? "justify-center mx-auto"
-                            : "gap-1.5",
-                        )}
+                    <SidebarMenuItem key={item.title}>
+                      <SidebarMenuButton
+                        asChild
+                        collapsed={isSidebarCollapsed}
+                        active={item.active}
+                        tooltip={isSidebarCollapsed ? item.title : undefined}
                       >
-                        <item.icon className="size-4 shrink-0" />
-                        {!isSidebarCollapsed && <span>{item.title}</span>}
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
+                        <Link
+                          href={item.url}
+                          className={cn(
+                            "flex items-center w-full",
+                            isSidebarCollapsed
+                              ? "justify-center mx-auto"
+                              : "gap-1.5",
+                          )}
+                        >
+                          <item.icon className="size-4 shrink-0" />
+                          {!isSidebarCollapsed && <span>{item.title}</span>}
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
               </div>
             </div>
           </SidebarMenu>

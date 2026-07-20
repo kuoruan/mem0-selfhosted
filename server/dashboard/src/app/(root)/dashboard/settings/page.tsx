@@ -17,7 +17,9 @@ export default function SettingsPage() {
   const { user, refreshUser } = useAuth();
   const { setTheme } = useTheme();
 
-  const isOidcUser = Boolean(user?.auth_provider && user.auth_provider !== "local");
+  const isOidcUser = Boolean(
+    user?.auth_provider && user.auth_provider !== "local",
+  );
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -38,7 +40,8 @@ export default function SettingsPage() {
   const profileDirty =
     user !== null &&
     (name !== user.name || (!isOidcUser && email !== user.email));
-  const profileValid = name.trim().length > 0 && (isOidcUser || email.trim().length > 0);
+  const profileValid =
+    name.trim().length > 0 && (isOidcUser || email.trim().length > 0);
 
   const handleSaveProfile = async () => {
     setSavingProfile(true);
@@ -199,7 +202,8 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent>
             <p className="text-sm text-onSurface-default-secondary">
-              Signed in via {user?.auth_provider}. Password management is handled by your identity provider.
+              Signed in via {user?.auth_provider}. Password management is
+              handled by your identity provider.
             </p>
           </CardContent>
         </Card>

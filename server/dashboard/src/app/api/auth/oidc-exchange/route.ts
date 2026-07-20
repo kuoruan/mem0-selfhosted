@@ -36,7 +36,10 @@ export async function POST(request: NextRequest) {
   if (!res.ok) {
     // Surface the upstream status so the client can distinguish an
     // invalid/expired code (4xx) from a limiter/provider issue (5xx).
-    return NextResponse.json({ error: "Exchange failed" }, { status: res.status });
+    return NextResponse.json(
+      { error: "Exchange failed" },
+      { status: res.status },
+    );
   }
 
   const data = await res.json();

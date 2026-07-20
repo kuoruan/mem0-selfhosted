@@ -44,7 +44,8 @@ export default function MemoriesPage() {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
 
   useEffect(() => {
-    if (ownUserId) setSelectedUserId((prev) => (prev === "" ? ownUserId : prev));
+    if (ownUserId)
+      setSelectedUserId((prev) => (prev === "" ? ownUserId : prev));
   }, [ownUserId]);
 
   const {
@@ -113,9 +114,19 @@ export default function MemoriesPage() {
         <span className="line-clamp-2 text-sm">{value}</span>
       ),
     },
-    { key: "user_id" as keyof Memory, label: "User", width: 100, render: orDash },
+    {
+      key: "user_id" as keyof Memory,
+      label: "User",
+      width: 100,
+      render: orDash,
+    },
     { key: "app_id" as keyof Memory, label: "App", width: 100, render: orDash },
-    { key: "agent_id" as keyof Memory, label: "Agent", width: 100, render: orDash },
+    {
+      key: "agent_id" as keyof Memory,
+      label: "Agent",
+      width: 100,
+      render: orDash,
+    },
     {
       key: "run_id" as keyof Memory,
       label: "Run",
@@ -156,11 +167,7 @@ export default function MemoriesPage() {
           ownUserId={ownUserId}
           className="w-72"
         />
-        <MemoryAppSelect
-          value={appId}
-          onChange={selectApp}
-          className="w-72"
-        />
+        <MemoryAppSelect value={appId} onChange={selectApp} className="w-72" />
       </div>
 
       {isLoading ? (
@@ -174,7 +181,7 @@ export default function MemoriesPage() {
             {`curl -X POST ${apiUrl}/memories \\
   -H "X-API-Key: <your-key>" \\
   -H "Content-Type: application/json" \\
-  -d '{"messages": [{"role": "user", "content": "I like hiking"}], "user_id": "${isWildcard(selectedUserId) ? ownUserId : selectedUserId || 'alice'}"`}
+  -d '{"messages": [{"role": "user", "content": "I like hiking"}], "user_id": "${isWildcard(selectedUserId) ? ownUserId : selectedUserId || "alice"}"`}
           </pre>
         </EmptyState>
       ) : (
@@ -300,7 +307,10 @@ export default function MemoriesPage() {
                       Created
                     </Label>
                     <p className="text-sm">
-                      {format(new Date(selectedMemory.created_at), "MMM d, yyyy, h:mm:ss a")}
+                      {format(
+                        new Date(selectedMemory.created_at),
+                        "MMM d, yyyy, h:mm:ss a",
+                      )}
                     </p>
                   </div>
                 )}
@@ -310,7 +320,10 @@ export default function MemoriesPage() {
                       Updated
                     </Label>
                     <p className="text-sm">
-                      {format(new Date(selectedMemory.updated_at), "MMM d, yyyy, h:mm:ss a")}
+                      {format(
+                        new Date(selectedMemory.updated_at),
+                        "MMM d, yyyy, h:mm:ss a",
+                      )}
                     </p>
                   </div>
                 )}

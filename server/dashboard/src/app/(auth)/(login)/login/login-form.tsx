@@ -71,7 +71,9 @@ export default function LoginForm() {
     let active = true;
     (async () => {
       try {
-        const res = await api.get<{ providers: OidcProvider[] }>(AUTH_ENDPOINTS.OIDC_PROVIDERS);
+        const res = await api.get<{ providers: OidcProvider[] }>(
+          AUTH_ENDPOINTS.OIDC_PROVIDERS,
+        );
         if (active) setOidcProviders(res.data.providers ?? []);
       } catch {
         // OIDC not configured or endpoint unavailable — silently ignore
@@ -88,7 +90,9 @@ export default function LoginForm() {
 
   const handleOidcLogin = (providerName: string) => {
     const callbackNext = searchParams.get("next") || "/dashboard/requests";
-    const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8888").replace(/\/+$/, "");
+    const apiBase = (
+      process.env.NEXT_PUBLIC_API_URL || "http://localhost:8888"
+    ).replace(/\/+$/, "");
     const loginUrl = `${apiBase}${AUTH_ENDPOINTS.OIDC_LOGIN(providerName)}?next=${encodeURIComponent(callbackNext)}`;
     window.location.href = loginUrl;
   };
@@ -175,7 +179,9 @@ export default function LoginForm() {
               <>
                 <div className="flex items-center gap-3 my-1">
                   <div className="flex-1 h-px bg-memBorder-primary" />
-                  <span className="text-xs text-onSurface-default-tertiary">or</span>
+                  <span className="text-xs text-onSurface-default-tertiary">
+                    or
+                  </span>
                   <div className="flex-1 h-px bg-memBorder-primary" />
                 </div>
                 <div className="flex flex-col gap-2">

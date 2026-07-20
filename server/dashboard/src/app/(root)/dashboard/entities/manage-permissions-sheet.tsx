@@ -114,7 +114,9 @@ export default function ManagePermissionsSheet({
           perm.grantee.id,
         ),
       );
-      setPermissions((prev) => prev.filter((p) => p.grantee.id !== perm.grantee.id));
+      setPermissions((prev) =>
+        prev.filter((p) => p.grantee.id !== perm.grantee.id),
+      );
     } catch (error) {
       toast({
         title: "Failed to revoke permission",
@@ -199,9 +201,7 @@ export default function ManagePermissionsSheet({
                       </p>
                       <p className="text-xs text-onSurface-default-tertiary capitalize">
                         {p.permission}
-                        {p.grantor
-                          ? ` · by ${p.grantor.name}`
-                          : " · system"}
+                        {p.grantor ? ` · by ${p.grantor.name}` : " · system"}
                       </p>
                     </div>
                     <Button
