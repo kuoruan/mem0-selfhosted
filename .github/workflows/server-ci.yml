@@ -20,8 +20,8 @@ on:
   workflow_call:
 
 jobs:
-  server-tests:
-    name: Server API tests
+  server:
+    name: Server lint & tests
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -53,8 +53,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[test,nlp,vector_stores,llms,extras]"
+          pip install -e ".[test,dev,nlp,vector_stores,llms,extras]"
           pip install -r server/requirements.txt
+
+      - name: Ruff check
+        run: ruff check server/ tests/server/
 
       - name: Run database migrations
         run: cd server && alembic upgrade head
