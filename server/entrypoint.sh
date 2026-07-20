@@ -16,7 +16,7 @@ set -e
 # migration.
 
 if [ "${1:-}" = "uvicorn" ]; then
-    python /app/scripts/prepare_db.py
+    python scripts/prepare_db.py
     echo "[entrypoint] Running alembic upgrade head..."
     alembic upgrade head
 fi
