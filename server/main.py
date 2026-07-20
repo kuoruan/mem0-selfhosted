@@ -115,33 +115,35 @@ def _warn_if_unconfigured() -> None:
     )
 
 
-_auth_config = get_auth_config()
-
-if not _auth_config.auth_disabled and not _auth_config.jwt_secret:
-    raise RuntimeError(
-        "JWT_SECRET is required. Set it in .env (generate with `openssl rand -base64 48`) "
-        "or set AUTH_DISABLED=true for local development only."
-    )
-
-if _auth_config.auth_disabled:
-    logging.warning("AUTH_DISABLED is enabled. Protected endpoints are open for local development only.")
-elif _auth_config.admin_api_key and len(_auth_config.admin_api_key) < MIN_KEY_LENGTH:
-    logging.warning(
-        "ADMIN_API_KEY is shorter than %d characters - consider using a longer key for production.",
-        MIN_KEY_LENGTH,
-    )
-elif not _auth_config.admin_api_key:
-    _warn_if_unconfigured()
-
-if _auth_config.oidc and _auth_config.oidc.providers:
-    if os.environ.get("OIDC_STATE_STORE", "memory").lower() == "memory":
-        logging.warning(
-            "OIDC is enabled with the in-memory state/exchange store. "
-            "Login state is held per-process, so multi-worker (e.g. uvicorn --workers N) "
-            "or multi-replica deployments will see intermittent 'invalid_state' / 'expired' "
-            "login failures. For such deployments, implement a shared backend (Redis/DB), "
-            "select it via OIDC_STATE_STORE, and rebuild."
+def _validate_auth_config() -> None:
+    """Resolve auth config at startup; fail fast or warn on misconfiguration."""
+    cfg = get_auth_config()
+    if not cfg.auth_disabled and not cfg.jwt_secret:
+        raise RuntimeError(
+            "JWT_SECRET is required. Set it in .env (generate with `openssl rand -base64 48`) "
+            "or set AUTH_DISABLED=true for local development only."
         )
+
+    if cfg.auth_disabled:
+        logging.warning("AUTH_DISABLED is enabled. Protected endpoints are open for local development only.")
+    elif cfg.admin_api_key and len(cfg.admin_api_key) < MIN_KEY_LENGTH:
+        logging.warning(
+            "ADMIN_API_KEY is shorter than %d characters - consider using a longer key for production.",
+            MIN_KEY_LENGTH,
+        )
+    elif not cfg.admin_api_key:
+        _warn_if_unconfigured()
+
+    if cfg.oidc and cfg.oidc.providers:
+        if os.environ.get("OIDC_STATE_STORE", "memory").lower() == "memory":
+            logging.warning(
+                "OIDC is enabled with the in-memory state/exchange store. "
+                "Login state is held per-process, so multi-worker (e.g. uvicorn --workers N) "
+                "or multi-replica deployments will see intermittent 'invalid_state' / 'expired' "
+                "login failures. For such deployments, implement a shared backend (Redis/DB), "
+                "select it via OIDC_STATE_STORE, and rebuild."
+            )
+
 
 telemetry.log_status()
 
@@ -186,7 +188,8 @@ initialize_state(DEFAULT_CONFIG, config_path=CONFIG_PATH)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start background tasks on startup, clean up on shutdown."""
+    """Validate auth config + start background tasks on startup; clean up on shutdown."""
+    _validate_auth_config()
     prune_task = asyncio.create_task(prune_loop())
     try:
         yield
@@ -632,7 +635,7 @@ def update_memory(
     scope = resolve_memory_entities(memory_id)
     check_memory_scope_permission(scope, operator.id, "write", db, bypass=is_admin)
     try:
-        fields_set = getattr(updated_memory, "model_fields_set", getattr(updated_memory, "__fields_set__", set()))
+        fields_set = updated_memory.model_fields_set
         params = {"memory_id": memory_id}
         if "text" in fields_set:
             params["data"] = updated_memory.text

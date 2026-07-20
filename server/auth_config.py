@@ -41,16 +41,21 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OIDC_SCOPES = ["openid", "email", "profile"]
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "")
-ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
-AUTH_DISABLED = is_truthy(os.environ.get("AUTH_DISABLED", ""))
 
-DEFAULT_AUTH_CONFIG: dict[str, Any] = {
-    "jwt_secret": JWT_SECRET,
-    "admin_api_key": ADMIN_API_KEY,
-    "auth_disabled": AUTH_DISABLED,
-    "oidc": None,
-}
+def _env_defaults() -> dict[str, Any]:
+    """Read auth-related env vars live, at config-resolution time.
+
+    Read here rather than as module-level constants so the config reflects the
+    environment when it is resolved, not whatever it was when ``auth_config``
+    was first imported. ``reload_auth_config()`` clears the cache to force a
+    re-resolve.
+    """
+    return {
+        "jwt_secret": os.environ.get("JWT_SECRET", ""),
+        "admin_api_key": os.environ.get("ADMIN_API_KEY", ""),
+        "auth_disabled": is_truthy(os.environ.get("AUTH_DISABLED", "")),
+        "oidc": None,
+    }
 
 
 @dataclass
@@ -66,17 +71,23 @@ class OIDCProviderConfig:
     def __post_init__(self) -> None:
         if not self.display_name:
             self.display_name = self.name.replace("_", " ").replace("-", " ").title()
-        if self.username_claim is not None:
-            if isinstance(self.username_claim, str):
-                pass
-            elif isinstance(self.username_claim, list) and all(
-                isinstance(c, str) for c in self.username_claim
-            ):
-                pass
-            else:
-                raise RuntimeError(
-                    f"OIDC provider {self.name}: username_claim must be a string or list of strings"
-                )
+        # Enforce https:// for the issuer so tokens/code are not exchanged over a
+        # plaintext transport. OIDC_ALLOW_HTTP_ISSUER=true opts in (local development).
+        if not self.issuer_url.startswith("https://") and not is_truthy(
+            os.environ.get("OIDC_ALLOW_HTTP_ISSUER", "")
+        ):
+            raise RuntimeError(
+                f"OIDC issuer_url must use https:// (got {self.issuer_url!r}). "
+                "Set OIDC_ALLOW_HTTP_ISSUER=true only for local development."
+            )
+
+        if self.username_claim is not None and not (
+            isinstance(self.username_claim, str)
+            or (isinstance(self.username_claim, list) and all(isinstance(c, str) for c in self.username_claim))
+        ):
+            raise RuntimeError(
+                f"OIDC provider {self.name}: username_claim must be a string or list of strings"
+            )
 
 
 @dataclass
@@ -100,7 +111,7 @@ class AuthConfig:
 
 def _parse_provider(data: dict[str, Any]) -> OIDCProviderConfig:
     try:
-        provider = OIDCProviderConfig(
+        return OIDCProviderConfig(
             name=data["name"],
             issuer_url=data["issuer_url"],
             client_id=data["client_id"],
@@ -111,15 +122,6 @@ def _parse_provider(data: dict[str, Any]) -> OIDCProviderConfig:
         )
     except KeyError as exc:
         raise RuntimeError(f"Missing required OIDC provider configuration key: {exc}") from exc
-
-    # Enforce https:// for the issuer so tokens/code are not exchanged over a
-    # plaintext transport. OIDC_ALLOW_HTTP_ISSUER=true opts in (local test IdPs).
-    if not provider.issuer_url.startswith("https://") and not is_truthy(os.environ.get("OIDC_ALLOW_HTTP_ISSUER", "")):
-        raise RuntimeError(
-            f"OIDC issuer_url must use https:// (got {provider.issuer_url!r}). "
-            "Set OIDC_ALLOW_HTTP_ISSUER=true only for local testing."
-        )
-    return provider
 
 
 def _parse_config(data: dict[str, Any]) -> AuthConfig:
@@ -165,7 +167,7 @@ def load_auth_config() -> AuthConfig:
         if data is not None:
             logger.info("Auth config loaded from %s", config_path)
 
-    merged = merge_config(DEFAULT_AUTH_CONFIG, data or {})
+    merged = merge_config(_env_defaults(), data or {})
     config = _parse_config(merged)
     provider_names = [p.name for p in (config.oidc.providers if config.oidc else [])]
     logger.info(
@@ -179,10 +181,17 @@ def load_auth_config() -> AuthConfig:
 
 @functools.lru_cache(maxsize=1)
 def get_auth_config() -> AuthConfig:
-    """Return the (cached) auth config, loading it on first access.
+    """Return the cached auth config, loading it on first access.
 
-    Cached for the process lifetime; call ``get_auth_config.cache_clear()`` to
-    force a reload after changing ``JWT_SECRET`` / ``AUTH_CONFIG_PATH`` / the
-    OIDC provider config.
+    Cached for the process lifetime; call ``reload_auth_config()`` to force a
+    re-resolve after changing ``JWT_SECRET`` / ``AUTH_CONFIG_PATH`` / the OIDC
+    provider config.
     """
     return load_auth_config()
+
+
+def reload_auth_config() -> None:
+    """Clear the cached env-based config so the next ``get_auth_config()`` call
+    re-resolves from env / ``AUTH_CONFIG_PATH``. Use after changing ``JWT_SECRET``
+    / ``AUTH_CONFIG_PATH`` / the OIDC provider config."""
+    get_auth_config.cache_clear()

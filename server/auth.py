@@ -219,7 +219,9 @@ async def verify_auth(
     raise HTTPException(
         status_code=401,
         detail="Authentication required. Provide a Bearer token or X-API-Key header.",
-        headers={"WWW-Authenticate": "Bearer"},
+        # List both accepted schemes so a client rejected for either knows which
+        # challenge to answer (RFC 7235 allows comma-separated challenges).
+        headers={"WWW-Authenticate": "Bearer, ApiKey"},
     )
 
 

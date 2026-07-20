@@ -770,10 +770,8 @@ def _mcp_request_context(request: Request, user: Any) -> Iterator[None]:
         mem0_source_var.reset(source_token)
 
 
-@mcp_router.api_route(
-    "/", methods=["GET", "POST", "DELETE"], include_in_schema=False, operation_id="handle_streamable_http_slash"
-)
-@mcp_router.api_route("", methods=["GET", "POST", "DELETE"], summary="MCP Endpoint")
+@mcp_router.api_route("/", methods=["GET", "POST", "DELETE"], include_in_schema=False)
+@mcp_router.api_route("", methods=["GET", "POST", "DELETE"], include_in_schema=False)
 async def handle_streamable_http(request: Request, user=Depends(verify_auth)):
     return _McpStreamableResponse(request, user, getattr(request.app.state, _MCP_SESSION_MANAGER_STATE))
 

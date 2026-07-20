@@ -98,7 +98,7 @@ class OIDCProvidersResponse(BaseModel):
 def _get_oidc_config():
     """Get OIDC config or raise 503 if not configured."""
     config = get_auth_config()
-    if not config or not config.oidc or not config.oidc.providers:
+    if not config.oidc or not config.oidc.providers:
         raise HTTPException(status_code=503, detail="OIDC is not configured.")
     return config.oidc
 
@@ -323,7 +323,7 @@ def _find_or_create_user(
 async def list_providers():
     """Return the list of configured OIDC identity providers."""
     config = get_auth_config()
-    if not config or not config.oidc or not config.oidc.providers:
+    if not config.oidc or not config.oidc.providers:
         return OIDCProvidersResponse(providers=[])
 
     providers = [OIDCProviderInfo(name=p.name, display_name=p.display_name or p.name) for p in config.oidc.providers]
