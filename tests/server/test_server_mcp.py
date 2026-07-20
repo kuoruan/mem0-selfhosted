@@ -333,13 +333,70 @@ def _build_testbed(monkeypatch, *, auth_user_id: str | None = None):
     def get_memory():
         return mock_memory
 
+    import sys as _sys
+    from server.db import SessionLocal
+
+    # mcp_server and its flat-import deps (memory_lock / server_state /
+    # entity_permissions) hold their own get_memory_instance references, and under
+    # importlib.reload the flat short-name modules can be distinct objects from the
+    # server.* alias targets conftest registered. Patch every form present so MCP
+    # tools (and run_memory_write_for_memory_id) reach the mocked Memory.
+    def _patch_gmi(_mod):
+        if _mod is not None and hasattr(_mod, "get_memory_instance"):
+            monkeypatch.setattr(_mod, "get_memory_instance", get_memory, raising=False)
+
     monkeypatch.setattr(module, "get_memory_instance", get_memory)
-    monkeypatch.setattr("server.server_state.get_memory_instance", get_memory)
-    monkeypatch.setattr("server.memory_lock.get_memory_instance", get_memory)
+    for _name in (
+        "memory_lock", "server.memory_lock",
+        "server_state", "server.server_state",
+        "entity_permissions", "server.entity_permissions",
+    ):
+        _patch_gmi(_sys.modules.get(_name))
     monkeypatch.setattr(module, "_ADD_EXECUTOR", _ImmediateExecutor())
+
+    # Permission/scope guards query the DB; stub them so MCP tools reach the
+    # mocked Memory. These tests exercise tool wiring / param-forwarding, not
+    # authorization (that lives in test_entity_permissions*). NOTE:
+    # reject_bootstrap_memory_mutation is intentionally left real — the default
+    # operator below is a non-bootstrap user, so it never rejects; the
+    # *_requires_scope tests opt into the bootstrap path explicitly.
+    for _guard in (
+        "check_memory_scope_permission",
+        "authorize_write",
+        "check_entity_delete_permission",
+        "validate_bulk_admin_operation",
+    ):
+        monkeypatch.setattr(module, _guard, lambda *a, **k: None)
+    monkeypatch.setattr(module, "check_query_permission", lambda filters, *a, **k: filters)
+    monkeypatch.setattr(module, "resolve_memory_entities", lambda memory_id: {})
+    monkeypatch.setattr(module, "get_entity_or_none", lambda *a, **k: None)
+    monkeypatch.setattr(module, "get_visible_entities", lambda *a, **k: [])
+    # bulk_delete_memories queries the DB; forward to the mocked SDK call so
+    # delete_all_memories tests assert on Memory.delete_all.
+    monkeypatch.setattr(
+        module,
+        "bulk_delete_memories",
+        lambda memory, params, op_id, db: memory.delete_all(**params),
+    )
+
+    # MCP tools open DB sessions via server_state._session_factory (bypassing
+    # FastAPI DI). main.py sets it on import; these tests build a bare FastAPI
+    # app without main, so wire up a real SessionLocal pointed at the test DB.
+    _ss = _sys.modules.get("server_state") or _sys.modules.get("server.server_state")
+    _ss.set_session_factory(SessionLocal)
 
     app = FastAPI()
     module.setup_mcp_server(app)
+
+    # verify_auth is overridden below, but that override has no Request and so
+    # can't set request.state.auth_type. _mcp_request_context reads it to populate
+    # mcp_auth_type_var; default it to "disabled" so determine_user resolves the
+    # AUTH_DISABLED default user. (For the authed path user is non-None, which
+    # determine_user short-circuits on before consulting auth_type.)
+    @app.middleware("http")
+    async def _mark_disabled(request, call_next):
+        request.state.auth_type = "disabled"
+        return await call_next(request)
 
     if auth_user_id is None:
         app.dependency_overrides[module.verify_auth] = lambda: None
@@ -352,7 +409,7 @@ def _build_testbed(monkeypatch, *, auth_user_id: str | None = None):
 
 
 @pytest.fixture
-def mcp_testbed(monkeypatch):
+def mcp_testbed(monkeypatch, default_user):
     module, app, mock_memory, _ = _build_testbed(monkeypatch)
     with TestClient(app) as client:
         _initialize_client(client)
@@ -366,7 +423,7 @@ def _initialize_client(client: TestClient, headers: dict | None = None) -> None:
 
 
 @pytest.fixture
-def mcp_testbed_authed(monkeypatch):
+def mcp_testbed_authed(monkeypatch, default_user):
     """Like mcp_testbed but verify_auth returns a real User-like object with a known id."""
     module, app, mock_memory, uid = _build_testbed(monkeypatch, auth_user_id=AUTH_USER_ID)
     with TestClient(app) as client:
@@ -456,12 +513,35 @@ def test_add_memory_tool_uses_explicit_user_id(mcp_testbed):
     )
 
 
-def test_add_memory_requires_scope(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
+def test_add_memory_requires_scope(mcp_testbed, monkeypatch):
+    module, client, mock_memory = mcp_testbed
+    from auth import _BOOTSTRAP_ADMIN
+
+    # Bootstrap admin cannot author memories (reject_bootstrap_memory_mutation),
+    # which is the "no auth user / no scope" rejection this test asserts.
+    monkeypatch.setattr(module, "_mcp_resolve_operator", lambda db: (_BOOTSTRAP_ADMIN, True))
 
     result = _call_tool(client, "add_memory", {"text": "no scope"})
     assert result.get("isError") is True
     mock_memory.add.assert_not_called()
+
+
+def test_mcp_resolve_operator_raises_when_no_auth_context():
+    """No auth context (user=None, auth_type="none") → determine_user returns
+    None → _mcp_resolve_operator raises ValueError("Authentication required."),
+    which FastMCP surfaces as an isError response.
+
+    Covers the "no auth_type → ValueError" path that the ``*_requires_scope``
+    tests skip — they exercise the bootstrap-admin rejection path instead.
+    """
+    u = mcp_server.mcp_user_var.set(None)
+    t = mcp_server.mcp_auth_type_var.set("none")
+    try:
+        with pytest.raises(ValueError, match="Authentication required."):
+            mcp_server._mcp_resolve_operator(None)
+    finally:
+        mcp_server.mcp_user_var.reset(u)
+        mcp_server.mcp_auth_type_var.reset(t)
 
 
 def test_add_memory_neither_text_nor_messages_rejected(mcp_testbed):
@@ -745,9 +825,12 @@ def test_search_memories_with_explicit_user_id(mcp_testbed):
     mock_memory.search.assert_called_once_with(query="test", filters={"user_id": "alice"})
 
 
-def test_search_memories_requires_scope(mcp_testbed):
+def test_search_memories_requires_scope(mcp_testbed, monkeypatch):
     """search_memories with no entity scope and no auth user is rejected."""
-    _, client, mock_memory = mcp_testbed
+    module, client, mock_memory = mcp_testbed
+    from auth import _BOOTSTRAP_ADMIN
+
+    monkeypatch.setattr(module, "_mcp_resolve_operator", lambda db: (_BOOTSTRAP_ADMIN, True))
 
     result = _call_tool(client, "search_memories", {"query": "anything"})
     assert result.get("isError") is True
@@ -858,8 +941,11 @@ def test_get_memories_with_explicit_user_id(mcp_testbed):
     mock_memory.get_all.assert_called_once_with(filters={"user_id": "alice"})
 
 
-def test_get_memories_requires_scope(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
+def test_get_memories_requires_scope(mcp_testbed, monkeypatch):
+    module, client, mock_memory = mcp_testbed
+    from auth import _BOOTSTRAP_ADMIN
+
+    monkeypatch.setattr(module, "_mcp_resolve_operator", lambda db: (_BOOTSTRAP_ADMIN, True))
 
     result = _call_tool(client, "get_memories")
     assert result.get("isError") is True
@@ -1069,7 +1155,7 @@ def test_delete_memory_invokes_sdk(mcp_testbed):
 def test_delete_all_memories_scoped(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    _structured(client, "delete_all_memories", {"user_id": "alice", "agent_id": "bot"})
+    _call_tool(client, "delete_all_memories", {"user_id": "alice", "agent_id": "bot"})
     mock_memory.delete_all.assert_called_once_with(user_id="alice", agent_id="bot")
 
 
@@ -1084,7 +1170,7 @@ def test_delete_all_memories_requires_scope(mcp_testbed):
 def test_delete_all_memories_source_param_is_advisory(mcp_testbed):
     _, client, mock_memory = mcp_testbed
 
-    _structured(client, "delete_all_memories", {"user_id": "alice", "source": "cursor"})
+    _call_tool(client, "delete_all_memories", {"user_id": "alice", "source": "cursor"})
 
     mock_memory.delete_all.assert_called_once()
     assert "source" not in mock_memory.delete_all.call_args.kwargs
@@ -1120,17 +1206,11 @@ def test_delete_entities_single_entity(mcp_testbed):
 
 
 def test_list_entities_returns_payload(mcp_testbed):
-    _, client, mock_memory = mcp_testbed
-    row = MagicMock(
-        payload={
-            "user_id": "alice",
-            "created_at": "2026-01-01T00:00:00+00:00",
-            "updated_at": "2026-01-02T00:00:00+00:00",
-        }
-    )
-    mock_memory.vector_store.list.return_value = [row]
+    module, client, mock_memory = mcp_testbed
+    from server.models import Entity
 
-    with patch("server.compat.entities.get_memory_instance", return_value=mock_memory):
+    entities = [Entity(type="user", id="alice", name="alice")]
+    with patch.object(module, "get_visible_entities", return_value=entities):
         structured = _structured(client, "list_entities")
     assert structured["count"] == 1
     assert structured["results"][0]["name"] == "alice"

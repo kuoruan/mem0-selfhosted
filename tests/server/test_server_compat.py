@@ -86,6 +86,67 @@ from server.routers.compat import (
 )
 
 
+import uuid
+
+
+# Throwaway Request stand-in for direct handler calls. The autouse
+# ``_direct_call_default_operator`` fixture stubs resolve_operator (which only
+# inspects ``auth``), so a shared MagicMock is fine — no test asserts on it.
+_REQ = MagicMock()
+
+
+@pytest.fixture(autouse=True)
+def _direct_call_default_operator(monkeypatch):
+    """Many tests below invoke router handlers *directly* (not via TestClient),
+    so FastAPI never resolves verify_auth/get_db. With ``auth=None`` the real
+    resolve_operator raises 401 because a bare MagicMock request has no
+    ``state.auth_type``. Short-circuit the None path to a default admin operator;
+    calls passing a real ``auth=<User>`` still resolve normally.
+
+    NOTE: this fixture also stubs the db-backed permission/scope guards (see
+    below) to no-ops for the whole module. Tests in this file exercise handler
+    logic and param-forwarding ONLY — they do NOT cover authorization, which
+    lives in test_entity_permissions*. Any new guard added to a compat handler
+    must be explicitly tested there, not silently stubbed here.
+
+    Stubbed guards: resolve_operator, check_query_permission,
+    check_memory_scope_permission, resolve_memory_entities, authorize_write,
+    get_visible_entities.
+    """
+    default = MagicMock(id=uuid.UUID(int=1), role="admin")
+    import server.entity_permissions as _ep
+    import server.routers.compat as _rc
+
+    _real = _ep.resolve_operator
+
+    def _stub(request, auth, db):
+        if auth is None:
+            return default, True
+        return _real(request, auth, db)
+
+    monkeypatch.setattr(_ep, "resolve_operator", _stub)
+    monkeypatch.setattr(_rc, "resolve_operator", _stub)
+
+    # Handlers also call db-backed permission guards (check_query_permission /
+    # check_memory_scope_permission) which receive the unresolved Depends object
+    # as ``db`` under direct invocation. These tests exercise handler logic /
+    # param-forwarding, not authorization — stub them to no-ops. Anything that
+    # needs real authorization lives in test_entity_permissions*. Tests can still
+    # monkeypatch these to assert specific behaviour.
+    monkeypatch.setattr(_rc, "check_query_permission", lambda filters, *a, **k: filters)
+    monkeypatch.setattr(_rc, "check_memory_scope_permission", lambda *a, **k: None)
+    # resolve_memory_entities reads memory.get(...) to derive an entity scope; the
+    # Mem0 runtime is uninitialized under direct handler invocation. Stub it to an
+    # empty scope (admin-only — and check_memory_scope_permission is already a
+    # no-op). Tests asserting a 404 monkeypatch this themselves.
+    monkeypatch.setattr(_rc, "resolve_memory_entities", lambda memory_id: {})
+    # authorize_write (used by v3_add_memory) queries entities via db; stub it.
+    monkeypatch.setattr(_rc, "authorize_write", lambda *a, **k: None)
+    # get_visible_entities (used by v1_list_entities) queries db; default to empty.
+    # Tests needing specific entities monkeypatch this themselves.
+    monkeypatch.setattr(_rc, "get_visible_entities", lambda *a, **k: [])
+
+
 # ---------------------------------------------------------------------------
 # compat.entities.CompatEntity
 # ---------------------------------------------------------------------------
@@ -191,53 +252,32 @@ class TestCompatEntity:
         assert [call.kwargs["top_k"] for call in mem.vector_store.list.call_args_list] == [2, 4]
 
     def test_v1_list_entities_returns_paginated_entities_with_mixed_timestamps(self, monkeypatch):
-        row1 = MagicMock(
-            payload={
-                "user_id": "alice",
-                "created_at": "2026-01-01T00:00:00",
-                "updated_at": "2026-01-01T01:00:00+00:00",
-            }
-        )
-        row2 = MagicMock(
-            payload={
-                "user_id": "alice",
-                "created_at": "2026-01-02T00:00:00+00:00",
-                "updated_at": "2026-01-03T00:00:00",
-            }
-        )
-        mem = MagicMock()
-        mem.vector_store.col_info.return_value = {"count": 2}
-        mem.vector_store.list.return_value = [row1, row2]
+        from server.models import Entity
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
-        monkeypatch.setattr("server.compat.entities.get_memory_instance", lambda: mem)
+        # get_visible_entities is db-backed; stub it. v1_list_entities serializes
+        # the returned Entity rows into the compat envelope and paginates.
+        entities = [Entity(type="user", id="alice")]
+        monkeypatch.setattr("server.routers.compat.get_visible_entities", lambda *a, **k: entities)
 
         req = MagicMock()
         req.url = URL("http://test/v1/entities?page=1&page_size=10")
 
-        result = v1_list_entities(request=req, page=1, page_size=10, _auth=None)
+        result = v1_list_entities(request=req, page=1, page_size=10, auth=None)
 
         assert result["count"] == 1
         assert len(result["results"]) == 1
-        entity = result["results"][0]
-        assert entity.id == "alice"
+        assert result["results"][0].id == "alice"
 
     def test_v1_list_entities_respects_pagination(self, monkeypatch):
-        rows = [
-            MagicMock(payload={"user_id": "alice", "created_at": "2026-01-01T00:00:00+00:00"}),
-            MagicMock(payload={"agent_id": "agent-1", "created_at": "2026-01-01T00:00:00+00:00"}),
-        ]
-        mem = MagicMock()
-        mem.vector_store.col_info.return_value = {"count": 2}
-        mem.vector_store.list.return_value = rows
+        from server.models import Entity
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
-        monkeypatch.setattr("server.compat.entities.get_memory_instance", lambda: mem)
+        entities = [Entity(type="user", id="alice"), Entity(type="agent", id="agent-1")]
+        monkeypatch.setattr("server.routers.compat.get_visible_entities", lambda *a, **k: entities)
 
         req = MagicMock()
         req.url = URL("http://test/v1/entities?page=1&page_size=1")
 
-        page = v1_list_entities(request=req, page=1, page_size=1, _auth=None)
+        page = v1_list_entities(request=req, page=1, page_size=1, auth=None)
 
         assert page["count"] == 2
         assert len(page["results"]) == 1
@@ -1120,7 +1160,7 @@ class TestWarnIgnoredCompatParams:
         body = MemoryGetInputV2(filters={"user_id": "u1"}, fields=["id"], latest_only=True)
 
         with caplog.at_level(logging.WARNING):
-            v2_list_memories(req, body, page=1, page_size=10, _auth=None)
+            v2_list_memories(req, body, page=1, page_size=10, auth=None)
 
         assert "v2_list_memories" in caplog.text
         assert "fields" in caplog.text.lower()
@@ -1140,7 +1180,7 @@ class TestWarnIgnoredCompatParams:
         )
 
         with caplog.at_level(logging.WARNING):
-            v3_search_memories(body, _auth=None)
+            v3_search_memories(body, request=_REQ, auth=None)
 
         assert "v3_search_memories" in caplog.text
         assert "reference_date" in caplog.text
@@ -1215,7 +1255,7 @@ class TestV3SearchMemoriesConvenienceFields:
             metadata={"foo": "bar"},
         )
 
-        v3_search_memories(body, _auth=None)
+        v3_search_memories(body, request=_REQ, auth=None)
 
         called = mem.search.call_args.kwargs
         assert called["query"] == "hello"
@@ -1298,14 +1338,14 @@ class TestV1UpdateMemoryForwarding:
         mem = MagicMock()
         mem.update.return_value = {"message": "updated"}
         self._patch_run(monkeypatch, mem)
-        v1_update_memory("mem-1", MemoryUpdateInput(text="new", metadata={"k": "v"}), _auth=None)
+        v1_update_memory("mem-1", MemoryUpdateInput(text="new", metadata={"k": "v"}), request=_REQ, auth=None)
         mem.update.assert_called_once_with(memory_id="mem-1", data="new", metadata={"k": "v"})
 
     def test_text_only_omits_metadata(self, monkeypatch):
         mem = MagicMock()
         mem.update.return_value = {"message": "updated"}
         self._patch_run(monkeypatch, mem)
-        v1_update_memory("mem-1", MemoryUpdateInput(text="new"), _auth=None)
+        v1_update_memory("mem-1", MemoryUpdateInput(text="new"), request=_REQ, auth=None)
         mem.update.assert_called_once_with(memory_id="mem-1", data="new")
 
     def test_metadata_only_omits_data(self, monkeypatch):
@@ -1313,14 +1353,14 @@ class TestV1UpdateMemoryForwarding:
         mem = MagicMock()
         mem.update.return_value = {"message": "updated"}
         self._patch_run(monkeypatch, mem)
-        v1_update_memory("mem-1", MemoryUpdateInput(metadata={"k": "v"}), _auth=None)
+        v1_update_memory("mem-1", MemoryUpdateInput(metadata={"k": "v"}), request=_REQ, auth=None)
         mem.update.assert_called_once_with(memory_id="mem-1", metadata={"k": "v"})
 
     def test_timestamp_folded_into_metadata(self, monkeypatch):
         mem = MagicMock()
         mem.update.return_value = {"message": "updated"}
         self._patch_run(monkeypatch, mem)
-        v1_update_memory("mem-1", MemoryUpdateInput(timestamp=123, metadata={"k": "v"}), _auth=None)
+        v1_update_memory("mem-1", MemoryUpdateInput(timestamp=123, metadata={"k": "v"}), request=_REQ, auth=None)
         mem.update.assert_called_once_with(memory_id="mem-1", metadata={"k": "v", "timestamp": 123})
 
     def test_not_found_returns_404(self, monkeypatch):
@@ -1328,7 +1368,7 @@ class TestV1UpdateMemoryForwarding:
         mem.update.side_effect = ValueError("Memory with id mem-x not found. Please provide a valid 'memory_id'")
         self._patch_run(monkeypatch, mem)
         with pytest.raises(HTTPException) as exc:
-            v1_update_memory("mem-x", MemoryUpdateInput(text="new"), _auth=None)
+            v1_update_memory("mem-x", MemoryUpdateInput(text="new"), request=_REQ, auth=None)
         assert exc.value.status_code == 404
 
     def test_other_value_error_maps_to_400(self, monkeypatch):
@@ -1337,13 +1377,13 @@ class TestV1UpdateMemoryForwarding:
         mem.update.side_effect = ValueError("data must be a non-empty string")
         self._patch_run(monkeypatch, mem)
         with pytest.raises(HTTPException) as exc:
-            v1_update_memory("mem-1", MemoryUpdateInput(text="new"), _auth=None)
+            v1_update_memory("mem-1", MemoryUpdateInput(text="new"), request=_REQ, auth=None)
         assert exc.value.status_code == 400
 
     def test_no_fields_rejected_400(self):
         """No text/metadata/timestamp/expiration_date set -> 400 (nothing to update)."""
         with pytest.raises(HTTPException) as exc:
-            v1_update_memory("mem-1", MemoryUpdateInput(), _auth=None)
+            v1_update_memory("mem-1", MemoryUpdateInput(), request=_REQ, auth=None)
         assert exc.value.status_code == 400
 
 
@@ -1363,14 +1403,14 @@ class TestV1BatchUpdateRoute:
     def test_too_many_items_returns_400(self):
         items = [MemoryBatchUpdateItem(memory_id=f"m{i}", text="x") for i in range(101)]
         with pytest.raises(HTTPException) as exc:
-            v1_batch_update(MemoryBatchUpdateInput(memories=items), _auth=None)
+            v1_batch_update(MemoryBatchUpdateInput(memories=items), request=_REQ, auth=None)
         assert exc.value.status_code == 400
         assert "100" in exc.value.detail
 
     def test_item_missing_text_and_metadata_returns_400(self):
         items = [MemoryBatchUpdateItem(memory_id="m1")]
         with pytest.raises(HTTPException) as exc:
-            v1_batch_update(MemoryBatchUpdateInput(memories=items), _auth=None)
+            v1_batch_update(MemoryBatchUpdateInput(memories=items), request=_REQ, auth=None)
         assert exc.value.status_code == 400
         assert "m1" in exc.value.detail
 
@@ -1389,7 +1429,7 @@ class TestV1BatchUpdateRoute:
             MemoryBatchUpdateItem(memory_id="m2", text="b"),
             MemoryBatchUpdateItem(memory_id="m3", metadata={"k": "v"}),
         ]
-        result = v1_batch_update(MemoryBatchUpdateInput(memories=items), _auth=None)
+        result = v1_batch_update(MemoryBatchUpdateInput(memories=items), request=_REQ, auth=None)
         assert result == {"message": "Memories updated successfully, count: 2."}
 
     def test_all_valid_counts_successes(self, monkeypatch):
@@ -1400,7 +1440,7 @@ class TestV1BatchUpdateRoute:
             MemoryBatchUpdateItem(memory_id="m1", text="a"),
             MemoryBatchUpdateItem(memory_id="m2", metadata={"k": "v"}),
         ]
-        result = v1_batch_update(MemoryBatchUpdateInput(memories=items), _auth=None)
+        result = v1_batch_update(MemoryBatchUpdateInput(memories=items), request=_REQ, auth=None)
         assert result == {"message": "Memories updated successfully, count: 2."}
 
 
@@ -1420,7 +1460,7 @@ class TestV1BatchDeleteRoute:
     def test_too_many_returns_400(self):
         ids = [f"m{i}" for i in range(1001)]
         with pytest.raises(HTTPException) as exc:
-            v1_batch_delete(MemoryBatchDeleteInput(memory_ids=ids), _auth=None)
+            v1_batch_delete(MemoryBatchDeleteInput(memory_ids=ids), request=_REQ, auth=None)
         assert exc.value.status_code == 400
 
     def test_mixed_valid_and_not_found_counts_successes(self, monkeypatch):
@@ -1433,7 +1473,7 @@ class TestV1BatchDeleteRoute:
 
         mem.delete.side_effect = _delete
         self._patch_run(monkeypatch, mem)
-        result = v1_batch_delete(MemoryBatchDeleteInput(memory_ids=["m1", "m2", "m3"]), _auth=None)
+        result = v1_batch_delete(MemoryBatchDeleteInput(memory_ids=["m1", "m2", "m3"]), request=_REQ, auth=None)
         assert result == {"message": "Memories deleted successfully, count: 2."}
 
     def test_legacy_format_accepted(self, monkeypatch):
@@ -1441,7 +1481,7 @@ class TestV1BatchDeleteRoute:
         mem.delete.return_value = None
         self._patch_run(monkeypatch, mem)
         body = MemoryBatchDeleteLegacyInput(memories=[{"memory_id": "m1"}])
-        result = v1_batch_delete(body, _auth=None)
+        result = v1_batch_delete(body, request=_REQ, auth=None)
         assert result == {"message": "Memories deleted successfully, count: 1."}
 
 
@@ -1517,7 +1557,7 @@ class TestV1ListMemories:
 
         monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
 
-        result = v1_list_memories(request=MagicMock(), user_id="u1", auth=None)
+        result = v1_list_memories(request=_REQ, user_id="u1", auth=None)
 
         assert result == [{"id": "m1"}]
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"})
@@ -1569,6 +1609,7 @@ class TestSyntheticEvents:
             MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=None,
         )
 
@@ -1600,12 +1641,14 @@ class TestSyntheticEvents:
             MemoryAddInputV3(messages=[{"role": "user", "content": "first"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=None,
         )
         v3_add_memory(
             MemoryAddInputV3(messages=[{"role": "user", "content": "second"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=None,
         )
         self._run_background_tasks(tasks)
@@ -1646,6 +1689,7 @@ class TestSyntheticEvents:
             MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=owner,
         )
 
@@ -1673,12 +1717,14 @@ class TestSyntheticEvents:
             MemoryAddInputV3(messages=[{"role": "user", "content": "u1"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=user1,
         )
         v3_add_memory(
             MemoryAddInputV3(messages=[{"role": "user", "content": "u2"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=user2,
         )
         self._run_background_tasks(tasks)
@@ -1710,6 +1756,7 @@ class TestSyntheticEvents:
             ),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=None,
         )
 
@@ -1742,6 +1789,7 @@ class TestSyntheticEvents:
                 ),
                 background_tasks=BackgroundTasks(),
                 meta=RequestMeta(),
+                request=_REQ,
                 auth=None,
             )
 
@@ -1760,6 +1808,7 @@ class TestSyntheticEvents:
             MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=None,
         )
 
@@ -1782,6 +1831,7 @@ class TestSyntheticEvents:
             MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1", infer=True),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=None,
         )
 
@@ -1813,6 +1863,7 @@ class TestSyntheticEvents:
             ),
             background_tasks=tasks,
             meta=RequestMeta(),
+            request=_REQ,
             auth=None,
         )
 
@@ -1859,7 +1910,7 @@ class TestMemoryUpdateInputExpirationDate:
             _run_memory_write_for_memory_id,
         )
 
-        result = v1_update_memory("mem-1", MemoryUpdateInput(expiration_date=None), _auth=None)
+        result = v1_update_memory("mem-1", MemoryUpdateInput(expiration_date=None), request=_REQ, auth=None)
 
         assert result == {"message": "updated"}
         # Only expiration_date is forwarded; text/metadata are omitted (None) so
@@ -1877,7 +1928,7 @@ class TestMemoryUpdateInputExpirationDate:
             "server.routers.compat.run_memory_write_for_memory_id",
             _run_memory_write_for_memory_id,
         )
-        v1_update_memory("mem-1", MemoryUpdateInput(text="new", expiration_date="2099-12-31"), _auth=None)
+        v1_update_memory("mem-1", MemoryUpdateInput(text="new", expiration_date="2099-12-31"), request=_REQ, auth=None)
         mem.update.assert_called_once_with(memory_id="mem-1", data="new", expiration_date="2099-12-31")
 
     def test_rejects_unknown_field(self):
@@ -2000,7 +2051,7 @@ class TestV1ListMemoriesShowExpired:
 
         monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
 
-        v1_list_memories(request=MagicMock(), user_id="u1", show_expired=True, auth=None)
+        v1_list_memories(request=_REQ, user_id="u1", show_expired=True, auth=None)
 
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True)
 
@@ -2013,30 +2064,29 @@ class TestV1ListMemoriesShowExpired:
 
         monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
 
-        v1_list_memories(request=MagicMock(), user_id="u1", show_expired=False, auth=None)
+        v1_list_memories(request=_REQ, user_id="u1", show_expired=False, auth=None)
 
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=False)
 
-    def test_admin_path_passes_show_expired_to_list_all_memories(self, monkeypatch):
-        list_all = MagicMock(return_value={"results": [{"id": "m1"}]})
+    def test_show_expired_true_forwarded_to_get_all(self, monkeypatch):
+        mem = MagicMock()
+        mem.get_all.return_value = [{"id": "m1"}]
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
 
-        monkeypatch.setattr("server.routers.compat.ensure_admin", lambda request, auth: None)
-        monkeypatch.setattr("server.routers.compat.list_all_memories", list_all)
+        v1_list_memories(request=_REQ, show_expired=True, auth=None)
 
-        result = v1_list_memories(request=MagicMock(), show_expired=True, auth=MagicMock())
+        _, kwargs = mem.get_all.call_args
+        assert kwargs.get("show_expired") is True
 
-        assert result == [{"id": "m1"}]
-        list_all.assert_called_once_with(limit=None, show_expired=True)
+    def test_show_expired_omitted_not_forwarded_to_get_all(self, monkeypatch):
+        mem = MagicMock()
+        mem.get_all.return_value = [{"id": "m1"}]
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
 
-    def test_admin_path_default_hides_expired(self, monkeypatch):
-        list_all = MagicMock(return_value={"results": [{"id": "m1"}]})
+        v1_list_memories(request=_REQ, auth=None)
 
-        monkeypatch.setattr("server.routers.compat.ensure_admin", lambda request, auth: None)
-        monkeypatch.setattr("server.routers.compat.list_all_memories", list_all)
-
-        v1_list_memories(request=MagicMock(), auth=MagicMock())
-
-        list_all.assert_called_once_with(limit=None, show_expired=None)
+        _, kwargs = mem.get_all.call_args
+        assert "show_expired" not in kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -2061,7 +2111,7 @@ class TestV3GetAllMemoriesShowExpired:
 
         from server.routers.compat import v3_get_all_memories
 
-        v3_get_all_memories(request=req, body=body, page=1, page_size=10, _auth=None)
+        v3_get_all_memories(request=req, body=body, page=1, page_size=10, auth=None)
 
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True)
 
@@ -2082,7 +2132,7 @@ class TestV3SearchMemoriesShowExpired:
         monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
 
         body = MemorySearchInputV3(query="hello", user_id="u1", show_expired=True)
-        v3_search_memories(body, _auth=None)
+        v3_search_memories(body, request=_REQ, auth=None)
 
         assert mem.search.call_args.kwargs["show_expired"] is True
 
@@ -2096,7 +2146,7 @@ class TestV3SearchMemoriesShowExpired:
         monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
 
         body = MemorySearchInputV3(query="hello", user_id="u1")
-        v3_search_memories(body, _auth=None)
+        v3_search_memories(body, request=_REQ, auth=None)
 
         assert "show_expired" not in mem.search.call_args.kwargs
 
@@ -2123,7 +2173,7 @@ class TestV2ListMemoriesShowExpired:
 
         from server.routers.compat import v2_list_memories
 
-        v2_list_memories(request=req, body=body, page=1, page_size=10, _auth=None)
+        v2_list_memories(request=req, body=body, page=1, page_size=10, auth=None)
 
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True)
 
@@ -2147,7 +2197,7 @@ class TestV2SearchMemoriesShowExpired:
 
         from server.routers.compat import v2_search_memories
 
-        v2_search_memories(body, _auth=None)
+        v2_search_memories(body, request=_REQ, auth=None)
 
         assert mem.search.call_args.kwargs["show_expired"] is True
 
@@ -2171,7 +2221,7 @@ class TestV1SearchMemoriesShowExpired:
 
         from server.routers.compat import v1_search_memories
 
-        v1_search_memories(body, _auth=None)
+        v1_search_memories(body, request=_REQ, auth=None)
 
         assert mem.search.call_args.kwargs["show_expired"] is True
 
@@ -2193,6 +2243,6 @@ class TestV1GetEntityMemoriesShowExpired:
 
         from server.routers.compat import v1_get_entity_memories
 
-        v1_get_entity_memories(entity_type="user", entity_id="alice", show_expired=True, _auth=None)
+        v1_get_entity_memories(entity_type="user", entity_id="alice", request=_REQ, show_expired=True, auth=None)
 
         mem.get_all.assert_called_once_with(filters={"user_id": "alice"}, show_expired=True)

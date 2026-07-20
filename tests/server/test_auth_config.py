@@ -242,7 +242,7 @@ class TestGetAuthConfig:
         _reload_module()
 
         # Reset cache
-        _ac.get_auth_config.cache_clear()
+        _ac.reload_auth_config()
 
         first = _ac.get_auth_config()
         second = _ac.get_auth_config()
@@ -255,6 +255,6 @@ class TestGetAuthConfig:
         monkeypatch.delenv("AUTH_CONFIG_PATH", raising=False)
         _reload_module()
 
-        _ac.get_auth_config.cache_clear()
+        _ac.reload_auth_config()
         cfg = _ac.get_auth_config()
         assert isinstance(cfg, _ac.AuthConfig)

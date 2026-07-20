@@ -1,4 +1,4 @@
-"""Comprehensive E2E tests for REST API server authentication.
+"""E2E tests for REST API server authentication.
 
 Tests the actual server/main.py app through FastAPI's TestClient (full ASGI
 round-trip) covering:
@@ -6,12 +6,14 @@ round-trip) covering:
   - Auth enabled mode (ADMIN_API_KEY set)
   - Edge cases: empty keys, near-miss keys, timing-safe comparison, header
     casing, response headers, startup logging, and full CRUD flows through auth.
+
+These are integration tests against the real server DB (Postgres in CI): the
+auth-enabled path creates real User + APIKey rows, and the auth-disabled path
+resolves the default user from the DB. The mem0 Memory backend is mocked.
 """
 
-import importlib
 import logging
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,40 +21,59 @@ pytest.importorskip("fastapi", reason="fastapi not installed")
 
 from fastapi.testclient import TestClient
 
+from auth_config import AuthConfig
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def _mock_memory():
-    """Patch Memory.from_config so the server imports without a real backend."""
-    mock_instance = MagicMock()
-    # Set up return values so CRUD endpoints return realistic responses
-    mock_instance.get.return_value = {"id": "mem-1", "memory": "test memory", "user_id": "alice"}
-    mock_instance.get_all.return_value = [
+def _mock_memory(memory_patch):
+    """Configure the mocked Memory with realistic CRUD return values."""
+    memory_patch.get.return_value = {"id": "mem-1", "memory": "test memory", "user_id": "alice"}
+    memory_patch.get_all.return_value = [
         {"id": "mem-1", "memory": "test memory", "user_id": "alice"},
     ]
-    mock_instance.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "test"}]}
-    mock_instance.search.return_value = [{"id": "mem-1", "memory": "test", "score": 0.9}]
-    mock_instance.update.return_value = {"message": "Memory updated"}
-    mock_instance.history.return_value = [{"id": "mem-1", "old_memory": "a", "new_memory": "b"}]
-    mock_instance.delete.return_value = None
-    mock_instance.delete_all.return_value = {"message": "Memories deleted successfully!"}
-    mock_instance.reset.return_value = None
-
-    with patch.dict(os.environ, {"OPENAI_API_KEY": "fake-key"}):
-        with patch("mem0.Memory.from_config", return_value=mock_instance):
-            yield mock_instance
+    memory_patch.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "test"}]}
+    memory_patch.search.return_value = [{"id": "mem-1", "memory": "test", "score": 0.9}]
+    memory_patch.update.return_value = {"message": "Memory updated"}
+    memory_patch.history.return_value = [{"id": "mem-1", "old_memory": "a", "new_memory": "b"}]
+    memory_patch.delete.return_value = None
+    memory_patch.delete_all.return_value = {"message": "Memories deleted successfully!"}
+    memory_patch.reset.return_value = None
+    yield memory_patch
 
 
-def _load_app(env_overrides: dict):
-    """Reload server/main.py with the given environment and return the FastAPI app."""
-    import main as server_main
+@pytest.fixture
+def user_api_key():
+    """Create a real dashboard admin + APIKey in the test DB; yield the full key.
 
-    with patch.dict(os.environ, env_overrides, clear=False):
-        importlib.reload(server_main)
-    return server_main.app
+    ADMIN_API_KEY is the bootstrap (read-only) principal under the new auth
+    model, so memory write endpoints need a real user's key. The APIKey row is
+    deleted on teardown to avoid accumulation across tests. (The admin User is
+    reused — a partial unique index enforces at-most-one admin row.)"""
+    import uuid
+    from sqlalchemy import delete, select
+    from auth import generate_api_key
+    from db import SessionLocal
+    from models import APIKey, User
+
+    with SessionLocal() as sess:
+        admin = sess.scalar(select(User).where(User.role == "admin").order_by(User.created_at.asc()))
+        if admin is None:
+            admin = User(name="auth-test", email=f"auth-{uuid.uuid4().hex[:8]}@example.com", role="admin")
+            sess.add(admin)
+            sess.flush()
+        full, prefix, key_hash = generate_api_key()
+        sess.add(APIKey(key_prefix=prefix, key_hash=key_hash, label="auth-test", created_by=admin.id))
+        sess.commit()
+
+    yield full
+
+    with SessionLocal() as sess:
+        sess.execute(delete(APIKey).where(APIKey.key_prefix == prefix))
+        sess.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +84,8 @@ class TestAuthDisabled:
     """All endpoints should be freely accessible when ADMIN_API_KEY is empty."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, _mock_memory):
-        self.app = _load_app({"ADMIN_API_KEY": ""})
+    def _setup(self, _mock_memory, load_app):
+        self.app = load_app({"ADMIN_API_KEY": ""})
         self.client = TestClient(self.app)
         self.mock = _mock_memory
 
@@ -118,12 +139,13 @@ class TestAuthDisabled:
         resp = self.client.post("/configure", json={"version": "v1.1"})
         assert resp.status_code == 200
 
-    def test_supplying_key_still_works_when_auth_disabled(self):
-        """A client that sends X-API-Key should not be penalized when auth is off."""
+    def test_unrecognized_key_rejected_even_when_auth_disabled(self):
+        """When auth is disabled, an unrecognized X-API-Key is still rejected —
+        verify_auth validates any supplied key rather than silently accepting it."""
         resp = self.client.get(
             "/memories/mem-1", headers={"X-API-Key": "some-random-key"}
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
     @pytest.mark.parametrize(
         "method,path",
@@ -155,10 +177,19 @@ class TestAuthEnabled:
     API_KEY = "test-secret-key-12345"
 
     @pytest.fixture(autouse=True)
-    def _setup(self, _mock_memory):
-        self.app = _load_app({"ADMIN_API_KEY": self.API_KEY})
+    def _setup(self, _mock_memory, load_app, user_api_key):
+        self.app = load_app({"ADMIN_API_KEY": self.API_KEY})
         self.client = TestClient(self.app)
         self.mock = _mock_memory
+        # ADMIN_API_KEY is bootstrap (read-only); a real user key is needed for
+        # write endpoints (create/update/delete memory).
+        self.USER_API_KEY = user_api_key
+
+    def _authed_real(self, method, path, **kwargs):
+        """Send a request authenticated as the real dashboard user (write access)."""
+        headers = kwargs.pop("headers", {})
+        headers["X-API-Key"] = self.USER_API_KEY
+        return self.client.request(method, path, headers=headers, **kwargs)
 
     # --- Rejection cases ---
 
@@ -184,7 +215,10 @@ class TestAuthEnabled:
 
     def test_401_includes_www_authenticate_header(self):
         resp = self.client.get("/memories/mem-1")
-        assert resp.headers.get("www-authenticate") == "ApiKey"
+        # Both accepted schemes are advertised so the client knows which
+        # challenge to answer (Bearer JWT or X-API-Key).
+        challenge = resp.headers.get("www-authenticate", "")
+        assert "Bearer" in challenge and "ApiKey" in challenge
 
     def test_near_miss_key_rejected(self):
         """Key that differs by one character should be rejected."""
@@ -270,7 +304,7 @@ class TestAuthEnabled:
         assert resp.status_code == 200
 
     def test_create_memory_with_key(self):
-        resp = self._authed("POST", "/memories", json={
+        resp = self._authed_real("POST", "/memories", json={
             "messages": [{"role": "user", "content": "I like pizza"}],
             "user_id": "alice",
         })
@@ -283,7 +317,7 @@ class TestAuthEnabled:
         assert resp.status_code == 200
 
     def test_update_memory_with_key(self):
-        resp = self._authed("PUT", "/memories/mem-1", json={"text": "updated"})
+        resp = self._authed_real("PUT", "/memories/mem-1", json={"text": "updated"})
         assert resp.status_code == 200
 
     def test_history_with_key(self):
@@ -291,11 +325,11 @@ class TestAuthEnabled:
         assert resp.status_code == 200
 
     def test_delete_memory_with_key(self):
-        resp = self._authed("DELETE", "/memories/mem-1")
+        resp = self._authed_real("DELETE", "/memories/mem-1")
         assert resp.status_code == 200
 
     def test_delete_all_with_key(self):
-        resp = self._authed("DELETE", "/memories", params={"user_id": "alice"})
+        resp = self._authed_real("DELETE", "/memories", params={"user_id": "alice"})
         assert resp.status_code == 200
 
     def test_reset_with_key(self):
@@ -318,10 +352,13 @@ class TestAuthenticatedCRUDFlow:
     API_KEY = "flow-test-key-99"
 
     @pytest.fixture(autouse=True)
-    def _setup(self, _mock_memory):
-        self.app = _load_app({"ADMIN_API_KEY": self.API_KEY})
+    def _setup(self, _mock_memory, load_app, user_api_key):
+        self.app = load_app({"ADMIN_API_KEY": self.API_KEY})
         self.client = TestClient(self.app)
         self.mock = _mock_memory
+        # ADMIN_API_KEY is bootstrap (read-only); the full CRUD flow mutates
+        # memories, so authenticate as a real dashboard user.
+        self.API_KEY = user_api_key
 
     def _authed(self, method, path, **kwargs):
         headers = kwargs.pop("headers", {})
@@ -340,12 +377,14 @@ class TestAuthenticatedCRUDFlow:
         # 2. Read single
         resp = self._authed("GET", "/memories/mem-1")
         assert resp.status_code == 200
-        self.mock.get.assert_called_once_with("mem-1")
+        # resolve_memory_entities also reads memory.get() to derive scope, so get
+        # is called more than once; assert on the last call instead of once-only.
+        self.mock.get.assert_called_with("mem-1")
 
         # 3. Read all
         resp = self._authed("GET", "/memories", params={"user_id": "alice"})
         assert resp.status_code == 200
-        self.mock.get_all.assert_called_once_with(user_id="alice")
+        self.mock.get_all.assert_called_once_with(filters={"user_id": "alice"}, show_expired=False)
 
         # 4. Search
         resp = self._authed("POST", "/search", json={"query": "pizza", "user_id": "alice"})
@@ -409,13 +448,16 @@ class TestAuthEdgeCases:
     """Boundary conditions and unusual inputs."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, _mock_memory):
+    def _setup(self, _mock_memory, load_app):
         self.mock = _mock_memory
+        # Stash the load_app factory so the per-test methods below can build
+        # their own apps without each requesting the fixture explicitly.
+        self.load_app = load_app
 
     def test_very_long_api_key(self):
         """Server should handle a very long key without crashing."""
         long_key = "k" * 4096
-        app = _load_app({"ADMIN_API_KEY": long_key})
+        app = self.load_app({"ADMIN_API_KEY": long_key})
         client = TestClient(app)
         resp = client.get("/memories/mem-1", headers={"X-API-Key": long_key})
         assert resp.status_code == 200
@@ -423,7 +465,7 @@ class TestAuthEdgeCases:
     def test_special_characters_in_api_key(self):
         """Keys with special ASCII characters should work."""
         special_key = "sk-!@#$%^&*()_+-=[]{}|;:',.<>?/~`"
-        app = _load_app({"ADMIN_API_KEY": special_key})
+        app = self.load_app({"ADMIN_API_KEY": special_key})
         client = TestClient(app)
 
         resp = client.get("/memories/mem-1", headers={"X-API-Key": special_key})
@@ -432,32 +474,28 @@ class TestAuthEdgeCases:
         resp = client.get("/memories/mem-1", headers={"X-API-Key": "wrong"})
         assert resp.status_code == 401
 
-    def test_key_env_var_not_present_at_all(self):
-        """When the env var is completely absent, auth should be disabled."""
-        import main as server_main
-        env = os.environ.copy()
-        env.pop("ADMIN_API_KEY", None)
-        with patch.dict(os.environ, env, clear=True):
-            importlib.reload(server_main)
-        client = TestClient(server_main.app)
+    def test_empty_admin_api_key_disables_auth(self):
+        """An empty ADMIN_API_KEY disables auth (no key validated, request passes)."""
+        app = self.load_app({"ADMIN_API_KEY": ""})  # empty ADMIN_API_KEY => disabled mode
+        client = TestClient(app)
         resp = client.get("/memories/mem-1")
         assert resp.status_code != 401
 
     def test_switching_from_enabled_to_disabled(self):
         """Simulates a server restart with auth toggled off."""
         # First: auth enabled
-        app1 = _load_app({"ADMIN_API_KEY": "secret"})
+        app1 = self.load_app({"ADMIN_API_KEY": "secret"})
         c1 = TestClient(app1)
         assert c1.get("/memories/mem-1").status_code == 401
 
         # Then: auth disabled
-        app2 = _load_app({"ADMIN_API_KEY": ""})
+        app2 = self.load_app({"ADMIN_API_KEY": ""})
         c2 = TestClient(app2)
         assert c2.get("/memories/mem-1").status_code != 401
 
     def test_openapi_schema_accessible_without_key(self):
         """The /docs and /openapi.json endpoints should always be reachable."""
-        app = _load_app({"ADMIN_API_KEY": "secret"})
+        app = self.load_app({"ADMIN_API_KEY": "secret"})
         client = TestClient(app)
 
         resp = client.get("/openapi.json")
@@ -470,7 +508,7 @@ class TestAuthEdgeCases:
 
     def test_openapi_schema_documents_auth(self):
         """The OpenAPI schema should mention authentication."""
-        app = _load_app({"ADMIN_API_KEY": "secret"})
+        app = self.load_app({"ADMIN_API_KEY": "secret"})
         client = TestClient(app)
         schema = client.get("/openapi.json").json()
         assert "Authentication" in schema.get("info", {}).get("description", "")
@@ -481,26 +519,75 @@ class TestAuthEdgeCases:
 # ---------------------------------------------------------------------------
 
 class TestStartupLogging:
-    """Verify the server emits the correct log messages at import time."""
+    """Auth config is validated/logged at app startup (lifespan), not import.
+
+    The validator is a plain module-level function (``main._validate_auth_config``)
+    that reads ``get_auth_config()`` live, so these tests unit-test it directly by
+    patching the config — no import-reload, no env gymnastics. One wiring test
+    confirms lifespan actually calls it.
+    """
 
     @pytest.fixture(autouse=True)
     def _setup(self, _mock_memory):
+        # Ensures ``main`` is importable (initialize_state runs under the mocked
+        # Memory.from_config) even when this class runs in isolation.
         pass
 
-    def test_warning_when_auth_disabled(self, caplog):
-        with caplog.at_level(logging.WARNING):
-            _load_app({"ADMIN_API_KEY": ""})
-        assert any("UNSECURED" in r.message for r in caplog.records)
+    def _validator(self):
+        from server import main
 
-    def test_info_when_auth_enabled(self, caplog):
+        return main._validate_auth_config()
+
+    def test_warning_when_auth_disabled(self, caplog, monkeypatch):
+        from server import main
+
+        monkeypatch.setattr(main, "get_auth_config", lambda: AuthConfig(auth_disabled=True, jwt_secret="x"))
+        with caplog.at_level(logging.WARNING):
+            self._validator()
+        assert any("Protected endpoints are open" in r.message for r in caplog.records)
+
+    def test_runtime_error_when_enabled_without_jwt_secret(self, monkeypatch):
+        from server import main
+
+        monkeypatch.setattr(main, "get_auth_config", lambda: AuthConfig(auth_disabled=False, jwt_secret=None))
+        with pytest.raises(RuntimeError, match="JWT_SECRET is required"):
+            self._validator()
+
+    def test_info_when_auth_enabled(self, caplog, monkeypatch):
+        # "Auth config resolved" is logged by load_auth_config on resolution;
+        # clear the cache so the next read re-resolves under the env set above.
+        monkeypatch.setenv("ADMIN_API_KEY", "a-long-enough-secret-key")
+        monkeypatch.setenv("AUTH_DISABLED", "false")
+        import auth_config
+
+        auth_config.reload_auth_config()
         with caplog.at_level(logging.INFO):
-            _load_app({"ADMIN_API_KEY": "a-long-enough-secret-key"})
-        assert any("authentication enabled" in r.message for r in caplog.records)
+            auth_config.get_auth_config()
+        assert any("Auth config resolved" in r.message for r in caplog.records)
 
-    def test_warning_when_key_too_short(self, caplog):
+    def test_warning_when_key_too_short(self, caplog, monkeypatch):
+        from server import main
+
+        monkeypatch.setattr(
+            main, "get_auth_config", lambda: AuthConfig(auth_disabled=False, jwt_secret="x", admin_api_key="short")
+        )
         with caplog.at_level(logging.WARNING):
-            _load_app({"ADMIN_API_KEY": "short"})
+            self._validator()
         assert any("shorter than" in r.message for r in caplog.records)
+
+    def test_lifespan_runs_auth_validation(self, monkeypatch, load_app):
+        """Entering the app (lifespan startup) triggers the auth validator."""
+        app = load_app({"ADMIN_API_KEY": ""})
+        from server import main
+
+        # Patch AFTER load_app: load_app reloads main, which re-binds the
+        # validator to the freshly defined function and would discard a patch
+        # applied before the reload.
+        calls = []
+        monkeypatch.setattr(main, "_validate_auth_config", lambda: calls.append(1))
+        with TestClient(app):
+            pass
+        assert calls == [1]
 
 
 # ---------------------------------------------------------------------------

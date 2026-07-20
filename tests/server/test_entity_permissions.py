@@ -1210,13 +1210,38 @@ class TestRewriteQueryFilter:
             ep._rewrite_query_filter(deep, user.id, db)
         assert exc.value.status_code == 400
 
-    def test_no_rewrite_when_no_app_id(self, db, make_user):
-        """Pure personal query should be unchanged."""
+    def test_agent_id_leaf_injects_caller_user_id(self, db, make_user):
+        """A bare agent_id leaf is scoped to the caller's namespace — agent_id is
+        per-parent-user, not global, so without an injected user_id the query
+        would leak every user's same-named agent. The injection is per-leaf and
+        independent of any sibling user_id in the same AND."""
         user = make_user()
         result = ep._rewrite_query_filter(
-            {"AND": [{"user_id": "A"}, {"agent_id": "riley"}]}, user.id, db
+            {"AND": [{"user_id": str(user.id)}, {"agent_id": "riley"}]}, user.id, db
         )
-        assert result == {"AND": [{"user_id": "A"}, {"agent_id": "riley"}]}
+        assert result == {
+            "AND": [
+                {"user_id": str(user.id)},
+                {"agent_id": "riley", "user_id": str(user.id)},
+            ]
+        }
+
+    def test_agent_id_leaf_with_foreign_user_id_sibling_is_contradictory(self, db, make_user):
+        """When a sibling user_id names a *different* user than the caller, the
+        per-leaf injection yields user_id=<foreign> AND user_id=<caller> — a
+        contradictory filter that matches nothing. This is the security model
+        refusing a cross-user agent query, not a bug: agent_id is pinned to the
+        caller's namespace regardless of what the caller claims via user_id."""
+        user = make_user()
+        result = ep._rewrite_query_filter(
+            {"AND": [{"user_id": "someone-else"}, {"agent_id": "riley"}]}, user.id, db
+        )
+        assert result == {
+            "AND": [
+                {"user_id": "someone-else"},
+                {"agent_id": "riley", "user_id": str(user.id)},
+            ]
+        }
 
     def test_cleanup_empty_operator_keeps_sibling_keys(self, db, make_user):
         """An empty AND/OR after cleanup must not discard sibling keys

@@ -9,15 +9,12 @@ bypass on read/search.
 The mem0 Memory instance is mocked; the relational DB (entities table) is the
 real server DB (Postgres in the Docker test env). Multi-user (JWT) scenarios are
 intentionally out of scope here — they are covered by the SQLite unit test, and
-the shared ``tests/server/conftest.py`` leaves ``auth`` as a MagicMock (suitable
-for the admin_api_key path this file exercises, but not for JWT auth).
+this file exercises only the admin_api_key identity (no JWT auth).
 
 Run in the server Docker env: ``pytest tests/server/test_entity_permissions_api.py``.
 """
 
-import importlib
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -42,14 +39,13 @@ API_KEY = "test-secret-key-12345"
 
 
 @pytest.fixture
-def _mock_memory():
-    """MagicMock Memory instance with realistic return values.
+def _mock_memory(memory_patch):
+    """Configure the mocked Memory.
 
     ``vector_store.list`` returns rows carrying payloads so ``POST /entities/recount``
     surfaces the unclaimed namespace.
     """
-    mock = MagicMock()
-    mock.get.return_value = {
+    memory_patch.get.return_value = {
         "id": "mem-1",
         "memory": "test memory",
         "user_id": "alice",
@@ -57,46 +53,32 @@ def _mock_memory():
         "app_id": None,
         "run_id": None,
     }
-    mock.get_all.return_value = [{"id": "mem-1", "memory": "test memory", "user_id": "alice"}]
-    mock.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "test"}]}
-    mock.search.return_value = [{"id": "mem-1", "memory": "test memory", "score": 0.9}]
-    mock.update.return_value = {"message": "Memory updated"}
-    mock.delete.return_value = None
-    mock.delete_all.return_value = {"message": "Memories deleted successfully!"}
-    mock.vector_store.list.return_value = [_PayloadRow({"user_id": "alice", "data": "test"})]
-    with patch.dict(os.environ, {"OPENAI_API_KEY": "fake-key"}):
-        with patch("mem0.Memory.from_config", return_value=mock):
-            yield mock
-
-
-def _load_app(env_overrides):
-    """Reload server/main.py with the given env and return the FastAPI app."""
-    import main as server_main
-
-    with patch.dict(os.environ, env_overrides, clear=False):
-        importlib.reload(server_main)
-    return server_main.app
+    memory_patch.get_all.return_value = [{"id": "mem-1", "memory": "test memory", "user_id": "alice"}]
+    memory_patch.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "test"}]}
+    memory_patch.search.return_value = [{"id": "mem-1", "memory": "test memory", "score": 0.9}]
+    memory_patch.update.return_value = {"message": "Memory updated"}
+    memory_patch.delete.return_value = None
+    memory_patch.delete_all.return_value = {"message": "Memories deleted successfully!"}
+    memory_patch.vector_store.list.return_value = [_PayloadRow({"user_id": "alice", "data": "test"})]
+    yield memory_patch
 
 
 def _clean_entities():
     """Delete entity_permissions + entities rows (isolation on the shared Postgres)."""
-    session = SessionLocal()
-    try:
+    with SessionLocal() as session:
         session.execute(delete(EntityPermission))
         session.execute(delete(Entity))
         session.commit()
-    finally:
-        session.close()
 
 
 class TestBootstrapEntityPermissions:
     """admin_api_key (bootstrap) path: unclaimed writes, recount, admin bypass."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, _mock_memory):
+    def _setup(self, _mock_memory, load_app):
         _clean_entities()
         self.mock = _mock_memory
-        self.app = _load_app({"ADMIN_API_KEY": API_KEY, "JWT_SECRET": "test-secret"})
+        self.app = load_app({"ADMIN_API_KEY": API_KEY})
         self.client = TestClient(self.app)
         yield
         _clean_entities()
@@ -148,14 +130,13 @@ class TestBootstrapEntityPermissions:
         The universal bootstrap-400 on POST /entities was relaxed to type-aware:
         bootstrap can create `app` (with a real owner_id) but not `user`.
         """
-        session = SessionLocal()
-        session.execute(delete(User).where(User.email == "app-owner@test.local"))
-        owner = User(name="app-owner", email="app-owner@test.local", role="member")
-        session.add(owner)
-        session.commit()
-        session.refresh(owner)
-        owner_id = str(owner.id)
-        session.close()
+        with SessionLocal() as session:
+            session.execute(delete(User).where(User.email == "app-owner@test.local"))
+            owner = User(name="app-owner", email="app-owner@test.local", role="member")
+            session.add(owner)
+            session.commit()
+            session.refresh(owner)
+            owner_id = str(owner.id)
 
         try:
             resp = self.client.post(
@@ -170,13 +151,10 @@ class TestBootstrapEntityPermissions:
             assert body["owner"]["id"] == owner_id
         finally:
             # entities are wiped by the next _setup, but the user is not — clean it.
-            session = SessionLocal()
-            try:
+            with SessionLocal() as session:
                 session.execute(delete(Entity).where(Entity.id == "myapp", Entity.type == "app"))
                 session.execute(delete(User).where(User.email == "app-owner@test.local"))
                 session.commit()
-            finally:
-                session.close()
 
     def test_bootstrap_admin_bypass_get_memory(self):
         """admin_api_key can read any memory (admin bypass), incl. unclaimed scopes."""
@@ -206,24 +184,20 @@ class TestBootstrapEntityPermissions:
         The caller is responsible for cleaning up both the entities and the user
         in a ``finally`` block — ``_clean_entities`` only wipes the entities table.
         """
-        session = SessionLocal()
-        session.execute(delete(User).where(User.email == email))
-        owner = User(name="app-owner", email=email, role="member")
-        session.add(owner)
-        session.commit()
-        session.refresh(owner)
-        owner_id = str(owner.id)
-        session.close()
+        with SessionLocal() as session:
+            session.execute(delete(User).where(User.email == email))
+            owner = User(name="app-owner", email=email, role="member")
+            session.add(owner)
+            session.commit()
+            session.refresh(owner)
+            owner_id = str(owner.id)
         return owner_id
 
     def _cleanup_owner_entities(self, entity_ids, email="app-owner@test.local"):
-        session = SessionLocal()
-        try:
+        with SessionLocal() as session:
             session.execute(delete(Entity).where(Entity.id.in_(entity_ids)))
             session.execute(delete(User).where(User.email == email))
             session.commit()
-        finally:
-            session.close()
 
     def test_list_entities_returns_paginated_envelope(self):
         """GET /entities returns {count,next,previous,results}, not a bare array."""
@@ -268,7 +242,7 @@ class TestBootstrapEntityPermissions:
         patched, so the operator object is never read and any UUID triggers
         the guard — no DB row is needed.
         """
-        import routers.entities as entities_router
+        import server.routers.entities as entities_router
 
         view_as_id = "00000000-0000-0000-0000-000000000001"
         with patch.object(entities_router, "resolve_operator", return_value=(object(), False)):

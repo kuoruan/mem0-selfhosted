@@ -6,10 +6,6 @@ including top_k, threshold, infer, memory_type, and prompt — which were
 previously silently dropped by Pydantic v2's default extra='ignore' behavior.
 """
 
-import importlib
-import os
-from unittest.mock import MagicMock, patch
-
 import pytest
 
 from mem0.exceptions import ValidationError as Mem0ValidationError
@@ -23,31 +19,26 @@ from fastapi.testclient import TestClient
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def _mock_memory():
-    """Patch Memory.from_config so the server imports without a real backend."""
-    mock_instance = MagicMock()
-    mock_instance.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "test"}]}
-    mock_instance.search.return_value = [{"id": "mem-1", "memory": "test", "score": 0.9}]
-    mock_instance.get.return_value = {"id": "mem-1", "memory": "test memory"}
-    mock_instance.get_all.return_value = [{"id": "mem-1", "memory": "test memory"}]
-    mock_instance.update.return_value = {"message": "Memory updated"}
-    mock_instance.history.return_value = [{"id": "mem-1", "old_memory": "a", "new_memory": "b"}]
-    mock_instance.delete.return_value = None
-    mock_instance.delete_all.return_value = {"message": "Memories deleted"}
-    mock_instance.reset.return_value = None
-
-    with patch.dict(os.environ, {"OPENAI_API_KEY": "fake-key", "ADMIN_API_KEY": ""}):
-        with patch("mem0.Memory.from_config", return_value=mock_instance):
-            yield mock_instance
+def _mock_memory(memory_patch):
+    """Configure the mocked Memory with realistic return values."""
+    memory_patch.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "test"}]}
+    memory_patch.search.return_value = [{"id": "mem-1", "memory": "test", "score": 0.9}]
+    memory_patch.get.return_value = {"id": "mem-1", "memory": "test memory"}
+    memory_patch.get_all.return_value = [{"id": "mem-1", "memory": "test memory"}]
+    memory_patch.update.return_value = {"message": "Memory updated"}
+    memory_patch.history.return_value = [{"id": "mem-1", "old_memory": "a", "new_memory": "b"}]
+    memory_patch.delete.return_value = None
+    memory_patch.delete_all.return_value = {"message": "Memories deleted"}
+    memory_patch.reset.return_value = None
+    yield memory_patch
 
 
 @pytest.fixture
-def client(_mock_memory):
+def client(_mock_memory, load_app):
     """Return a TestClient wired to the server app with mocked Memory."""
-    import main as server_main
-    with patch.dict(os.environ, {"ADMIN_API_KEY": ""}):
-        importlib.reload(server_main)
-    return TestClient(server_main.app)
+    # AUTH_DISABLED=true (ADMIN_API_KEY empty); load_app clears the auth_config
+    # cache so this test sees the disabled config.
+    return TestClient(load_app({"ADMIN_API_KEY": ""}))
 
 
 @pytest.fixture
@@ -609,20 +600,20 @@ class TestGetMemories:
 
     def test_get_memories_entity_filters_routing(self, client, mock_memory):
         """
-        Issue #4955: Test that the GET /memories route correctly handles 
+        Issue #4955: Test that the GET /memories route correctly handles
         top-level entity parameters by mapping them to the filters dictionary
         instead of passing them as direct kwargs to get_all()
         """
         # Send a request with a valid top-level entity parameter
         response = client.get("/memories?user_id=test_routing_user")
-        
+
         # 1. Verify the endpoint doesn't crash with a 500 error
         assert response.status_code == 200
-        
+
         # 2. Verify the response is structured correctly
         data = response.json()
         assert isinstance(data, list)
-        
+
         # 3. Verify the core logic: the param was mapped to the filters dict!
         _, kwargs = mock_memory.get_all.call_args
         assert kwargs["filters"] == {"user_id": "test_routing_user"}
@@ -637,13 +628,13 @@ class TestGetMemories:
         assert kwargs["filters"] == {"user_id": "test_routing_user"}
         assert kwargs["top_k"] == 1000
 
-    def test_get_memories_admin_top_k_zero_not_defaulted(self, client, mock_memory):
-        mock_memory.vector_store.list.return_value = []
+    def test_get_memories_top_k_zero_not_defaulted(self, client, mock_memory):
+        mock_memory.get_all.return_value = []
 
         response = client.get("/memories?top_k=0")
 
         assert response.status_code == 200
-        _, kwargs = mock_memory.vector_store.list.call_args
+        _, kwargs = mock_memory.get_all.call_args
         assert kwargs["top_k"] == 0
 
     def test_get_memories_rejects_top_k_above_limit(self, client, mock_memory):
@@ -706,7 +697,9 @@ class TestSearchEntityIdMapping:
         resp = client.post("/search", json={"query": "food"})
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
-        assert kwargs["filters"] == {}
+        # AUTH_DISABLED resolves to the default user, whose user_id is injected
+        # as the search scope when no explicit entity ids / filters are given.
+        assert "user_id" in kwargs["filters"]
 
     def test_only_filters_no_entity_ids(self, client, mock_memory):
         resp = client.post("/search", json={

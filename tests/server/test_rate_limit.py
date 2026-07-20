@@ -11,39 +11,39 @@ import server.rate_limit as rate_limit
 
 
 # ---------------------------------------------------------------------------
-# _is_trusted_proxy – wildcard
+# is_trusted_proxy – wildcard
 # ---------------------------------------------------------------------------
 def test_is_trusted_proxy_wildcard_returns_true(monkeypatch):
     monkeypatch.setattr(rate_limit, "_ALWAYS_TRUST", True)
-    assert rate_limit._is_trusted_proxy("10.0.0.1") is True
-    assert rate_limit._is_trusted_proxy("192.168.1.1") is True
-    assert rate_limit._is_trusted_proxy("::1") is True
+    assert rate_limit.is_trusted_proxy("10.0.0.1") is True
+    assert rate_limit.is_trusted_proxy("192.168.1.1") is True
+    assert rate_limit.is_trusted_proxy("::1") is True
 
 
 # ---------------------------------------------------------------------------
-# _is_trusted_proxy – exact IP
+# is_trusted_proxy – exact IP
 # ---------------------------------------------------------------------------
 def test_is_trusted_proxy_exact_match(monkeypatch):
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "127.0.0.1,10.0.0.1")
     monkeypatch.setattr(rate_limit, "_trusted_exact", {"127.0.0.1", "10.0.0.1"})
     monkeypatch.setattr(rate_limit, "_trusted_nets", [])
 
-    assert rate_limit._is_trusted_proxy("127.0.0.1") is True
-    assert rate_limit._is_trusted_proxy("10.0.0.1") is True
-    assert rate_limit._is_trusted_proxy("10.0.0.2") is False
+    assert rate_limit.is_trusted_proxy("127.0.0.1") is True
+    assert rate_limit.is_trusted_proxy("10.0.0.1") is True
+    assert rate_limit.is_trusted_proxy("10.0.0.2") is False
 
 
 # ---------------------------------------------------------------------------
-# _is_trusted_proxy – CIDR
+# is_trusted_proxy – CIDR
 # ---------------------------------------------------------------------------
 def test_is_trusted_proxy_cidr_match(monkeypatch):
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     monkeypatch.setattr(rate_limit, "_trusted_exact", set())
     monkeypatch.setattr(rate_limit, "_trusted_nets", [ipaddress.ip_network("10.0.0.0/8")])
 
-    assert rate_limit._is_trusted_proxy("10.1.2.3") is True
-    assert rate_limit._is_trusted_proxy("10.255.255.255") is True
-    assert rate_limit._is_trusted_proxy("192.168.1.1") is False
+    assert rate_limit.is_trusted_proxy("10.1.2.3") is True
+    assert rate_limit.is_trusted_proxy("10.255.255.255") is True
+    assert rate_limit.is_trusted_proxy("192.168.1.1") is False
 
 
 def test_is_trusted_proxy_cidr_ipv6_match(monkeypatch):
@@ -51,43 +51,43 @@ def test_is_trusted_proxy_cidr_ipv6_match(monkeypatch):
     monkeypatch.setattr(rate_limit, "_trusted_exact", set())
     monkeypatch.setattr(rate_limit, "_trusted_nets", [ipaddress.ip_network("fd00::/8")])
 
-    assert rate_limit._is_trusted_proxy("fd12:3456::1") is True
-    assert rate_limit._is_trusted_proxy("2001:db8::1") is False
+    assert rate_limit.is_trusted_proxy("fd12:3456::1") is True
+    assert rate_limit.is_trusted_proxy("2001:db8::1") is False
 
 
 # ---------------------------------------------------------------------------
-# _is_trusted_proxy – exact takes priority over CIDR (short-circuits)
+# is_trusted_proxy – exact takes priority over CIDR (short-circuits)
 # ---------------------------------------------------------------------------
 def test_is_trusted_proxy_exact_before_cidr(monkeypatch):
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     monkeypatch.setattr(rate_limit, "_trusted_exact", {"10.0.0.1"})
     monkeypatch.setattr(rate_limit, "_trusted_nets", [ipaddress.ip_network("10.0.0.0/8")])
 
-    assert rate_limit._is_trusted_proxy("10.0.0.1") is True
-    assert rate_limit._is_trusted_proxy("10.0.0.2") is True  # via CIDR
+    assert rate_limit.is_trusted_proxy("10.0.0.1") is True
+    assert rate_limit.is_trusted_proxy("10.0.0.2") is True  # via CIDR
 
 
 # ---------------------------------------------------------------------------
-# _is_trusted_proxy – empty allow-list (no matches)
+# is_trusted_proxy – empty allow-list (no matches)
 # ---------------------------------------------------------------------------
 def test_is_trusted_proxy_empty_list(monkeypatch):
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "")
     monkeypatch.setattr(rate_limit, "_trusted_exact", set())
     monkeypatch.setattr(rate_limit, "_trusted_nets", [])
 
-    assert rate_limit._is_trusted_proxy("127.0.0.1") is False
-    assert rate_limit._is_trusted_proxy("10.0.0.1") is False
+    assert rate_limit.is_trusted_proxy("127.0.0.1") is False
+    assert rate_limit.is_trusted_proxy("10.0.0.1") is False
 
 
 # ---------------------------------------------------------------------------
-# _is_trusted_proxy – mixed address families (regression: C1 TypeError)
+# is_trusted_proxy – mixed address families (regression: C1 TypeError)
 # ---------------------------------------------------------------------------
 def test_is_trusted_proxy_ipv6_against_ipv4_nets_returns_false(monkeypatch):
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     monkeypatch.setattr(rate_limit, "_trusted_exact", set())
     monkeypatch.setattr(rate_limit, "_trusted_nets", [ipaddress.ip_network("10.0.0.0/8")])
 
-    assert rate_limit._is_trusted_proxy("::1") is False
+    assert rate_limit.is_trusted_proxy("::1") is False
 
 
 def test_is_trusted_proxy_ipv4_against_ipv6_nets_returns_false(monkeypatch):
@@ -95,7 +95,7 @@ def test_is_trusted_proxy_ipv4_against_ipv6_nets_returns_false(monkeypatch):
     monkeypatch.setattr(rate_limit, "_trusted_exact", set())
     monkeypatch.setattr(rate_limit, "_trusted_nets", [ipaddress.ip_network("fd00::/8")])
 
-    assert rate_limit._is_trusted_proxy("10.0.0.1") is False
+    assert rate_limit.is_trusted_proxy("10.0.0.1") is False
 
 
 def test_is_trusted_proxy_invalid_ip_returns_false(monkeypatch):
@@ -103,9 +103,9 @@ def test_is_trusted_proxy_invalid_ip_returns_false(monkeypatch):
     monkeypatch.setattr(rate_limit, "_trusted_exact", set())
     monkeypatch.setattr(rate_limit, "_trusted_nets", [ipaddress.ip_network("10.0.0.0/8")])
 
-    assert rate_limit._is_trusted_proxy("not-an-ip") is False
-    assert rate_limit._is_trusted_proxy(None) is False
-    assert rate_limit._is_trusted_proxy(123) is False
+    assert rate_limit.is_trusted_proxy("not-an-ip") is False
+    assert rate_limit.is_trusted_proxy(None) is False
+    assert rate_limit.is_trusted_proxy(123) is False
 
 
 def test_is_trusted_proxy_zone_index_stripped(monkeypatch):
@@ -113,7 +113,7 @@ def test_is_trusted_proxy_zone_index_stripped(monkeypatch):
     monkeypatch.setattr(rate_limit, "_trusted_exact", {"::1"})
     monkeypatch.setattr(rate_limit, "_trusted_nets", [])
 
-    assert rate_limit._is_trusted_proxy("::1%lo") is True
+    assert rate_limit.is_trusted_proxy("::1%lo") is True
 
 
 def test_is_trusted_proxy_port_and_brackets_stripped(monkeypatch):
@@ -121,9 +121,9 @@ def test_is_trusted_proxy_port_and_brackets_stripped(monkeypatch):
     monkeypatch.setattr(rate_limit, "_trusted_exact", {"127.0.0.1", "::1"})
     monkeypatch.setattr(rate_limit, "_trusted_nets", [])
 
-    assert rate_limit._is_trusted_proxy("127.0.0.1:8080") is True
-    assert rate_limit._is_trusted_proxy("[::1]") is True
-    assert rate_limit._is_trusted_proxy("[::1]:8080") is True
+    assert rate_limit.is_trusted_proxy("127.0.0.1:8080") is True
+    assert rate_limit.is_trusted_proxy("[::1]") is True
+    assert rate_limit.is_trusted_proxy("[::1]:8080") is True
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ def test_parse_ip_invalid_inputs():
 # ---------------------------------------------------------------------------
 def test_get_real_ip_no_proxy(monkeypatch):
     """When the remote IP is untrusted, X-Forwarded-For is ignored."""
-    monkeypatch.setattr(rate_limit, "_is_trusted_proxy", lambda ip: ip == "10.0.0.1")
+    monkeypatch.setattr(rate_limit, "is_trusted_proxy", lambda ip: ip == "10.0.0.1")
 
     mock_request = MagicMock()
     mock_request.headers.get.return_value = "1.2.3.4"  # x-forwarded-for
@@ -185,7 +185,7 @@ def test_get_real_ip_no_proxy(monkeypatch):
 def test_get_real_ip_trusted_proxy_returns_first_untrusted(monkeypatch):
     """Traverse X-Forwarded-For right-to-left, return the first untrusted host."""
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "10.0.0.1")
-    monkeypatch.setattr(rate_limit, "_is_trusted_proxy", lambda ip: str(ip) == "10.0.0.1")
+    monkeypatch.setattr(rate_limit, "is_trusted_proxy", lambda ip: str(ip) == "10.0.0.1")
 
     mock_request = MagicMock()
     mock_request.headers.get.return_value = "1.2.3.4, 6.7.8.9"
@@ -199,7 +199,7 @@ def test_get_real_ip_trusted_proxy_returns_first_untrusted(monkeypatch):
 def test_get_real_ip_all_hosts_trusted_returns_leftmost(monkeypatch):
     """When all X-Forwarded-For hosts are trusted, fall back to the leftmost."""
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "10.0.0.1,6.7.8.9,1.2.3.4")
-    monkeypatch.setattr(rate_limit, "_is_trusted_proxy", lambda ip: str(ip) in ("10.0.0.1", "6.7.8.9", "1.2.3.4"))
+    monkeypatch.setattr(rate_limit, "is_trusted_proxy", lambda ip: str(ip) in ("10.0.0.1", "6.7.8.9", "1.2.3.4"))
 
     mock_request = MagicMock()
     mock_request.headers.get.return_value = "1.2.3.4, 6.7.8.9, 10.0.0.1"
@@ -213,7 +213,7 @@ def test_get_real_ip_all_hosts_trusted_returns_leftmost(monkeypatch):
 def test_get_real_ip_returns_canonical_form(monkeypatch):
     """Returned IPs are canonicalized to a consistent rate-limit key."""
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "10.0.0.1")
-    monkeypatch.setattr(rate_limit, "_is_trusted_proxy", lambda ip: str(ip) == "10.0.0.1")
+    monkeypatch.setattr(rate_limit, "is_trusted_proxy", lambda ip: str(ip) == "10.0.0.1")
 
     mock_request = MagicMock()
     # X-Forwarded-For with both canonical and non-canonical IPv6 forms
@@ -228,7 +228,7 @@ def test_get_real_ip_returns_canonical_form(monkeypatch):
 def test_get_real_ip_multiple_trusted_proxies_returns_first_untrusted(monkeypatch):
     """With multiple trusted chain proxies, stop at the first untrusted."""
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "10.0.0.1,6.7.8.9")
-    monkeypatch.setattr(rate_limit, "_is_trusted_proxy", lambda ip: str(ip) in ("10.0.0.1", "6.7.8.9"))
+    monkeypatch.setattr(rate_limit, "is_trusted_proxy", lambda ip: str(ip) in ("10.0.0.1", "6.7.8.9"))
 
     mock_request = MagicMock()
     mock_request.headers.get.return_value = "1.2.3.4, 6.7.8.9, 10.0.0.1"
@@ -245,7 +245,7 @@ def test_get_real_ip_multiple_trusted_proxies_returns_first_untrusted(monkeypatc
 def test_get_real_ip_trusted_proxy_invalid_xff_stops_on_invalid(monkeypatch):
     """Invalid IP in X-Forwarded-For falls back to secure remote_ip."""
     monkeypatch.setattr(rate_limit, "_FORWARDED_ALLOW_IPS", "10.0.0.1")
-    monkeypatch.setattr(rate_limit, "_is_trusted_proxy", lambda ip: str(ip) == "10.0.0.1")
+    monkeypatch.setattr(rate_limit, "is_trusted_proxy", lambda ip: str(ip) == "10.0.0.1")
 
     mock_request = MagicMock()
     mock_request.headers.get.return_value = "1.2.3.4, not-an-ip"
@@ -260,7 +260,7 @@ def test_get_real_ip_trusted_proxy_invalid_xff_stops_on_invalid(monkeypatch):
 # _get_real_ip – trusted proxy, empty X-Forwarded-For
 # ---------------------------------------------------------------------------
 def test_get_real_ip_trusted_proxy_empty_xff_falls_back(monkeypatch):
-    monkeypatch.setattr(rate_limit, "_is_trusted_proxy", lambda ip: ip == "10.0.0.1")
+    monkeypatch.setattr(rate_limit, "is_trusted_proxy", lambda ip: ip == "10.0.0.1")
 
     mock_request = MagicMock()
     mock_request.headers.get.return_value = ""
@@ -275,7 +275,7 @@ def test_get_real_ip_trusted_proxy_empty_xff_falls_back(monkeypatch):
 # _get_real_ip – trusted proxy, no X-Forwarded-For header
 # ---------------------------------------------------------------------------
 def test_get_real_ip_trusted_proxy_no_xff_header(monkeypatch):
-    monkeypatch.setattr(rate_limit, "_is_trusted_proxy", lambda ip: ip == "10.0.0.1")
+    monkeypatch.setattr(rate_limit, "is_trusted_proxy", lambda ip: ip == "10.0.0.1")
 
     mock_request = MagicMock()
     mock_request.headers.get.return_value = None
@@ -350,4 +350,4 @@ class TestModuleLevelParsing:
         monkeypatch.setenv("FORWARDED_ALLOW_IPS", "  *  ")
         importlib.reload(rate_limit)
         assert rate_limit._FORWARDED_ALLOW_IPS == "*"
-        assert rate_limit._is_trusted_proxy("10.0.0.1") is True
+        assert rate_limit.is_trusted_proxy("10.0.0.1") is True

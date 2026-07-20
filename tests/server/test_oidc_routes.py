@@ -927,6 +927,7 @@ class TestOidcCallbackSuccess:
         linked_user = MagicMock()
         linked_user.id = "linked-user-uuid"
         linked_user.email = "old@example.com"
+        linked_user.password_hash = None  # pure-OIDC account → eligible for email sync
 
         oidc_link = MagicMock()
         oidc_link.user_id = linked_user.id
@@ -959,17 +960,20 @@ class TestOidcCallbackSuccess:
         user_add_calls = [c for c in mock_db.add.call_args_list if c[0][0].__class__.__name__ == "User"]
         assert user_add_calls == []
 
-    def test_email_sync_conflict_reverts_to_placeholder(self):
+    def test_email_sync_conflict_keeps_current_email(self):
         """Linked user: when the verified email is owned by another account,
-        the stale email is released by reverting to a placeholder.
+        the server keeps the account's current email rather than taking over
+        the conflicting one.
 
-        This blocks a recycled-IdP-email takeover: without the revert, the
-        account would keep holding an email the IdP has since reassigned,
-        which a fresh sub could then auto-link against.
+        mem0 never reassigns an email it does not own. The recycled-IdP-email
+        takeover is blocked upstream by the auto-link guard: a new IdP sub
+        will not link to an existing OIDC-only account (``password_hash is
+        None``) by email alone — see ``test_oidc_email_recycled_no_takeover``.
         """
         linked_user = MagicMock()
         linked_user.id = "linked-user-uuid"
         linked_user.email = "stale@example.com"
+        linked_user.password_hash = None  # pure-OIDC account
 
         oidc_link = MagicMock()
         oidc_link.user_id = linked_user.id
@@ -999,9 +1003,10 @@ class TestOidcCallbackSuccess:
             )
 
         assert response.status_code == 302
-        # Stale email released — reverted to a placeholder, NOT the conflicting email
+        # Conflict: server keeps the current (stale) email rather than applying
+        # the conflicting one — the conflicting email is not taken over.
         assert linked_user.email != "new@example.com"
-        assert linked_user.email.endswith("@oidc.google")
+        assert linked_user.email == "stale@example.com"
         # No new User created
         user_add_calls = [c for c in mock_db.add.call_args_list if c[0][0].__class__.__name__ == "User"]
         assert user_add_calls == []
