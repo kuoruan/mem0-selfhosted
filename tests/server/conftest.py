@@ -220,3 +220,6 @@ for _mod_path, _alias in [
     ("server.routers.auth", "routers.auth"),
 ]:
     _register_alias(_mod_path, _alias)
+
+# -- Test helpers: regular Python module (not a server module) -----------------
+_register_alias("tests.server.helpers", "helpers")
