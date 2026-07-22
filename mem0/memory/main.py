@@ -1830,7 +1830,7 @@ class Memory(MemoryBase):
             memory_id (str): ID of the memory to update.
             text (str, optional): New content to update the memory with.
             metadata (dict, optional): Metadata to update with the memory. Defaults to None.
-                ``user_id``/``agent_id``/``run_id``/``actor_id`` are ignored here - they are
+                ``user_id``/``agent_id``/``app_id``/``run_id``/``actor_id`` are ignored here - they are
                 immutable after creation.
             expiration_date (Any, optional): Date in YYYY-MM-DD format, or None to clear it.
             data (str, optional): Deprecated alias for ``text``. Will be removed in the next
@@ -3492,7 +3492,7 @@ class AsyncMemory(MemoryBase):
             memory_id (str): ID of the memory to update.
             text (str, optional): New content to update the memory with.
             metadata (dict, optional): Metadata to update with the memory. Defaults to None.
-                ``user_id``/``agent_id``/``run_id``/``actor_id`` are ignored here - they are
+                ``user_id``/``agent_id``/``app_id``/``run_id``/``actor_id`` are ignored here - they are
                 immutable after creation.
             expiration_date (Any, optional): Date in YYYY-MM-DD format, or None to clear it.
             data (str, optional): Deprecated alias for ``text``. Will be removed in the next
