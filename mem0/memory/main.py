@@ -134,6 +134,20 @@ _SENSITIVE_SUFFIXES = (
 # Entity parameters that must be passed via filters, not top-level kwargs
 ENTITY_PARAMS = frozenset({"user_id", "agent_id", "app_id", "run_id"})
 
+# Tenant-scoping fields that update() must never let caller-supplied metadata overwrite (issues #4490, #6277).
+_IDENTITY_KEYS = ENTITY_PARAMS | {"actor_id"}
+
+
+def _strip_identity_keys(metadata: Dict[str, Any], existing_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop identity keys from caller metadata; they are immutable after creation (issues #4490, #6277)."""
+    clean = {}
+    for key, value in metadata.items():
+        if key not in _IDENTITY_KEYS:
+            clean[key] = value
+        elif value != existing_payload.get(key):
+            logger.warning(f"update(): ignoring metadata['{key}'] - identity fields are immutable after creation")
+    return clean
+
 
 def _reject_top_level_entity_params(kwargs: Dict[str, Any], method_name: str) -> None:
     """Reject top-level entity parameters - must use filters instead."""
@@ -1816,6 +1830,8 @@ class Memory(MemoryBase):
             memory_id (str): ID of the memory to update.
             text (str, optional): New content to update the memory with.
             metadata (dict, optional): Metadata to update with the memory. Defaults to None.
+                ``user_id``/``agent_id``/``run_id``/``actor_id`` are ignored here - they are
+                immutable after creation.
             expiration_date (Any, optional): Date in YYYY-MM-DD format, or None to clear it.
             data (str, optional): Deprecated alias for ``text``. Will be removed in the next
                 major release; use ``text`` instead.
@@ -2033,28 +2049,13 @@ class Memory(MemoryBase):
 
         new_metadata = deepcopy(existing_memory.payload)
         if metadata is not None:
-            new_metadata.update(metadata)
+            new_metadata.update(_strip_identity_keys(metadata, existing_memory.payload))
 
         new_metadata["data"] = data
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
         new_metadata["text_lemmatized"] = self._lemmatize_for_bm25(data)
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
         new_metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-        # Preserve session identifiers from existing memory only if not provided in new metadata.
-        # NOTE: largely redundant — new_metadata is deepcopy(existing_memory.payload) above —
-        # but kept as an explicit safety net that also covers app_id.
-        if "user_id" not in new_metadata and "user_id" in existing_memory.payload:
-            new_metadata["user_id"] = existing_memory.payload["user_id"]
-        if "agent_id" not in new_metadata and "agent_id" in existing_memory.payload:
-            new_metadata["agent_id"] = existing_memory.payload["agent_id"]
-        if "app_id" not in new_metadata and "app_id" in existing_memory.payload:
-            new_metadata["app_id"] = existing_memory.payload["app_id"]
-        if "run_id" not in new_metadata and "run_id" in existing_memory.payload:
-            new_metadata["run_id"] = existing_memory.payload["run_id"]
-        # actor_id is immutable after creation (issue #4490)
-        if "actor_id" in existing_memory.payload:
-            new_metadata["actor_id"] = existing_memory.payload["actor_id"]
 
         if data in existing_embeddings:
             embeddings = existing_embeddings[data]
@@ -3491,6 +3492,8 @@ class AsyncMemory(MemoryBase):
             memory_id (str): ID of the memory to update.
             text (str, optional): New content to update the memory with.
             metadata (dict, optional): Metadata to update with the memory. Defaults to None.
+                ``user_id``/``agent_id``/``run_id``/``actor_id`` are ignored here - they are
+                immutable after creation.
             expiration_date (Any, optional): Date in YYYY-MM-DD format, or None to clear it.
             data (str, optional): Deprecated alias for ``text``. Will be removed in the next
                 major release; use ``text`` instead.
@@ -3737,28 +3740,13 @@ class AsyncMemory(MemoryBase):
 
         new_metadata = deepcopy(existing_memory.payload)
         if metadata is not None:
-            new_metadata.update(metadata)
+            new_metadata.update(_strip_identity_keys(metadata, existing_memory.payload))
 
         new_metadata["data"] = data
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
         new_metadata["text_lemmatized"] = await asyncio.to_thread(self._lemmatize_for_bm25, data)
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
         new_metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-        # Preserve session identifiers from existing memory only if not provided in new metadata.
-        # NOTE: largely redundant — new_metadata is deepcopy(existing_memory.payload) above —
-        # but kept as an explicit safety net that also covers app_id.
-        if "user_id" not in new_metadata and "user_id" in existing_memory.payload:
-            new_metadata["user_id"] = existing_memory.payload["user_id"]
-        if "agent_id" not in new_metadata and "agent_id" in existing_memory.payload:
-            new_metadata["agent_id"] = existing_memory.payload["agent_id"]
-        if "app_id" not in new_metadata and "app_id" in existing_memory.payload:
-            new_metadata["app_id"] = existing_memory.payload["app_id"]
-        if "run_id" not in new_metadata and "run_id" in existing_memory.payload:
-            new_metadata["run_id"] = existing_memory.payload["run_id"]
-        # actor_id is immutable after creation (issue #4490)
-        if "actor_id" in existing_memory.payload:
-            new_metadata["actor_id"] = existing_memory.payload["actor_id"]
 
         if data in existing_embeddings:
             embeddings = existing_embeddings[data]
