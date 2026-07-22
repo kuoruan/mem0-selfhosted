@@ -44,11 +44,14 @@ export default function MemoryUserSelect({
     ];
     const entityOpts: ComboboxOption[] = userEntities
       .filter((e) => e.id !== ownUserId)
-      .map((e) => ({
-        value: e.id,
-        label: e.is_owner ? `${e.id} (yours)` : e.id,
-        search: e.id,
-      }));
+      .map((e) => {
+        const displayName = e.name || e.id;
+        return {
+          value: e.id,
+          label: e.is_owner ? `${displayName} (yours)` : displayName,
+          search: e.name ? `${e.name} ${e.id}` : e.id,
+        };
+      });
     return [...presets, ...entityOpts];
   }, [userEntities, ownUserId]);
 

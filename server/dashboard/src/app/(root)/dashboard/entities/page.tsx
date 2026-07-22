@@ -2,19 +2,13 @@
 
 import { useState } from "react";
 import { format } from "date-fns";
-import { Plus } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import SimpleSelect from "@/components/shared/simple-select";
 import { Separator } from "@/components/ui/separator";
 import PaginationBar from "@/components/shared/pagination-bar";
 import { DataTable } from "@/components/shared/data-table";
@@ -170,7 +164,7 @@ export default function EntitiesPage() {
       render: (_value: Entity["parent"], row: Entity) =>
         row.parent ? (
           <span className="text-sm">
-            {row.parent.id}{" "}
+            {row.parent.name || row.parent.id}{" "}
             <Badge variant="outline" className="text-[10px] px-1 py-0">
               {row.parent.type}
             </Badge>
@@ -247,7 +241,20 @@ export default function EntitiesPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-xl font-semibold font-fustat">Entities</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-semibold font-fustat">Entities</h1>
+          <Button
+            variant="ghost"
+            size="smIcon"
+            onClick={reload}
+            disabled={isLoading}
+            title="Refresh entities"
+          >
+            <RefreshCw
+              className={`size-4 ${isLoading ? "animate-spin" : ""}`}
+            />
+          </Button>
+        </div>
         <Button size="sm" onClick={() => setCreateOpen(true)}>
           <Plus className="size-4 mr-1" /> Create Entity
         </Button>
@@ -276,18 +283,13 @@ export default function EntitiesPage() {
         <Label className="text-sm font-normal text-onSurface-default-tertiary">
           Type:
         </Label>
-        <Select value={typeFilter} onValueChange={setTypeFilter}>
-          <SelectTrigger className="w-28">
-            <SelectValue placeholder="All" />
-          </SelectTrigger>
-          <SelectContent>
-            {TYPE_OPTIONS.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value}>
-                {opt.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <SimpleSelect
+          value={typeFilter}
+          onValueChange={setTypeFilter}
+          options={TYPE_OPTIONS}
+          placeholder="All"
+          className="w-28"
+        />
       </div>
 
       {isLoading && entities.length === 0 ? (

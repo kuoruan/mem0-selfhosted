@@ -33,11 +33,14 @@ export default function MemoryAppSelect({
     const all: ComboboxOption[] = [
       { value: "", label: "All apps", search: "All apps" },
     ];
-    const entityOpts: ComboboxOption[] = appEntities.map((e) => ({
-      value: e.id,
-      label: e.is_owner ? `${e.id} (yours)` : e.id,
-      search: e.id,
-    }));
+    const entityOpts: ComboboxOption[] = appEntities.map((e) => {
+      const displayName = e.name || e.id;
+      return {
+        value: e.id,
+        label: e.is_owner ? `${displayName} (yours)` : displayName,
+        search: e.name ? `${e.name} ${e.id}` : e.id,
+      };
+    });
     return [...all, ...entityOpts];
   }, [appEntities]);
 

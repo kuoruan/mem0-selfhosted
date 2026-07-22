@@ -11,13 +11,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import SimpleSelect from "@/components/shared/simple-select";
 import { toast } from "@/components/ui/use-toast";
 import { api } from "@/utils/api";
 import { ENTITY_ENDPOINTS } from "@/utils/api-endpoints";
@@ -137,7 +131,16 @@ export default function ManagePermissionsSheet({
         <SheetHeader>
           <SheetTitle>Manage permissions</SheetTitle>
           <SheetDescription>
-            {entity ? `${entity.type}/${entity.id}` : ""}
+            {entity ? (
+              <>
+                {entity.type}/{entity.id}
+                {entity.name && (
+                  <span className="ml-1 text-onSurface-default-tertiary">
+                    ({entity.name})
+                  </span>
+                )}
+              </>
+            ) : null}
           </SheetDescription>
         </SheetHeader>
         <div className="mt-4 space-y-4">
@@ -150,23 +153,14 @@ export default function ManagePermissionsSheet({
                 isAdmin={isAdmin}
                 className="flex-1"
               />
-              <Select
+              <SimpleSelect
                 value={grantLevel}
                 onValueChange={(v) => setGrantLevel(v as EntityPermissionLevel)}
-              >
-                <SelectTrigger className="w-28">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PERMISSION_LEVELS.map((l) => (
-                    <SelectItem key={l} value={l} className="capitalize">
-                      {l}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                options={PERMISSION_LEVELS.map((l) => ({ value: l, label: l }))}
+                className="w-28"
+                itemClassName="capitalize"
+              />
               <Button
-                size="sm"
                 onClick={handleGrant}
                 disabled={!granteeId.trim() || submitting}
               >

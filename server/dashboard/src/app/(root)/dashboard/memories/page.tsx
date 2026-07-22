@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
 import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -133,8 +133,8 @@ export default function MemoriesPage() {
       width: 100,
       render: (value: string | undefined) =>
         value ? (
-          <span className="text-xs font-mono truncate" title={value}>
-            {value.length > 12 ? `${value.slice(0, 12)}…` : value}
+          <span className="text-xs font-mono block truncate" title={value}>
+            {value}
           </span>
         ) : (
           "--"
@@ -161,6 +161,15 @@ export default function MemoriesPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold font-fustat">Memories</h1>
+        <Button
+          variant="ghost"
+          size="smIcon"
+          onClick={() => refetch()}
+          disabled={isLoading}
+          title="Refresh memories"
+        >
+          <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
+        </Button>
         <MemoryUserSelect
           value={selectedUserId}
           onChange={handleUserChange}
@@ -235,15 +244,15 @@ export default function MemoriesPage() {
           if (!open) setSelectedMemory(null);
         }}
       >
-        <SheetContent className="sm:max-w-md">
-          <SheetHeader>
+        <SheetContent className="sm:max-w-md flex flex-col">
+          <SheetHeader className="shrink-0">
             <SheetTitle>Memory Detail</SheetTitle>
             <SheetDescription className="sr-only">
               View memory content and metadata
             </SheetDescription>
           </SheetHeader>
           {selectedMemory && (
-            <div className="mt-6 space-y-4">
+            <div className="flex-1 min-h-0 mt-2 space-y-4 overflow-y-auto">
               <div className="space-y-1">
                 <Label className="text-xs text-onSurface-default-tertiary">
                   Content
@@ -333,7 +342,7 @@ export default function MemoriesPage() {
                   <Label className="text-xs text-onSurface-default-tertiary">
                     Metadata
                   </Label>
-                  <pre className="text-xs font-mono break-all bg-surface-default-secondary p-2 rounded">
+                  <pre className="text-xs font-mono overflow-auto max-h-60 bg-surface-default-secondary p-2 rounded">
                     {JSON.stringify(selectedMemory.metadata, null, 2)}
                   </pre>
                 </div>
