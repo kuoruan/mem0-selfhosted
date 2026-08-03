@@ -38,9 +38,12 @@ jobs:
       cli_python: ${{ steps.filter.outputs.cli_python }}
       cli_node: ${{ steps.filter.outputs.cli_node }}
       openclaw: ${{ steps.filter.outputs.openclaw }}
+      mem0_plugin: ${{ steps.filter.outputs.mem0_plugin }}
       opencode_plugin: ${{ steps.filter.outputs.opencode_plugin }}
       pi_agent_plugin: ${{ steps.filter.outputs.pi_agent_plugin }}
       server: ${{ steps.filter.outputs.server }}
+      n8n_nodes_mem0: ${{ steps.filter.outputs.n8n_nodes_mem0 }}
+      zapier_mem0: ${{ steps.filter.outputs.zapier_mem0 }}
       docs_llms_txt: ${{ steps.filter.outputs.docs_llms_txt }}
     steps:
       - uses: dorny/paths-filter@v3
@@ -72,6 +75,11 @@ jobs:
               - 'integrations/openclaw/**'
               - '.github/workflows/openclaw-checks.yml'
               - '.github/workflows/ci-gate.yml'
+            mem0_plugin:
+              - 'integrations/mem0-plugin/**'
+              - '!integrations/mem0-plugin/.opencode-plugin/**'
+              - '.github/workflows/mem0-plugin-checks.yml'
+              - '.github/workflows/ci-gate.yml'
             opencode_plugin:
               - 'integrations/mem0-plugin/.opencode-plugin/**'
               - '.github/workflows/opencode-plugin-checks.yml'
@@ -86,6 +94,13 @@ jobs:
               - 'mem0/**'
               - 'pyproject.toml'
               - '.github/workflows/server-ci.yml'
+              - '.github/workflows/ci-gate.yml'
+            n8n_nodes_mem0:
+              - 'integrations/n8n-nodes-mem0/**'
+              - '.github/workflows/n8n-nodes-mem0-checks.yml'
+            zapier_mem0:
+              - 'integrations/zapier-mem0/**'
+              - '.github/workflows/zapier-mem0-checks.yml'
               - '.github/workflows/ci-gate.yml'
             docs_llms_txt:
               - 'docs/**/*.mdx'
@@ -130,6 +145,13 @@ jobs:
     uses: ./.github/workflows/openclaw-checks.yml
     secrets: inherit
 
+  mem0-plugin:
+    name: Mem0 Plugin
+    needs: changes
+    if: needs.changes.outputs.mem0_plugin == 'true'
+    uses: ./.github/workflows/mem0-plugin-checks.yml
+    secrets: inherit
+
   opencode-plugin:
     name: OpenCode Plugin
     needs: changes
@@ -151,6 +173,20 @@ jobs:
     uses: ./.github/workflows/server-ci.yml
     secrets: inherit
 
+  n8n-nodes-mem0:
+    name: n8n Node
+    needs: changes
+    if: needs.changes.outputs.n8n_nodes_mem0 == 'true'
+    uses: ./.github/workflows/n8n-nodes-mem0-checks.yml
+    secrets: inherit
+
+  zapier-mem0:
+    name: Zapier App
+    needs: changes
+    if: needs.changes.outputs.zapier_mem0 == 'true'
+    uses: ./.github/workflows/zapier-mem0-checks.yml
+    secrets: inherit
+
   docs-llms-txt:
     name: docs llms.txt
     needs: changes
@@ -167,9 +203,12 @@ jobs:
       - cli-python
       - cli-node
       - openclaw
+      - mem0-plugin
       - opencode-plugin
       - pi-agent-plugin
       - server
+      - n8n-nodes-mem0
+      - zapier-mem0
       - docs-llms-txt
     if: always()
     runs-on: ubuntu-latest

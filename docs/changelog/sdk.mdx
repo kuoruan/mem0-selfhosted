@@ -7,6 +7,47 @@ mode: "wide"
 <Tabs>
 <Tab title="Python">
 
+<Update label="2026-08-01" description="v2.0.15">
+
+**Bug Fixes:**
+- **Core:** `delete_all()` now paginates through the vector store in batches of 1000 instead of listing once, so accounts with more memories than a single page (most vector stores default to ~100) had the remainder silently left behind ([#6636](https://github.com/mem0ai/mem0/pull/6636))
+- **Vector Stores:** Cap Supabase `search()`/`list()` `top_k` at the `vecs` query limit of 1000 instead of erroring, and fix a `col_info()` crash by reading collection attributes directly instead of calling the removed `describe()` method ([#6695](https://github.com/mem0ai/mem0/pull/6695))
+- **Vector Stores:** Set `size` on Elasticsearch KNN search queries, so results respect `top_k` instead of being capped at Elasticsearch's default of 10 hits ([#5910](https://github.com/mem0ai/mem0/pull/5910))
+
+**Changes:**
+- **Rerankers:** `LLMReranker`'s default model is now `gpt-5-mini` (was `gpt-4o-mini`) ([#6703](https://github.com/mem0ai/mem0/pull/6703))
+
+</Update>
+
+<Update label="2026-07-25" description="v2.0.14">
+
+**New Features:**
+- **Vector Stores:** Add an Oracle AI Vector Search provider (`oracledb`) with connection pooling, `HNSW`/`IVF` indexes, JSON metadata filtering, and six selectable distance metrics ([#5358](https://github.com/mem0ai/mem0/pull/5358))
+
+**Bug Fixes:**
+- **Vector Stores:** Translate a `"*"` filter value in OpenSearch into an `exists` query for every key, not just identity keys. It was previously ignored or matched literally against the string `"*"`, so a wildcard filter returned nothing ([#6522](https://github.com/mem0ai/mem0/pull/6522))
+- **Vector Stores:** Re-raise errors from OpenSearch `search()` instead of returning `[]`, so a transport, auth, or index misconfiguration surfaces instead of looking like zero matches. `keyword_search()` still degrades on failure, since it is a best-effort BM25 signal ([#6519](https://github.com/mem0ai/mem0/pull/6519))
+- **Vector Stores:** Guard the `text` field in Milvus `update()` behind the `_has_bm25_schema` check, matching `insert()`, so updating a memory in a collection without the BM25 `text`/`sparse` schema no longer fails ([#5705](https://github.com/mem0ai/mem0/pull/5705))
+
+</Update>
+
+<Update label="2026-07-22" description="v2.0.13">
+
+**Bug Fixes:**
+- **Vector Stores:** Fix `reset()` silently leaving stale vectors behind on local (on-disk) Qdrant when the old collection directory could not be removed, for example an open file handle on Windows or NFS ([#6412](https://github.com/mem0ai/mem0/pull/6412))
+- **Core:** Stop `update()` metadata from overwriting or injecting `user_id`, `agent_id`, `run_id`, or `actor_id`. These identity fields are immutable after creation, so passing them in `metadata` can no longer move a memory into a different tenant's scope ([#6278](https://github.com/mem0ai/mem0/pull/6278))
+- **Vector Stores:** Scope Pinecone `delete_col()`/`reset()` to the configured namespace instead of deleting the whole index, so resetting a namespaced Pinecone store no longer wipes out the other namespaces sharing that index ([#6287](https://github.com/mem0ai/mem0/pull/6287))
+- **Vector Stores:** Convert Baidu Mochow's raw L2 distance into a similarity score in `search()` (`1 / (1 + distance)`), so closer matches rank higher instead of lower, matching the Milvus provider and the rest of the `VectorStoreBase` contract ([#6435](https://github.com/mem0ai/mem0/pull/6435))
+- **LLMs:** Read `OPENAI_BASE_URL` (was `OPENAI_API_BASE`) in `OpenAIStructuredLLM`, matching the official OpenAI SDK's environment variable and the rest of the OpenAI-compatible providers ([#6322](https://github.com/mem0ai/mem0/pull/6322))
+
+**Improvements:**
+- **LLMs:** Remove a dead, no-op `api_key` attribute check from `LLMBase.__init__` ([#6460](https://github.com/mem0ai/mem0/pull/6460))
+
+**Changes:**
+- **Client:** Remove the `retrieval_criteria` parameter from `MemoryClient.update_project()`/`AsyncMemoryClient.update_project()` and `Project.update()`/`AsyncProject.update()`. It was accepted and forwarded but never affected retrieval, so removing it is not a behavior change ([#6313](https://github.com/mem0ai/mem0/pull/6313))
+
+</Update>
+
 <Update label="2026-07-13" description="v2.0.12">
 
 **New Features:**
@@ -1128,6 +1169,53 @@ See the [OSS v2 to v3 migration guide](https://docs.mem0.ai/migration/oss-v2-to-
 
 <Tab title="TypeScript">
 
+<Update label="2026-08-01" description="v3.1.3">
+
+**New Features:**
+- **Vector Stores:** Add Qdrant server-side BM25 `keywordSearch()` (requires Qdrant >= 1.15.2) plus payload filter indexes, so keyword search runs without a client-side BM25 dependency ([#5851](https://github.com/mem0ai/mem0/pull/5851))
+
+**Bug Fixes:**
+- **Core:** `deleteAll()` now paginates through the vector store in batches of 1000 instead of listing once, so accounts with more memories than a single page had the remainder silently left behind ([#4872](https://github.com/mem0ai/mem0/pull/4872))
+- **Vector Stores:** Supabase `list()` now paginates past PostgREST's 1000-row cap instead of stopping at the first page, `search()` warns when results may have been truncated by that same cap, and the initialization probe reads a row instead of writing a test vector, so Row Level Security policies that only grant read access no longer fail table verification ([#6695](https://github.com/mem0ai/mem0/pull/6695))
+- **Embeddings:** Honor `TOGETHER_API_BASE` in the Together embedder, matching the Together LLM provider, so a custom gateway URL is no longer silently ignored for embeddings ([#6572](https://github.com/mem0ai/mem0/pull/6572))
+
+**Changes:**
+- **Rerankers:** `RerankerFactory`'s default LLM reranker model is now `gpt-5-mini` (was `gpt-4o-mini`) ([#6703](https://github.com/mem0ai/mem0/pull/6703))
+
+**Security:**
+- **Dependencies:** Patched 32 high and 57 medium severity dependency vulnerabilities across the pnpm workspace via `pnpm.overrides` (`axios`, `brace-expansion`, `js-yaml`, `postcss`, `protobufjs`, `mongoose`, `tar`, `fast-xml-parser`, `thrift`) ([#6639](https://github.com/mem0ai/mem0/pull/6639))
+
+</Update>
+
+<Update label="2026-07-25" description="v3.1.2">
+
+**Bug Fixes:**
+- **Vector Stores:** Apply every operator in a Cassandra compound field filter (e.g. `{ age: { gte: 10, lte: 20 } }`) instead of stopping after the first, so the remaining bounds are no longer silently ignored ([#6511](https://github.com/mem0ai/mem0/pull/6511))
+- **Vector Stores:** Stop the Chroma where-clause translator from dropping filter conditions. Same-field ranges (`gte` + `lte`), multi-field conditions inside `$or`, and negated `contains`/`icontains` under `$not` each collapsed to a single clause or vanished, widening the search instead of narrowing it ([#6521](https://github.com/mem0ai/mem0/pull/6521))
+- **Vector Stores:** Skip `"*"` wildcard filter values in Milvus instead of matching them literally, so a filter like `{ user_id: "*" }` no longer returns zero memories ([#6508](https://github.com/mem0ai/mem0/pull/6508))
+- **Vector Stores:** Read `textLemmatized` for BM25 keyword search on Milvus, OpenSearch, and MongoDB, matching the field the memory layer actually writes, so hybrid search on those backends no longer loses the keyword signal ([#6497](https://github.com/mem0ai/mem0/pull/6497))
+- **LLMs:** Forward `responseFormat` to Gemini's `responseMimeType` in `generateResponse()`, so requesting `json_object` returns JSON instead of free-form text ([#6468](https://github.com/mem0ai/mem0/pull/6468))
+- **LLMs:** Find the Anthropic text block by type instead of indexing `content[0]`, so a thinking-enabled model whose `thinking` block comes first no longer throws `Unexpected response type from Anthropic API` ([#6506](https://github.com/mem0ai/mem0/pull/6506))
+
+</Update>
+
+<Update label="2026-07-22" description="v3.1.1">
+
+**New Features:**
+- **Embeddings:** Add an AWS Bedrock embedding provider ([#6185](https://github.com/mem0ai/mem0/pull/6185))
+
+**Bug Fixes:**
+- **Packaging:** Finish the lazy-loading work started in v3.1.0. The remaining LLMs (Anthropic, Google, Groq, LangChain, Mistral, Ollama), embedders (Google, LangChain, Ollama, Vertex AI), vector stores (Azure AI Search, Azure MySQL, Baidu, LangChain, Qdrant, Redis, Supabase, Valkey, Vectorize), and the Supabase history store still imported their SDKs at module load, so importing `mem0ai/oss` required every provider package to be installed ([#6389](https://github.com/mem0ai/mem0/pull/6389))
+- **Vector Stores:** Convert Baidu Mochow's raw L2 distance into a similarity score in `search()` (`1 / (1 + distance)`), so closer matches rank higher instead of lower. A row the backend returns without a score is now left `undefined` instead of being treated as the closest match ([#6485](https://github.com/mem0ai/mem0/pull/6485))
+- **Memory (OSS):** Coerce non-string entity IDs (e.g. a numeric `user_id`) to strings instead of crashing on `.trim()` ([#6263](https://github.com/mem0ai/mem0/pull/6263))
+- **Memory (OSS):** Stop `update()` metadata from overwriting or injecting `user_id`, `agent_id`, `run_id`, or `actor_id` (in either snake_case or camelCase). These identity fields are immutable after creation, so passing them in `metadata` can no longer move a memory into a different tenant's scope ([#6343](https://github.com/mem0ai/mem0/pull/6343))
+- **Vector Stores:** Scope Pinecone `deleteCol()`/`reset()` to the configured namespace instead of deleting the whole index, so resetting a namespaced Pinecone store no longer wipes out the other namespaces sharing that index ([#6287](https://github.com/mem0ai/mem0/pull/6287))
+
+**Changes:**
+- **Client:** Remove the unused `retrievalCriteria` field from `PromptUpdatePayload`. It was accepted and forwarded but never affected retrieval, so removing it is not a behavior change ([#6313](https://github.com/mem0ai/mem0/pull/6313))
+
+</Update>
+
 <Update label="2026-07-13" description="v3.1.0">
 
 The largest provider release for the TypeScript OSS SDK so far: 17 new vector stores, 5 new LLM providers, 4 new embedders, and reranking support. Importing `mem0ai/oss` no longer pulls in any provider SDK, so you only install what you actually configure.
@@ -1828,9 +1916,9 @@ A full-featured command-line interface for Mem0, available in both Python and No
 <Update label="2026-07-14" description="mem0-plugin v0.2.13">
 
 **Fixes:**
-- **Assistant messages no longer stored as your own:** The session-summary hook (fires at the end of every assistant turn) and the post-compaction hook were sending the assistant's own message to Mem0 tagged `role: "user"`. Because Mem0 extracts *facts about the user* from each message and uses `role` to decide who spoke, the assistant's first-person prose was being saved as the human's stated preferences — "I recommend we drop Redis" became `User prefers dropping Redis entirely`. Both hooks now send `role: "assistant"`, so the same session is stored as `Assistant recommended...`. Affects Claude Code, Cursor, Codex, and Antigravity, which share these hooks.
+- **Assistant messages no longer stored as your own:** The session-summary hook (fires at the end of every assistant turn) and the post-compaction hook were sending the assistant's own message to Mem0 tagged `role: "user"`. Because Mem0 extracts *facts about the user* from each message and uses `role` to decide who spoke, the assistant's first-person prose was being saved as the human's stated preferences: "I recommend we drop Redis" became `User prefers dropping Redis entirely`. Both hooks now send `role: "assistant"`, so the same session is stored as `Assistant recommended...`. Affects Claude Code, Cursor, Codex, and Antigravity, which share these hooks.
 
-Existing memories written by the previous versions are not rewritten. If your memories contain preferences you never expressed, delete them — the plugin will not recreate them.
+Existing memories written by the previous versions are not rewritten. If your memories contain preferences you never expressed, delete them; the plugin will not recreate them.
 
 </Update>
 
@@ -2084,6 +2172,13 @@ Initial release of the Mem0 plugin for Claude Code and Cursor, followed by Codex
 
 <Tab title="OpenCode">
 
+<Update label="2026-07-22" description="OpenCode plugin v0.2.2">
+
+**Fixes:**
+- **Shell-profile API key recovery:** When `MEM0_API_KEY` isn't set in the process environment, the plugin now falls back to reading it from `.zshrc`, `.bashrc`, `.zprofile`, `.bash_profile`, or `.profile`, fixing startup failures on clients (e.g. Desktop) that launch without shell-exported environment variables.
+
+</Update>
+
 <Update label="2026-06-30" description="OpenCode plugin v0.2.1">
 
 **Improvements:**
@@ -2160,9 +2255,9 @@ Initial release of the Mem0 plugin for Claude Code and Cursor, followed by Codex
 <Update label="2026-07-14" description="Antigravity plugin v0.1.5">
 
 **Fixes:**
-- **Assistant messages no longer stored as your own:** The session-summary hook (fires at the end of every assistant turn) and the post-compaction hook were sending the assistant's own message to Mem0 tagged `role: "user"`. Because Mem0 extracts *facts about the user* from each message and uses `role` to decide who spoke, the assistant's first-person prose was being saved as the human's stated preferences — "I recommend we drop Redis" became `User prefers dropping Redis entirely`. Both hooks now send `role: "assistant"`, so the same session is stored as `Assistant recommended...`.
+- **Assistant messages no longer stored as your own:** The session-summary hook (fires at the end of every assistant turn) and the post-compaction hook were sending the assistant's own message to Mem0 tagged `role: "user"`. Because Mem0 extracts *facts about the user* from each message and uses `role` to decide who spoke, the assistant's first-person prose was being saved as the human's stated preferences: "I recommend we drop Redis" became `User prefers dropping Redis entirely`. Both hooks now send `role: "assistant"`, so the same session is stored as `Assistant recommended...`.
 
-Existing memories written by the previous versions are not rewritten. If your memories contain preferences you never expressed, delete them — the plugin will not recreate them.
+Existing memories written by the previous versions are not rewritten. If your memories contain preferences you never expressed, delete them; the plugin will not recreate them.
 
 </Update>
 
@@ -2212,6 +2307,16 @@ Existing memories written by the previous versions are not rewritten. If your me
 </Tab>
 
 <Tab title="OpenClaw">
+
+<Update label="2026-08-01" description="openclaw-mem0 v1.0.15">
+
+**Improvements:**
+- **Onboarding suggestions:** The example commands shown by `openclaw mem0 config show` now suggest `gpt-5-mini` instead of `gpt-4o` ([#6704](https://github.com/mem0ai/mem0/pull/6704))
+
+**Security:**
+- **Dependencies:** Patched high and medium severity dependency vulnerabilities via `pnpm.overrides` (`protobufjs`, `axios`, `postcss`, `mongoose`) ([#6639](https://github.com/mem0ai/mem0/pull/6639))
+
+</Update>
 
 <Update label="2026-06-30" description="openclaw-mem0 v1.0.14">
 
@@ -2466,6 +2571,13 @@ Existing memories written by the previous versions are not rewritten. If your me
 
 <Tab title="Pi Agent">
 
+<Update label="2026-08-01" description="Pi Agent plugin v0.1.4">
+
+**Security:**
+- **Dependencies:** Patched high and medium severity dependency vulnerabilities via `pnpm.overrides` (`axios`, `brace-expansion`, `postcss`, `mongoose`, `protobufjs`) ([#6639](https://github.com/mem0ai/mem0/pull/6639))
+
+</Update>
+
 <Update label="2026-06-30" description="Pi Agent plugin v0.1.3">
 
 **New Features:**
@@ -2517,6 +2629,13 @@ Existing memories written by the previous versions are not rewritten. If your me
 </Tab>
 
 <Tab title="Vercel AI SDK">
+
+<Update label="2026-08-01" description="Vercel AI SDK v3.0.1">
+
+**Security:**
+- **Dependencies:** Patched high and medium severity dependency vulnerabilities via `pnpm.overrides` (`brace-expansion`, `js-yaml`) ([#6639](https://github.com/mem0ai/mem0/pull/6639))
+
+</Update>
 
 <Update label="2026-06-10" description="Vercel AI SDK v3.0.0">
 
@@ -2597,6 +2716,57 @@ Existing memories written by the previous versions are not rewritten. If your me
 <Update label="2025-05-01" description="Vercel AI SDK v1.0.1">
 **New Features:**
 - Added support for graph memories.
+</Update>
+
+</Tab>
+
+<Tab title="n8n">
+
+<Update label="2026-07-30" description="n8n-nodes-mem0 v0.1.1">
+
+**Changes:**
+- **Published with npm provenance:** Republished through the `n8n-nodes-mem0-cd.yml` GitHub Actions workflow so the package carries a signed provenance attestation. `0.1.0` was published manually and has none, which blocks submission for n8n Creator Portal verification. No functional changes ([#6685](https://github.com/mem0ai/mem0/pull/6685))
+
+</Update>
+
+<Update label="2026-07-29" description="n8n-nodes-mem0 v0.1.0">
+
+**Initial release** of [`@mem0/n8n-nodes-mem0`](https://www.npmjs.com/package/@mem0/n8n-nodes-mem0), a community node that adds long-term memory to n8n workflows and AI Agents ([#6517](https://github.com/mem0ai/mem0/pull/6517))
+
+**New Features:**
+- **Memory operations:** A single **Mem0** node covers Add, Search, Get, Get Many, Update, and Delete on the Memory resource.
+- **AI Agent tool:** The node sets `usableAsTool`, so it can be attached to an n8n AI Agent node and invoked by the agent itself rather than wired into a fixed workflow path.
+- **Scoping:** Add, Search, and Get Many accept User ID, Agent ID, App ID, and Run ID, so memories stay partitioned per user, agent, or session.
+- **Add options:** Metadata JSON, custom categories, custom instructions, includes/excludes, an `infer` toggle, and a **Wait for Completion** switch that polls until the write lands instead of returning immediately.
+- **Pagination:** Get Many supports Return All, or explicit Page and Page Size.
+- **Credential:** A **Mem0 API** credential holds the API key plus a configurable base URL, defaulting to `https://api.mem0.ai` for self-hosted deployments.
+
+<Note>
+  Community nodes install from npm, which is a self-hosted n8n feature. See [n8n](/integrations/n8n) for setup.
+</Note>
+
+</Update>
+
+</Tab>
+
+<Tab title="Zapier">
+
+<Update label="2026-07-29" description="Zapier app v0.1.0">
+
+**Initial release** of the Mem0 Zapier app, built on the Zapier Platform CLI ([#6518](https://github.com/mem0ai/mem0/pull/6518))
+
+**New Features:**
+- **Actions:** Add Memory and Delete Memory.
+- **Searches:** Search Memories and Get Memories, usable as lookup steps in any Zap.
+- **Authentication:** An API key connection validated against Mem0 the moment it is saved, sent as `Authorization: Token <key>`, with a configurable base URL for self-hosted deployments.
+
+**Bug Fixes:**
+- **Add Memory:** Raise the poll budget past the real API latency tail, so a slower write is no longer reported as a failure ([#6680](https://github.com/mem0ai/mem0/pull/6680))
+
+<Note>
+  The app deploys to Zapier's platform rather than npm and is not yet listed in the public App Directory. See [Zapier](/integrations/zapier) for invite access.
+</Note>
+
 </Update>
 
 </Tab>
