@@ -380,7 +380,7 @@ class MongoDB(VectorStoreBase):
             logger.error(f"Error getting collection info: {e}")
             return {}
 
-    def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> List[OutputData]:
+    def list(self, filters: Optional[Dict] = None, top_k: int = 100, skip=None) -> List[OutputData]:
         """
         List vectors in the collection.
 
@@ -404,7 +404,7 @@ class MongoDB(VectorStoreBase):
                 if filter_conditions:
                     query = {"$and": filter_conditions}
 
-            cursor = self.collection.find(query).limit(top_k)
+            cursor = self.collection.find(query).skip(skip or 0).limit(top_k)
             results = [OutputData(id=str(doc["_id"]), score=None, payload=doc.get("payload")) for doc in cursor]
             logger.info(f"Retrieved {len(results)} documents from collection '{self.collection_name}'.")
             return [results]

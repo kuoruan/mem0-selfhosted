@@ -229,7 +229,7 @@ class ChromaDB(VectorStoreBase):
         """
         return self.client.get_collection(name=self.collection_name)
 
-    def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> List[OutputData]:
+    def list(self, filters: Optional[Dict] = None, top_k: int = 100, skip=None) -> List[OutputData]:
         """
         List all vectors in a collection.
 
@@ -241,7 +241,7 @@ class ChromaDB(VectorStoreBase):
             List[OutputData]: List of vectors.
         """
         where_clause = self._generate_where_clause(filters) if filters else None
-        results = self.collection.get(where=where_clause, limit=top_k)
+        results = self.collection.get(where=where_clause, limit=top_k, offset=skip or 0)
         return [self._parse_output(results)]
 
     def reset(self):

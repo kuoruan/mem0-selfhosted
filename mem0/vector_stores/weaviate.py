@@ -355,7 +355,7 @@ class Weaviate(VectorStoreBase):
             return schema
         return None
 
-    def list(self, filters=None, top_k=100) -> List[OutputData]:
+    def list(self, filters=None, top_k=100, skip=None) -> List[OutputData]:
         """
         List all vectors in a collection.
         """
@@ -368,6 +368,7 @@ class Weaviate(VectorStoreBase):
         combined_filter = Filter.all_of(filter_conditions) if filter_conditions else None
         response = collection.query.fetch_objects(
             limit=top_k,
+            offset=skip or 0,
             filters=combined_filter,
             return_properties=["hash", "created_at", "updated_at", "user_id", "agent_id", "app_id", "run_id", "data", "category"],
         )

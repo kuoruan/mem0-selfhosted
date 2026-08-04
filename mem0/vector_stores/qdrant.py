@@ -570,13 +570,14 @@ class Qdrant(VectorStoreBase):
         """
         return self.client.get_collection(collection_name=self.collection_name)
 
-    def list(self, filters: dict = None, top_k: int = 100) -> list:
+    def list(self, filters: dict = None, top_k: int = 100, skip = None) -> list:
         """
         List all vectors in a collection.
 
         Args:
             filters (dict, optional): Filters to apply to the list. Defaults to None.
             top_k (int, optional): Number of vectors to return. Defaults to 100.
+            skip: Scroll offset cursor (str/int) for pagination. Defaults to None.
 
         Returns:
             list: List of vectors.
@@ -586,10 +587,27 @@ class Qdrant(VectorStoreBase):
             collection_name=self.collection_name,
             scroll_filter=query_filter,
             limit=top_k,
+            offset=skip,
             with_payload=True,
             with_vectors=False,
         )
         return result
+
+    def count(self, filters: dict = None) -> int:
+        """Count memories matching filters.
+
+        Args:
+            filters (dict, optional): Filters to apply.
+
+        Returns:
+            int: Number of matching memories.
+        """
+        query_filter = self._create_filter(filters) if filters else None
+        result = self.client.count(
+            collection_name=self.collection_name,
+            count_filter=query_filter,
+        )
+        return result.count
 
     def reset(self):
         """Reset the index by deleting and recreating it."""

@@ -348,7 +348,7 @@ class MilvusDB(VectorStoreBase):
         """
         return self.client.get_collection_stats(collection_name=self.collection_name)
 
-    def list(self, filters: dict = None, top_k: int = 100) -> list:
+    def list(self, filters: dict = None, top_k: int = 100, skip=None) -> list:
         """
         List all vectors in a collection.
 
@@ -360,7 +360,10 @@ class MilvusDB(VectorStoreBase):
             List[OutputData]: List of vectors.
         """
         query_filter = self._create_filter(filters) if filters else None
-        result = self.client.query(collection_name=self.collection_name, filter=query_filter, limit=top_k)
+        kwargs = dict(collection_name=self.collection_name, filter=query_filter, limit=top_k)
+        if skip is not None:
+            kwargs["offset"] = skip
+        result = self.client.query(**kwargs)
         memories = []
         for data in result:
             obj = OutputData(id=data.get("id"), score=None, payload=data.get("metadata"))

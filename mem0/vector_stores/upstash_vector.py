@@ -243,7 +243,7 @@ class UpstashVector(VectorStoreBase):
             return None
         return OutputData(id=vector.id, score=None, payload=vector.metadata)
 
-    def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> List[List[OutputData]]:
+    def list(self, filters: Optional[Dict] = None, top_k: int = 100, skip=None) -> List[List[OutputData]]:
         """
         List all memories.
         Args:

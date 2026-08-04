@@ -382,7 +382,7 @@ class OpenSearchDB(VectorStoreBase):
         """Get information about a collection (index)."""
         return self.client.indices.get(index=name)
 
-    def list(self, filters: Optional[Dict] = None, top_k: Optional[int] = None) -> List[OutputData]:
+    def list(self, filters: Optional[Dict] = None, top_k: Optional[int] = None, skip: Optional[int] = None) -> List[OutputData]:
         try:
             """List all memories with optional filters."""
             query: Dict = {"query": {"match_all": {}}}
@@ -394,6 +394,8 @@ class OpenSearchDB(VectorStoreBase):
 
             if top_k:
                 query["size"] = top_k
+            if skip is not None:
+                query["from"] = skip
 
             response = self.client.search(index=self.collection_name, body=query)
             hits = response["hits"]["hits"]
@@ -407,6 +409,25 @@ class OpenSearchDB(VectorStoreBase):
         except Exception as e:
             logger.error(f"Error listing vectors: {e}", exc_info=True)
             return [[]]
+
+    def count(self, filters: Optional[Dict] = None) -> int:
+        """Count memories matching filters.
+
+        Args:
+            filters (Dict, optional): Filters to apply.
+
+        Returns:
+            int: Number of matching memories.
+        """
+        try:
+            body: Dict = {}
+            if filters:
+                body["query"] = {"bool": {"filter": _build_filter_clauses(filters)}}
+            response = self.client.count(index=self.collection_name, body=body)
+            return response["count"]
+        except Exception as e:
+            logger.error(f"Error counting vectors: {e}", exc_info=True)
+            return 0
 
     def reset(self):
         """Reset the index by deleting and recreating it."""

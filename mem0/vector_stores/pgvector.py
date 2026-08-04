@@ -509,7 +509,8 @@ class PGVector(VectorStoreBase):
     def list(
         self,
         filters: Optional[dict] = None,
-        top_k: Optional[int] = 100
+        top_k: Optional[int] = 100,
+        skip: Optional[int] = None,
     ) -> List[OutputData]:
         """
         List all vectors in a collection.
@@ -517,6 +518,7 @@ class PGVector(VectorStoreBase):
         Args:
             filters (Dict, optional): Filters to apply to the list.
             top_k (int, optional): Number of vectors to return. Defaults to 100.
+            skip (int, optional): Number of results to skip (OFFSET). Defaults to None.
 
         Returns:
             List[OutputData]: List of vectors.
@@ -525,6 +527,13 @@ class PGVector(VectorStoreBase):
         filter_conditions, filter_params = _build_filter_conditions(filters)
         filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
 
+        params = list(filter_params) + [top_k]
+        if skip is not None:
+            offset_clause = sql.SQL(" OFFSET %s")
+            params.append(skip)
+        else:
+            offset_clause = sql.SQL("")
+
         with self._get_cursor() as cur:
             cur.execute(
                 sql.SQL("""
@@ -532,11 +541,32 @@ class PGVector(VectorStoreBase):
                 FROM {}
                 {}
                 LIMIT %s
-                """).format(self._col(), filter_clause),
-                (*filter_params, top_k),
+                {}
+                """).format(self._col(), filter_clause, offset_clause),
+                params,
             )
             results = cur.fetchall()
         return [[OutputData(id=str(r[0]), score=None, payload=r[1]) for r in results]]
+
+    def count(self, filters: Optional[dict] = None) -> int:
+        """Count memories matching filters.
+
+        Args:
+            filters (Dict, optional): Filters to apply.
+
+        Returns:
+            int: Number of matching memories.
+        """
+        self._ensure_collection()
+        filter_conditions, filter_params = _build_filter_conditions(filters)
+        filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+
+        with self._get_cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) FROM {} {}").format(self._col(), filter_clause),
+                filter_params,
+            )
+            return cur.fetchone()[0]
 
     def __del__(self) -> None:
         """

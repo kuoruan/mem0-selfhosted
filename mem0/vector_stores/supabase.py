@@ -224,7 +224,7 @@ class Supabase(VectorStoreBase):
             },
         }
 
-    def list(self, filters: Optional[dict] = None, top_k: int = 100) -> List[OutputData]:
+    def list(self, filters: Optional[dict] = None, top_k: int = 100, skip=None) -> List[OutputData]:
         """
         List vectors in the collection.
 

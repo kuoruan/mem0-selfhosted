@@ -188,7 +188,7 @@ class Langchain(VectorStoreBase):
         """
         return {"name": self.collection_name}
 
-    def list(self, filters=None, top_k=None):
+    def list(self, filters=None, top_k=None, skip=None):
         """
         List all vectors in a collection.
         """

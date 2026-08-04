@@ -181,7 +181,7 @@ class S3Vectors(VectorStoreBase):
         response = self.client.get_index(vectorBucketName=self.vector_bucket_name, indexName=self.collection_name)
         return response.get("index", {})
 
-    def list(self, filters=None, top_k=None):
+    def list(self, filters=None, top_k=None, skip=None):
         params = {
             "vectorBucketName": self.vector_bucket_name,
             "indexName": self.collection_name,

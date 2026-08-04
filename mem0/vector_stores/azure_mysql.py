@@ -495,7 +495,8 @@ class AzureMySQL(VectorStoreBase):
     def list(
         self,
         filters: Optional[Dict] = None,
-        top_k: int = 100
+        top_k: int = 100,
+        skip: Optional[int] = None,
     ) -> List[List[OutputData]]:
         """
         List all vectors in the collection.
@@ -520,6 +521,13 @@ class AzureMySQL(VectorStoreBase):
 
         filter_clause = "WHERE " + " AND ".join(filter_conditions) if filter_conditions else ""
 
+        params = list(filter_params) + [top_k]
+        if skip is not None:
+            offset_clause = "OFFSET %s"
+            params.append(skip)
+        else:
+            offset_clause = ""
+
         with self._get_cursor() as cur:
             cur.execute(
                 f"""
@@ -527,8 +535,9 @@ class AzureMySQL(VectorStoreBase):
                 FROM `{self.collection_name}`
                 {filter_clause}
                 LIMIT %s
+                {offset_clause}
                 """,
-                (*filter_params, top_k)
+                params
             )
             results = cur.fetchall()
 

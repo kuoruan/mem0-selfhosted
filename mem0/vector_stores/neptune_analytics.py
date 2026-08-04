@@ -373,7 +373,7 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         pass
 
 
-    def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> List[OutputData]:
+    def list(self, filters: Optional[Dict] = None, top_k: int = 100, skip=None) -> List[OutputData]:
         """
         List all vectors in the collection with optional filtering.
         
@@ -391,10 +391,15 @@ class NeptuneAnalyticsVector(VectorStoreBase):
         para = {
             "limit": top_k,
         }
+        skip_clause = ""
+        if skip is not None:
+            para["skip"] = skip
+            skip_clause = "SKIP $skip"
         query_string = f"""
             MATCH (n :{self.collection_name})
             {where_clause}
             RETURN n
+            {skip_clause}
             LIMIT $limit
         """
         query_response = self.execute_query(query_string, para)

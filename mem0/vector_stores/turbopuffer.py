@@ -290,7 +290,7 @@ class TurbopufferDB(VectorStoreBase):
         except Exception:
             return {"name": self.collection_name}
 
-    def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> list:
+    def list(self, filters: Optional[Dict] = None, top_k: int = 100, skip=None) -> list:
         """
         List vectors in the namespace with optional filtering.
 
@@ -319,13 +319,8 @@ class TurbopufferDB(VectorStoreBase):
             results = []
         return [results]
 
-    def count(self) -> int:
-        """
-        Get approximate count of vectors in the namespace.
-
-        Returns:
-            int: Approximate number of vectors.
-        """
+    def count(self, filters=None) -> int:
+        """Get approximate count of vectors in the namespace."""
         try:
             metadata = self.namespace.metadata()
             return metadata.approx_row_count

@@ -434,7 +434,8 @@ class CassandraDB(VectorStoreBase):
     def list(
         self,
         filters: Optional[Dict] = None,
-        top_k: int = 100
+        top_k: int = 100,
+        skip: Optional[int] = None,
     ) -> List[List[OutputData]]:
         """
         List all vectors in the collection.

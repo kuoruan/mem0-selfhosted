@@ -324,6 +324,20 @@ class RedisDB(VectorStoreBase):
     def col_info(self, name):
         return self.index.info()
 
+    def count(self, filters=None) -> int:
+        """Count memories matching filters."""
+        try:
+            filter_expr = None
+            if filters:
+                conditions = [Tag(key) == value for key, value in filters.items() if value is not None]
+                if conditions:
+                    filter_expr = reduce(lambda x, y: x & y, conditions)
+            query = Query(str(filter_expr) if filter_expr is not None else "*").paging(0, 0)
+            result = self.index.search(query)
+            return result.total
+        except Exception:
+            return 0
+
     def reset(self):
         """
         Reset the index by deleting and recreating it.
@@ -342,7 +356,7 @@ class RedisDB(VectorStoreBase):
         # Recreate the index with the same parameters
         self.create_col(collection_name, self.embedding_model_dims)
 
-    def list(self, filters: dict = None, top_k: int = None) -> list:
+    def list(self, filters: dict = None, top_k: int = None, skip=None) -> list:
         """
         List all recent created memories from the vector store.
         """
@@ -352,8 +366,8 @@ class RedisDB(VectorStoreBase):
             if conditions:
                 filter = reduce(lambda x, y: x & y, conditions)
         query = Query(str(filter) if filter is not None else "*").sort_by("created_at", asc=False)
-        if top_k is not None:
-            query = query.paging(0, top_k)
+        if top_k is not None or skip:
+            query = query.paging(skip or 0, top_k or 1000)
 
         results = self.index.search(query)
         return [

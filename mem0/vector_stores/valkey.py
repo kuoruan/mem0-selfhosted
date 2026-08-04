@@ -766,7 +766,7 @@ class ValkeyDB(VectorStoreBase):
             logger.exception(f"Error resetting index {self.collection_name}: {e}")
             raise
 
-    def list(self, filters: dict = None, top_k: int = None) -> list:
+    def list(self, filters: dict = None, top_k: int = None, skip=None) -> list:
         """
         List all recent created memories from the vector store.
 
@@ -791,6 +791,8 @@ class ValkeyDB(VectorStoreBase):
 
             # Use the existing search method which handles filters properly
             search_results = self.search("", dummy_vector, top_k=search_limit, filters=filters)
+            if skip:
+                search_results = search_results[skip:]
 
             # Convert search results to list format (match Redis format)
             class MemoryResult:

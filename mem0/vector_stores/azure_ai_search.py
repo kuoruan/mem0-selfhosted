@@ -363,7 +363,7 @@ class AzureAISearch(VectorStoreBase):
         index = self.index_client.get_index(self.index_name)
         return {"name": index.name, "fields": index.fields}
 
-    def list(self, filters=None, top_k=100):
+    def list(self, filters=None, top_k=100, skip=None):
         """
         List all vectors in the index.
 
@@ -378,7 +378,7 @@ class AzureAISearch(VectorStoreBase):
         if filters:
             filter_expression = self._build_filter_expression(filters)
 
-        search_results = self.search_client.search(search_text="*", filter=filter_expression, top=top_k)
+        search_results = self.search_client.search(search_text="*", filter=filter_expression, top=top_k, skip=skip or 0)
         results = []
         for result in search_results:
             payload = json.loads(extract_json(result["payload"]))

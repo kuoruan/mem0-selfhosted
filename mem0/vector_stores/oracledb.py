@@ -549,7 +549,7 @@ class OracleAIVectorSearch(VectorStoreBase):
             return segments[-2], segments[-1]
         return None, segments[-1]
 
-    def list(self, filters: Optional[Dict[str, Any]] = None, top_k: Optional[int] = 100) -> List[List[OutputData]]:
+    def list(self, filters: Optional[Dict[str, Any]] = None, top_k: Optional[int] = 100, skip=None) -> List[List[OutputData]]:
         """
         List all vectors in a collection.
 
@@ -562,12 +562,17 @@ class OracleAIVectorSearch(VectorStoreBase):
         """
         filter_clause, params = self._build_filters(filters)
 
+        offset_clause = ""
+        if skip is not None:
+            offset_clause = " OFFSET :skip ROWS"
+            params["skip"] = skip
+
         limit_clause = ""
         if top_k is not None:
             limit_clause = " FETCH FIRST :limit ROWS ONLY"
             params["limit"] = top_k
 
-        sql = f"SELECT id, payload FROM {self.collection_name} {filter_clause} {limit_clause}"
+        sql = f"SELECT id, payload FROM {self.collection_name} {filter_clause} {offset_clause} {limit_clause}"
 
         with self._get_cursor() as cursor:
             cursor.execute(sql, **params)

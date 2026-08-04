@@ -378,7 +378,7 @@ class PineconeDB(VectorStoreBase):
         """
         return self.client.describe_index(self.collection_name)
 
-    def list(self, filters: Optional[Dict] = None, top_k: int = 100) -> List[OutputData]:
+    def list(self, filters: Optional[Dict] = None, top_k: int = 100, skip=None) -> List[OutputData]:
         """
         List vectors in an index with optional filtering.
 
@@ -415,7 +415,7 @@ class PineconeDB(VectorStoreBase):
             logger.error(f"Error listing vectors: {e}")
             return [[]]
 
-    def count(self) -> int:
+    def count(self, filters = None) -> int:
         """
         Count number of vectors in the index.
 

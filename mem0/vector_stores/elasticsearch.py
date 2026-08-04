@@ -275,7 +275,7 @@ class ElasticsearchDB(VectorStoreBase):
         """Get information about a collection (index)."""
         return self.client.indices.get(index=name)
 
-    def list(self, filters: Optional[Dict] = None, top_k: Optional[int] = None) -> List[List[OutputData]]:
+    def list(self, filters: Optional[Dict] = None, top_k: Optional[int] = None, skip=None) -> List[List[OutputData]]:
         """List all memories."""
         query: Dict[str, Any] = {"query": {"match_all": {}}}
 
@@ -288,6 +288,8 @@ class ElasticsearchDB(VectorStoreBase):
 
         if top_k:
             query["size"] = top_k
+        if skip is not None:
+            query["from"] = skip
 
         response = self.client.search(index=self.collection_name, body=query)
 
@@ -302,6 +304,22 @@ class ElasticsearchDB(VectorStoreBase):
             )
 
         return [results]
+
+    def count(self, filters=None) -> int:
+        """Count memories matching filters."""
+        try:
+            body: Dict[str, Any] = {}
+            if filters:
+                filter_conditions = []
+                for key, value in filters.items():
+                    _validate_filter(key, value)
+                    filter_conditions.append({"term": {f"metadata.{key}": value}})
+                body["query"] = {"bool": {"must": filter_conditions}}
+            response = self.client.count(index=self.collection_name, body=body)
+            return response["count"]
+        except Exception as e:
+            logger.error(f"Error counting vectors: {e}", exc_info=True)
+            return 0
 
     def reset(self):
         """Reset the index by deleting and recreating it."""

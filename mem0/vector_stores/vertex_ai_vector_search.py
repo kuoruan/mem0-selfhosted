@@ -463,7 +463,7 @@ class GoogleMatchingEngine(VectorStoreBase):
             "region": self.region,
         }
 
-    def list(self, filters: Optional[Dict] = None, top_k: Optional[int] = None) -> List[List[OutputData]]:
+    def list(self, filters: Optional[Dict] = None, top_k: Optional[int] = None, skip=None) -> List[List[OutputData]]:
         """List vectors matching the given filters.
 
         Args:

@@ -366,7 +366,7 @@ class BaiduDB(VectorStoreBase):
         """
         return self._table.stats()
 
-    def list(self, filters: dict = None, top_k: int = 100) -> list:
+    def list(self, filters: dict = None, top_k: int = 100, skip=None) -> list:
         """
         List all vectors in the table.
 
@@ -379,7 +379,7 @@ class BaiduDB(VectorStoreBase):
         """
         projections = ["id", "metadata"]
         list_filter = self._create_filter(filters) if filters else None
-        result = self._table.select(filter=list_filter, projections=projections, limit=top_k)
+        result = self._table.select(filter=list_filter, projections=projections, limit=top_k, start=skip or 0)
 
         memories = []
         for row in result.rows:

@@ -56,7 +56,7 @@ class VectorStoreBase(ABC):
         pass
 
     @abstractmethod
-    def list(self, filters=None, top_k=None):
+    def list(self, filters=None, top_k=None, skip=None):
         """List all memories."""
         pass
 
@@ -64,6 +64,15 @@ class VectorStoreBase(ABC):
     def reset(self):
         """Reset by delete the collection and recreate it."""
         pass
+
+    def count(self, filters=None) -> int:
+        """Count memories matching filters.
+
+        Stores that support native count (e.g. ``SELECT COUNT(*)``,
+        ``client.count()``) should override this.  Stores without
+        native support should return 0.
+        """
+        return 0
 
     def keyword_search(self, query: str, top_k: int = 5, filters: dict = None):
         """Keyword/BM25 full-text search. Returns None if not supported by this store.

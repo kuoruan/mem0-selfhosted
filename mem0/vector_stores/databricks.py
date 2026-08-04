@@ -790,7 +790,7 @@ class Databricks(VectorStoreBase):
             logger.error(f"Failed to get info for index '{name or self.index_name}': {e}")
             raise
 
-    def list(self, filters: dict = None, top_k: int = None) -> list[MemoryResult]:
+    def list(self, filters: dict = None, top_k: int = None, skip=None) -> list[MemoryResult]:
         """
         List all recent created memories from the vector store.
 
