@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict
 
 from utils.config import load_json_config, merge_config
+from utils.helpers import normalize_vector_store_list
 from mem0 import Memory
 
 _state_lock = threading.RLock()
@@ -148,33 +149,6 @@ def serialize_memory(row: Any) -> Dict[str, Any]:
     }
 
 
-def _normalize_vector_store_list(results: Any) -> list[Any]:
-    if not results:
-        return []
-    if isinstance(results, tuple):
-        return results[0] if isinstance(results[0], list) else []
-    if isinstance(results, list) and results and isinstance(results[0], list):
-        return results[0]
-    if isinstance(results, list):
-        return results
-    return []
-
-
-def _vector_store_count(vector_store: Any) -> int | None:
-    col_info = getattr(vector_store, "col_info", None)
-    if not callable(col_info):
-        return None
-    try:
-        info = col_info()
-    except Exception:
-        return None
-    for key in ("count", "points_count", "vectors_count"):
-        count = info.get(key) if isinstance(info, dict) else getattr(info, key, None)
-        if isinstance(count, int) and count > 0:
-            return count
-    return None
-
-
 def _expiration_date_is_expired(expiration_date: Any) -> bool:
     """Return whether an expiration date has passed.
 
@@ -193,11 +167,13 @@ def _expiration_date_is_expired(expiration_date: Any) -> bool:
 
 def list_all_memories(limit: int | None = ALL_MEMORIES_LIMIT, show_expired: bool | None = None) -> Dict[str, Any]:
     vector_store = get_memory_instance().vector_store
-    top_k = limit if limit is not None else _vector_store_count(vector_store)
-    if top_k is None:
-        top_k = ALL_MEMORIES_LIMIT
+    if limit is not None:
+        top_k = limit
+    else:
+        c = vector_store.count()
+        top_k = c if c > 0 else ALL_MEMORIES_LIMIT
 
-    rows = _normalize_vector_store_list(vector_store.list(top_k=top_k))
+    rows = normalize_vector_store_list(vector_store.list(top_k=top_k))
     memories = [serialize_memory(row) for row in rows]
 
     if show_expired is not True:

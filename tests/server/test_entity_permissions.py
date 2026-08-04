@@ -43,12 +43,35 @@ class _FakeVectorStore:
         if memory_id in self._store and payload is not None:
             self._store[memory_id].update(payload)
 
+    def list(self, filters=None, top_k=100, skip=None):
+        """Return memories matching filters, in the format ``[rows]``."""
+        filters = filters or {}
+        results = [
+            {"id": mid, **payload}
+            for mid, payload in self._store.items()
+            if all(payload.get(k) == v for k, v in filters.items())
+        ]
+        if skip:
+            results = results[skip:]
+        if top_k:
+            results = results[:top_k]
+        return [results]
+
+    def count(self, filters=None) -> int:
+        """Count memories matching filters."""
+        filters = filters or {}
+        return sum(
+            1 for payload in self._store.values()
+            if all(payload.get(k) == v for k, v in filters.items())
+        )
+
 
 class FakeMemory:
     """In-memory stand-in for the mem0 Memory instance."""
 
     def __init__(self):
         self._store: dict[str, dict] = {}
+        self._vector_store: _FakeVectorStore | None = None
 
     def add(self, memory_id, payload):
         self._store[memory_id] = dict(payload)
@@ -70,10 +93,13 @@ class FakeMemory:
             for mid, payload in self._store.items()
             if not all(payload.get(k) == v for k, v in kwargs.items())
         }
+        self._vector_store = None  # invalidate cache after store mutation
 
     @property
     def vector_store(self):
-        return _FakeVectorStore(self._store)
+        if self._vector_store is None:
+            self._vector_store = _FakeVectorStore(self._store)
+        return self._vector_store
 
 
 @pytest.fixture
@@ -899,7 +925,7 @@ def test_prescan_fails_closed_on_vector_error(monkeypatch, fake_memory):
     def boom(*args, **kwargs):
         raise RuntimeError("vector store down")
 
-    monkeypatch.setattr(fake_memory, "get_all", boom)
+    monkeypatch.setattr(fake_memory.vector_store, "list", boom)
     with pytest.raises(HTTPException) as exc:
         ep.list_memory_ids_for_params({"user_id": "alice"})
     assert exc.value.status_code == 503
@@ -911,7 +937,7 @@ def test_count_memories_is_advisory_on_vector_error(monkeypatch, fake_memory):
     def boom(*args, **kwargs):
         raise RuntimeError("vector store down")
 
-    monkeypatch.setattr(fake_memory, "get_all", boom)
+    monkeypatch.setattr(fake_memory.vector_store, "count", boom)
     assert ep.count_memories_for_entity("user", "alice") == 0
 
 
@@ -923,7 +949,7 @@ def test_count_memories_propagates_programming_errors(monkeypatch, fake_memory):
     def boom(*args, **kwargs):
         raise NameError("undefined variable in vector store call")
 
-    monkeypatch.setattr(fake_memory, "get_all", boom)
+    monkeypatch.setattr(fake_memory.vector_store, "count", boom)
     with pytest.raises(NameError):
         ep.count_memories_for_entity("user", "alice")
 

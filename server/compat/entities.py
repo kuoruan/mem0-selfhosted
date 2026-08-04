@@ -13,10 +13,10 @@ from entity import EntityType, TYPE_TO_FIELD
 from pydantic import BaseModel, ConfigDict, Field
 
 from compat.utils import format_iso_timestamp, parse_iso_timestamp
+from utils.helpers import paginate_vector_store
 from server_state import get_memory_instance
 
 SCAN_LIMIT = 10_000
-MAX_AUTOSCAN_LIMIT = 1_000_000
 
 logger = logging.getLogger("mem0.server.compat.entities")
 
@@ -56,99 +56,12 @@ class CompatEntity(BaseModel):
         )
 
 
-def normalize_vector_store_list(raw: Any) -> list:
-    """Unpack different ``vector_store.list()`` return shapes into a flat list of rows.
-
-    Backend return shapes:
-    - PGVector / Chroma: ``[[OutputData, …]]`` — list containing one list of rows
-    - Qdrant: ``([ScoredPoint, …], next_page_offset)`` — tuple of (rows, offset)
-    - Others: flat ``[row, …]`` or empty ``[]``
-    """
-    if not raw:
-        return []
-    if isinstance(raw, tuple):
-        return raw[0] if isinstance(raw[0], list) else []
-    if isinstance(raw, list) and raw and isinstance(raw[0], list):
-        return raw[0]
-    if isinstance(raw, list):
-        return raw
-    return []
-
-
-def _vector_store_row_count(vector_store: Any) -> Optional[int]:
-    """Best-effort count lookup from ``vector_store.col_info()``."""
-    col_info = getattr(vector_store, "col_info", None)
-    if not callable(col_info):
-        return None
-    try:
-        info = col_info()
-    except Exception:
-        return None
-    for key in ("count", "points_count", "vectors_count"):
-        count = info.get(key) if isinstance(info, dict) else getattr(info, key, None)
-        if isinstance(count, int) and count > 0:
-            return count
-    return None
-
-
-def _effective_scan_limit(vector_store: Any, requested_limit: int) -> int:
-    """Resolve scan limit using store count when available."""
-    store_count = _vector_store_row_count(vector_store)
-    if store_count is None:
-        return max(1, requested_limit)
-    return max(1, max(requested_limit, store_count))
-
-
-def _is_truncated_page(raw: Any) -> bool:
-    """Return whether ``vector_store.list()`` likely returned a paged/truncated result."""
-    return isinstance(raw, tuple) and len(raw) > 1 and raw[1] is not None
-
-
 def _scan_rows_with_adaptive_limit(vector_store: Any, initial_limit: int) -> list[Any]:
-    """Read rows with adaptive top_k retries when backend signals truncation.
-
-    Some stores return ``(rows, next_offset)`` but do not expose an offset argument
-    on ``list()``. In that case, progressively increase ``top_k`` to reduce
-    truncation risk.
-    """
-    store_count = _vector_store_row_count(vector_store)
-    current_limit = _effective_scan_limit(vector_store, initial_limit)
-    attempts = 0
-
-    while True:
-        raw_rows = vector_store.list(top_k=current_limit)
-        rows = normalize_vector_store_list(raw_rows)
-        if not _is_truncated_page(raw_rows):
-            return rows
-
-        attempts += 1
-        logger.warning(
-            "vector_store.list() returned a paged result while building entities; "
-            "retrying with larger top_k=%s (attempt=%s)",
-            current_limit,
-            attempts,
-        )
-
-        if store_count is not None and current_limit >= store_count:
-            logger.warning(
-                "entity aggregation may still be truncated because backend paging "
-                "requires cursor continuation and list() has no offset support"
-            )
-            return rows
-
-        next_limit = current_limit * 2
-        if store_count is not None:
-            next_limit = min(next_limit, store_count)
-        else:
-            next_limit = min(next_limit, MAX_AUTOSCAN_LIMIT)
-
-        if next_limit <= current_limit:
-            logger.warning(
-                "entity aggregation may be truncated; adaptive top_k retries reached limit=%s",
-                current_limit,
-            )
-            return rows
-        current_limit = next_limit
+    """Read all rows using ``skip`` pagination."""
+    all_rows: list[Any] = []
+    for batch in paginate_vector_store(vector_store, batch_size=initial_limit):
+        all_rows.extend(batch)
+    return all_rows
 
 
 def iter_payloads(*, limit: int = SCAN_LIMIT) -> list[dict[str, Any]]:

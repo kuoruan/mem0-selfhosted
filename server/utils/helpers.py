@@ -71,3 +71,46 @@ def unwrap_result(raw: Any) -> Any:
     if isinstance(raw, list) and raw:
         return raw[0]
     return raw
+
+
+def normalize_vector_store_list(raw: Any) -> list[Any]:
+    """Unwrap vector store ``list()`` output to a flat list of rows.
+
+    Handles the three return formats:
+    - tuple (qdrant: ``(points, next_offset)``)
+    - list-of-lists (most stores: ``List[List[OutputData]]``)
+    - flat list
+    """
+    if not raw:
+        return []
+    if isinstance(raw, tuple):
+        return raw[0] if isinstance(raw[0], list) else []
+    if isinstance(raw, list) and raw and isinstance(raw[0], list):
+        return raw[0]
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
+def paginate_vector_store(store, *, filters=None, batch_size=1000):
+    """Yield batches from vector store ``list()`` using skip pagination.
+
+    Handles qdrant cursor-based pagination and numeric skip pagination.
+    Each batch is a flat list of rows (unwrapped via
+    ``normalize_vector_store_list``).
+    """
+    skip = 0
+    while True:
+        raw = store.list(filters=filters, top_k=batch_size, skip=skip)
+        batch = normalize_vector_store_list(raw)
+        if not batch:
+            return
+        yield batch
+        if isinstance(raw, tuple) and len(raw) == 2:
+            skip = raw[1] if raw[1] is not None else None
+        elif len(batch) < batch_size:
+            return
+        else:
+            skip += len(batch)
+        if skip is None:
+            return

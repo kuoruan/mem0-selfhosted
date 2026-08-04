@@ -51,7 +51,7 @@ from entity import (
 )
 from models import Entity, EntityPermission, User
 from server_state import get_memory_instance
-from utils.helpers import is_wildcard, normalize_results, unwrap_result
+from utils.helpers import is_wildcard, paginate_vector_store, unwrap_result
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,8 @@ _LEVELS = {"read": 1, "write": 2, "admin": 3}
 # Only non-admin, top-level user entities count toward the quota.
 MAX_OWNED_ENTITIES_PER_USER = int(os.environ.get("MAX_OWNED_ENTITIES_PER_USER", "10"))
 
-# Vector-store scan cap for first-claim counts / delete prescans.
-_SCAN_TOP_K = 1_000_000
+# Vector-store batch size for delete prescan pagination.
+_SCAN_BATCH_SIZE = 1000
 
 
 def strip_user_id_for_app_gate(filters: Any) -> Any:
@@ -178,6 +178,8 @@ def _result_id(row: Any) -> str | None:
         return None
     if isinstance(row, dict):
         mid = row.get("id")
+        if mid is None:
+            mid = row.get("_id")
     else:
         mid = getattr(row, "id", None)
     return str(mid) if mid is not None else None
@@ -224,13 +226,12 @@ def count_memories_for_entity(
     if is_scoped_entity_type(entity_type) and parent_entity_id:
         filters["user_id"] = parent_entity_id
     try:
-        raw = get_memory_instance().get_all(filters=filters, top_k=_SCAN_TOP_K)
+        return get_memory_instance().vector_store.count(filters=filters)
     except Exception as exc:
         if isinstance(exc, (NameError, AttributeError, SyntaxError)):
             raise
         logger.exception("count_memories_for_entity: vector-store scan failed for %s/%s", entity_type, entity_id)
         return 0
-    return len(normalize_results(raw))
 
 
 def list_memory_ids_for_params(entity_params: dict[str, Any]) -> list[str]:
@@ -244,19 +245,20 @@ def list_memory_ids_for_params(entity_params: dict[str, Any]) -> list[str]:
     """
     if not entity_params:
         return []
+    store = get_memory_instance().vector_store
+    ids: list[str] = []
     try:
-        raw = get_memory_instance().get_all(filters=dict(entity_params), top_k=_SCAN_TOP_K)
+        for batch in paginate_vector_store(store, filters=dict(entity_params), batch_size=_SCAN_BATCH_SIZE):
+            for row in batch:
+                mid = _result_id(row)
+                if mid is not None:
+                    ids.append(mid)
     except Exception:
         logger.exception("list_memory_ids_for_params: prescan failed for %r", entity_params)
         raise HTTPException(
             status_code=503,
             detail="Vector store unavailable during delete prescan; the delete was aborted.",
         )
-    ids: list[str] = []
-    for row in normalize_results(raw):
-        mid = _result_id(row)
-        if mid is not None:
-            ids.append(mid)
     return ids
 
 
@@ -1372,11 +1374,20 @@ def bulk_delete_memories(
     The prescan runs inside the scope lock so a concurrent cross-scope write
     cannot sneak a memory into the delete set after validation (TOCTOU).
 
+    App-scoped deletes skip the prescan entirely: the app owner is validated
+    once and ``delete_all`` handles batch deletion internally.
+
     ``list_memory_ids_for_params`` raises ``HTTPException(503)`` on vector-store
     failure; MCP callers must wrap with ``_mcp_raise`` to convert to ``ValueError``.
     """
-    memory_ids = list_memory_ids_for_params(params)
     scope_hint = params_to_entities(params)
+    if "app" in scope_hint:
+        # App-scoped: validate owner once, delete_all handles the batch loop.
+        _assert_bulk_app_owner(scope_hint["app"], operator_id, db, bypass=bypass)
+        memory.delete_all(**params)
+        return
+    # Non-app scope: prescan every memory, validate each, then delete_all.
+    memory_ids = list_memory_ids_for_params(params)
     validate_bulk_admin_operation(
         memory_ids,
         operator_id,
