@@ -1251,6 +1251,7 @@ class Memory(MemoryBase):
         *,
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = 20,
+        skip: Optional[int] = None,
         show_expired: bool = False,
         **kwargs,
     ):
@@ -1262,6 +1263,7 @@ class Memory(MemoryBase):
                 Must contain at least one of: user_id, agent_id, app_id, run_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
+            skip (int, optional): Number of results to skip (offset). Defaults to None.
             show_expired (bool, optional): Include expired memories. Defaults to False.
 
         Returns:
@@ -1306,6 +1308,8 @@ class Memory(MemoryBase):
 
         limit = top_k
         fetch_limit = limit if show_expired else max(limit * 4, 60)
+        if skip is not None:
+            fetch_limit += skip
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
@@ -1313,7 +1317,7 @@ class Memory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"}
         )
 
-        all_memories_result = self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit)
+        all_memories_result = self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit, skip=skip)
 
         if scale_threshold_notice:
             display_scale_threshold_notice(self, "sync", "get_all", *scale_threshold_notice)
@@ -1321,8 +1325,8 @@ class Memory(MemoryBase):
             display_first_run_notice(self, "sync", "get_all")
         return {"results": all_memories_result}
 
-    def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None):
-        memories_result = self.vector_store.list(filters=filters, top_k=limit)
+    def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None, skip=None):
+        memories_result = self.vector_store.list(filters=filters, top_k=limit, skip=skip)
 
         # Handle different vector store return formats by inspecting first element
         if isinstance(memories_result, (tuple, list)) and len(memories_result) > 0:
@@ -2930,6 +2934,7 @@ class AsyncMemory(MemoryBase):
         *,
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = 20,
+        skip: Optional[int] = None,
         show_expired: bool = False,
         **kwargs,
     ):
@@ -2941,6 +2946,7 @@ class AsyncMemory(MemoryBase):
                 Must contain at least one of: user_id, agent_id, app_id, run_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
+            skip (int, optional): Number of results to skip (offset). Defaults to None.
             show_expired (bool, optional): Include expired memories. Defaults to False.
 
         Returns:
@@ -2985,6 +2991,8 @@ class AsyncMemory(MemoryBase):
 
         limit = top_k
         fetch_limit = limit if show_expired else max(limit * 4, 60)
+        if skip is not None:
+            fetch_limit += skip
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
@@ -2992,7 +3000,7 @@ class AsyncMemory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "async"}
         )
 
-        all_memories_result = await self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit)
+        all_memories_result = await self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit, skip=skip)
 
         if scale_threshold_notice:
             await display_scale_threshold_notice_async(self, "async", "get_all", *scale_threshold_notice)
@@ -3000,8 +3008,8 @@ class AsyncMemory(MemoryBase):
             await display_first_run_notice_async(self, "async", "get_all")
         return {"results": all_memories_result}
 
-    async def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None):
-        memories_result = await asyncio.to_thread(self.vector_store.list, filters=filters, top_k=limit)
+    async def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None, skip=None):
+        memories_result = await asyncio.to_thread(self.vector_store.list, filters=filters, top_k=limit, skip=skip)
 
         # Handle different vector store return formats by inspecting first element
         if isinstance(memories_result, (tuple, list)) and len(memories_result) > 0:
