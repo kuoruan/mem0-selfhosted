@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Optional
 
 
 class VectorStoreBase(ABC):
@@ -65,14 +66,16 @@ class VectorStoreBase(ABC):
         """Reset by delete the collection and recreate it."""
         pass
 
-    def count(self, filters=None) -> int:
+    def count(self, filters=None) -> Optional[int]:
         """Count memories matching filters.
 
         Stores that support native count (e.g. ``SELECT COUNT(*)``,
-        ``client.count()``) should override this.  Stores without
-        native support should return 0.
+        ``client.count()``) should override this and return an ``int``.
+        The base implementation returns ``None`` to signal that counting
+        is unsupported, so callers can distinguish a genuine zero count
+        from an unknown count.
         """
-        return 0
+        return None
 
     def keyword_search(self, query: str, top_k: int = 5, filters: dict = None):
         """Keyword/BM25 full-text search. Returns None if not supported by this store.

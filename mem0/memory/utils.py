@@ -320,3 +320,18 @@ def remove_spaces_from_entities(
         cleaned.append(item)
     return cleaned
 
+
+def extract_memory_id(row: Any) -> str | None:
+    """Extract the memory id from a vector-store row.
+
+    Handles dict rows (``id`` or ``_id`` key) and object rows (``.id`` attr).
+    """
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        mid = row.get("id")
+        if mid is None:
+            mid = row.get("_id")
+    else:
+        mid = getattr(row, "id", None)
+    return str(mid) if mid is not None else None
