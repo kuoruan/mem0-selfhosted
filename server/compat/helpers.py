@@ -2,9 +2,11 @@
 
 from typing import Any, Dict, Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
-from utils.helpers import normalize_results, unwrap_result
+from server_state import get_memory_instance
+from utils.helpers import normalize_results, safe_count, unwrap_result
+from utils.pagination import paginate_response
 
 
 def normalize_results_dict(raw: Any, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -49,3 +51,38 @@ def resolve_existing(mem: Any, memory_id: str) -> Dict[str, Any]:
     if not isinstance(item, dict):
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
     return item
+
+
+def paginated_get_all(
+    request: Request,
+    page: int,
+    page_size: int,
+    *,
+    filters: Dict[str, Any],
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Return a page of memories using server-side skip pagination.
+
+    *filters* is required (keyword-only).  Optional keys (``show_expired``, …)
+    are forwarded to ``memory.get_all()``.
+
+    Note: ``skip`` is a visible-row offset (post-expiry-filter), so deep pages
+    cost O(page * page_size / batch_size) store round-trips — a known
+    trade-off of post-filter pagination.
+    """
+    memory = get_memory_instance()
+    start = (page - 1) * page_size
+    # Fetch one extra row to detect whether a next page exists, independent of
+    # the (advisory) count().
+    kwargs["top_k"] = page_size + 1
+    kwargs["skip"] = start
+    raw = memory.get_all(filters=filters, **kwargs)
+    fetched = normalize_results(raw)
+    results = fetched[:page_size]
+    has_more = len(fetched) > page_size
+    # count() is advisory: surface it when available; otherwise fall back to a
+    # scanned lower bound (start + fetched rows). On the final page this
+    # converges to the exact visible total.
+    c = safe_count(memory, filters)
+    total = c if c is not None else start + len(fetched)
+    return paginate_response(request, results, page, page_size, total=total, has_more=has_more)

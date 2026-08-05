@@ -64,6 +64,7 @@ from compat.helpers import (
     build_search_kwargs,
     normalize_results,
     normalize_results_dict,
+    paginated_get_all,
     resolve_existing,
 )
 from compat.metadata import build_v3_add_extra_metadata, merge_v1_add_metadata, merge_v3_add_metadata
@@ -929,13 +930,7 @@ def v2_list_memories(
     kwargs: Dict[str, Any] = {"filters": filters}
     if body.show_expired is not None:
         kwargs["show_expired"] = body.show_expired
-    raw = get_memory_instance().get_all(**kwargs)
-    # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
-    # support server-side limit/offset. Known limitation for very large datasets.
-    # NOTE: docs/openapi.json declares this endpoint as returning a bare array, but
-    # MemoryClient parses the pagination envelope {count, next, previous, results}.
-    # We intentionally diverge from openapi.json to remain client-compatible.
-    return paginate_response(request, normalize_results(raw), page, page_size)
+    return paginated_get_all(request, page, page_size, **kwargs)
 
 
 @router.post("/v2/memories/search/", include_in_schema=False)
@@ -1158,10 +1153,7 @@ def v3_get_all_memories(
     kwargs: Dict[str, Any] = {"filters": filters}
     if body.show_expired is not None:
         kwargs["show_expired"] = body.show_expired
-    raw = get_memory_instance().get_all(**kwargs)
-    # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
-    # support server-side limit/offset. Known limitation for very large datasets.
-    return paginate_response(request, normalize_results(raw), page, page_size)
+    return paginated_get_all(request, page, page_size, **kwargs)
 
 
 @router.post("/v3/memories/search/", include_in_schema=False)

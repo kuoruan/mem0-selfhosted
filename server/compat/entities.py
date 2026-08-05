@@ -66,6 +66,8 @@ def _scan_rows_with_adaptive_limit(vector_store: Any, initial_limit: int) -> lis
 
 def iter_payloads(*, limit: int = SCAN_LIMIT) -> list[dict[str, Any]]:
     """Return raw vector-store payloads for all stored memories."""
+    # Direct vector_store access: needs raw payloads (not Memory's wrapped format)
+    # across all memories with no entity scope; Memory exposes no equivalent.
     vector_store = get_memory_instance().vector_store
     rows = _scan_rows_with_adaptive_limit(vector_store, limit)
     return [getattr(row, "payload", None) or {} for row in rows if row is not None]

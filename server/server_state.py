@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict
 
 from utils.config import load_json_config, merge_config
-from utils.helpers import normalize_vector_store_list
+from utils.helpers import normalize_vector_store_list, safe_count
 from mem0 import Memory
 
 _state_lock = threading.RLock()
@@ -166,14 +166,16 @@ def _expiration_date_is_expired(expiration_date: Any) -> bool:
 
 
 def list_all_memories(limit: int | None = ALL_MEMORIES_LIMIT, show_expired: bool | None = None) -> Dict[str, Any]:
-    vector_store = get_memory_instance().vector_store
+    memory = get_memory_instance()
     if limit is not None:
         top_k = limit
     else:
-        c = vector_store.count()
-        top_k = c if c > 0 else ALL_MEMORIES_LIMIT
+        c = safe_count(memory)
+        top_k = c if c and c > 0 else ALL_MEMORIES_LIMIT
 
-    rows = normalize_vector_store_list(vector_store.list(top_k=top_k))
+    # Direct vector_store.list: admin listing has no entity scope, so Memory.get_all()
+    # cannot be used (it enforces scope validation). See show_expired note below.
+    rows = normalize_vector_store_list(memory.vector_store.list(top_k=top_k))
     memories = [serialize_memory(row) for row in rows]
 
     if show_expired is not True:
