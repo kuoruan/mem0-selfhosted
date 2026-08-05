@@ -346,6 +346,191 @@ def test_get_all_handles_flat_list_from_postgres(mock_sqlite, mock_llm_factory, 
     assert result[1]["memory"] == "Memory 2"
 
 
+def _make_mems(n, prefix="m"):
+    """Build *n* MockVectorMemory objects with distinct ids."""
+    return [MockVectorMemory(f"{prefix}_{i}", {"data": f"memory {i}"}) for i in range(n)]
+
+
+def _wire_memory(mock_vector_factory, mock_embedder_factory, mock_llm_factory, mock_sqlite):
+    """Construct a Memory backed by a MagicMock vector store; return (memory, vs)."""
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+    from mem0.memory.main import Memory as MemoryClass
+
+    return MemoryClass(MemoryConfig()), mock_vector_store
+
+
+@patch("mem0.utils.factory.EmbedderFactory.create")
+@patch("mem0.utils.factory.VectorStoreFactory.create")
+@patch("mem0.utils.factory.LlmFactory.create")
+@patch("mem0.memory.storage.SQLiteManager")
+def test_get_all_aggregates_across_batches_and_stops_at_output_limit(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """Multi-batch scan: aggregates rows across list() calls and stops at output_limit."""
+    memory, mock_vector_store = _wire_memory(mock_vector_factory, mock_embedder_factory, mock_llm_factory, mock_sqlite)
+    # limit=5 -> batch_size=max(5*4, 60)=60; output_limit=100 forces a second batch.
+    mock_vector_store.list.side_effect = [_make_mems(60, "a"), _make_mems(60, "b")]
+
+    result = memory._get_all_from_vector_store({"user_id": "test"}, limit=5, output_limit=100)
+
+    assert len(result) == 100  # stops at output_limit, aggregated across 2 batches
+    assert mock_vector_store.list.call_count == 2
+
+
+@patch("mem0.utils.factory.EmbedderFactory.create")
+@patch("mem0.utils.factory.VectorStoreFactory.create")
+@patch("mem0.utils.factory.LlmFactory.create")
+@patch("mem0.memory.storage.SQLiteManager")
+def test_get_all_detects_store_that_ignores_skip(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """A store that ignores ``skip`` (returns the same first id every batch) must
+    break to avoid an infinite loop, returning only the first batch."""
+    memory, mock_vector_store = _wire_memory(mock_vector_factory, mock_embedder_factory, mock_llm_factory, mock_sqlite)
+    # Always returns the same full batch regardless of skip.
+    mock_vector_store.list.return_value = _make_mems(60, "a")
+
+    result = memory._get_all_from_vector_store({"user_id": "test"}, limit=5, output_limit=100)
+
+    assert len(result) == 60  # only the first batch
+    assert mock_vector_store.list.call_count == 2  # 2nd call detects repeated first id and stops
+
+
+@patch("mem0.utils.factory.EmbedderFactory.create")
+@patch("mem0.utils.factory.VectorStoreFactory.create")
+@patch("mem0.utils.factory.LlmFactory.create")
+@patch("mem0.memory.storage.SQLiteManager")
+def test_get_all_stops_on_partial_batch(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """A batch smaller than batch_size signals the last page."""
+    memory, mock_vector_store = _wire_memory(mock_vector_factory, mock_embedder_factory, mock_llm_factory, mock_sqlite)
+    mock_vector_store.list.return_value = _make_mems(10)  # 10 < batch_size(60)
+
+    result = memory._get_all_from_vector_store({"user_id": "test"}, limit=5, output_limit=100)
+
+    assert len(result) == 10
+    assert mock_vector_store.list.call_count == 1
+
+
+@patch("mem0.utils.factory.EmbedderFactory.create")
+@patch("mem0.utils.factory.VectorStoreFactory.create")
+@patch("mem0.utils.factory.LlmFactory.create")
+@patch("mem0.memory.storage.SQLiteManager")
+def test_get_all_skip_applies_to_visible_not_raw_rows(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """skip counts visible (non-expired) rows, applied after expired filtering."""
+    from datetime import date, timedelta
+
+    memory, mock_vector_store = _wire_memory(mock_vector_factory, mock_embedder_factory, mock_llm_factory, mock_sqlite)
+    past = (date.today() - timedelta(days=1)).isoformat()
+    # raw order: expired, visible, expired, visible, visible
+    mems = [
+        MockVectorMemory("e1", {"data": "expired 1", "expiration_date": past}),
+        MockVectorMemory("v1", {"data": "visible 1"}),
+        MockVectorMemory("e2", {"data": "expired 2", "expiration_date": past}),
+        MockVectorMemory("v2", {"data": "visible 2"}),
+        MockVectorMemory("v3", {"data": "visible 3"}),
+    ]
+    mock_vector_store.list.return_value = mems
+
+    # skip=1 drops the first *visible* (v1); expired are filtered first. Result: v2, v3.
+    result = memory._get_all_from_vector_store({"user_id": "test"}, limit=5, skip=1)
+
+    assert [r["memory"] for r in result] == ["visible 2", "visible 3"]
+
+
+@patch("mem0.utils.factory.EmbedderFactory.create")
+@patch("mem0.utils.factory.VectorStoreFactory.create")
+@patch("mem0.utils.factory.LlmFactory.create")
+@patch("mem0.memory.storage.SQLiteManager")
+def test_get_all_output_limit_independent_of_limit(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """output_limit caps the result independently of limit (which drives batch_size)."""
+    memory, mock_vector_store = _wire_memory(mock_vector_factory, mock_embedder_factory, mock_llm_factory, mock_sqlite)
+    mock_vector_store.list.return_value = _make_mems(20)
+
+    # limit=100 -> batch_size=400, but output_limit=3 caps the result.
+    result = memory._get_all_from_vector_store({"user_id": "test"}, limit=100, output_limit=3)
+
+    assert len(result) == 3
+
+
+@pytest.mark.asyncio
+@patch("mem0.utils.factory.EmbedderFactory.create")
+@patch("mem0.utils.factory.VectorStoreFactory.create")
+@patch("mem0.utils.factory.LlmFactory.create")
+@patch("mem0.memory.storage.SQLiteManager")
+async def test_async_get_all_partial_batch_mirror_sync(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """Async _get_all_from_vector_store mirrors the sync scan: stops on a partial batch."""
+    from mem0 import AsyncMemory
+
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+    memory = AsyncMemory(MemoryConfig())
+    mock_vector_store.list.return_value = _make_mems(10)  # 10 < batch_size(60)
+
+    result = await memory._get_all_from_vector_store({"user_id": "test"}, limit=5, output_limit=100)
+
+    assert len(result) == 10
+
+
+@patch("mem0.utils.factory.EmbedderFactory.create")
+@patch("mem0.utils.factory.VectorStoreFactory.create")
+@patch("mem0.utils.factory.LlmFactory.create")
+@patch("mem0.memory.storage.SQLiteManager")
+def test_get_all_stops_on_partial_batch_after_full_batches(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """Scanning continues across full batches and stops on the first partial batch.
+
+    No max_batches safety cap — termination relies on partial-batch / empty-batch
+    / dup-id / output_limit guards.
+    """
+    memory, mock_vector_store = _wire_memory(mock_vector_factory, mock_embedder_factory, mock_llm_factory, mock_sqlite)
+    mock_vector_store.list.side_effect = [
+        _make_mems(60, f"batch{i}") for i in range(3)
+    ] + [_make_mems(10, "last")]  # 3 full + 1 partial
+
+    result = memory._get_all_from_vector_store({"user_id": "test"}, limit=5, output_limit=10000)
+
+    assert len(result) == 190  # 3×60 + 10
+    assert mock_vector_store.list.call_count == 4
+
+
+@patch("mem0.utils.factory.EmbedderFactory.create")
+@patch("mem0.utils.factory.VectorStoreFactory.create")
+@patch("mem0.utils.factory.LlmFactory.create")
+@patch("mem0.memory.storage.SQLiteManager")
+def test_get_all_stops_on_qdrant_none_cursor(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """A store returning (items, None) signals \u201cno more pages\u201d and stops immediately.
+
+    None cursor is the qdrant end-of-results sentinel: the loop breaks after
+    the first batch without a second list() call.
+    """
+    memory, mock_vector_store = _wire_memory(mock_vector_factory, mock_embedder_factory, mock_llm_factory, mock_sqlite)
+    batch = _make_mems(60, "a")
+    mock_vector_store.list.return_value = (batch, None)
+
+    result = memory._get_all_from_vector_store({"user_id": "test"}, limit=5, output_limit=100)
+
+    assert len(result) == 60
+    assert mock_vector_store.list.call_count == 1  # cursor=None breaks, no 2nd call
+
+
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')

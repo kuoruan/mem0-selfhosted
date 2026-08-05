@@ -32,6 +32,9 @@ def test_list_all_memories_handles_tuple_vector_store_shape(monkeypatch):
     class MemoryInstance:
         vector_store = VectorStore()
 
+        def count(self, filters=None):
+            return 2
+
     monkeypatch.setattr(server_state, "get_memory_instance", lambda: MemoryInstance())
 
     result = server_state.list_all_memories()
@@ -92,6 +95,9 @@ def test_list_all_memories_hides_expired_by_default(monkeypatch):
     class MemoryInstance:
         vector_store = VectorStore()
 
+        def count(self, filters=None):
+            return 2
+
     monkeypatch.setattr(server_state, "get_memory_instance", lambda: MemoryInstance())
 
     result = server_state.list_all_memories(limit=None)
@@ -125,6 +131,7 @@ def test_list_all_memories_uses_object_store_count_when_available(monkeypatch):
 
     memory_instance = MemoryInstance()
     memory_instance.vector_store = vector_store
+    memory_instance.count = lambda filters=None: 12_000
 
     monkeypatch.setattr(server_state, "get_memory_instance", lambda: memory_instance)
 
@@ -152,6 +159,9 @@ def test_list_all_memories_includes_expired_when_requested(monkeypatch):
 
     class MemoryInstance:
         vector_store = VectorStore()
+
+        def count(self, filters=None):
+            return 2
 
     monkeypatch.setattr(server_state, "get_memory_instance", lambda: MemoryInstance())
 
