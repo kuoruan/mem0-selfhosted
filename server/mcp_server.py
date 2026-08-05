@@ -25,6 +25,7 @@ from compat.events import (
     resolve_event_owner_id,
 )
 from compat.helpers import build_search_kwargs, normalize_results, normalize_results_dict
+from utils.helpers import safe_count
 from compat.requests import request_meta
 from compat.responses import (
     pending_add_response,
@@ -383,15 +384,20 @@ def get_memories(
     if show_expired is not None:
         get_all_kwargs["show_expired"] = show_expired
 
-    raw = get_memory_instance().get_all(**get_all_kwargs)
-    items = normalize_results(raw)
+    memory = get_memory_instance()
     clamped_page = max(1, page)
     clamped_page_size = min(max(1, page_size), 100)
     start = (clamped_page - 1) * clamped_page_size
-    return {
-        "count": len(items),
-        "results": items[start : start + clamped_page_size],
-    }
+    get_all_kwargs["top_k"] = clamped_page_size
+    get_all_kwargs["skip"] = start
+    raw = memory.get_all(**get_all_kwargs)
+    results = normalize_results(raw)
+    # count() is advisory and may be unsupported/ignored; fall back to a scanned
+    # lower bound (exact on the final page). MCP has no next link, so clients
+    # detect the end via len(results) < page_size.
+    c = safe_count(memory, get_all_kwargs["filters"])
+    total = c if c is not None else start + len(results)
+    return {"count": total, "results": results}
 
 
 @mcp.tool(
