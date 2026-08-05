@@ -1,8 +1,11 @@
 """General-purpose helper utilities for the mem0 server."""
 
+import logging
 import re
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 _WILDCARD = "*"
 
@@ -73,6 +76,26 @@ def unwrap_result(raw: Any) -> Any:
     return raw
 
 
+def extract_memory_id(row: Any) -> str | None:
+    """Extract the memory id from a vector-store row.
+
+    Handles dict rows (``id`` or ``_id`` key) and object rows (``.id`` attr).
+
+    Note: duplicated from ``mem0.memory.utils.extract_memory_id`` to avoid
+    coupling the server package to the OSS SDK's internal module layout.
+    Keep both copies in sync when changing the extraction logic.
+    """
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        mid = row.get("id")
+        if mid is None:
+            mid = row.get("_id")
+    else:
+        mid = getattr(row, "id", None)
+    return str(mid) if mid is not None else None
+
+
 def normalize_vector_store_list(raw: Any) -> list[Any]:
     """Unwrap vector store ``list()`` output to a flat list of rows.
 
@@ -95,22 +118,55 @@ def normalize_vector_store_list(raw: Any) -> list[Any]:
 def paginate_vector_store(store, *, filters=None, batch_size=1000):
     """Yield batches from vector store ``list()`` using skip pagination.
 
-    Handles qdrant cursor-based pagination and numeric skip pagination.
-    Each batch is a flat list of rows (unwrapped via
-    ``normalize_vector_store_list``).
+    Handles qdrant cursor-based pagination (2-tuple with cursor offset) and
+    numeric skip pagination.  Detects stores that ignore ``skip`` (same first
+    id across batches) to avoid infinite loops.  Each batch is a flat list of
+    rows (unwrapped via ``normalize_vector_store_list``).
     """
     skip = 0
+    prev_first_id = None
     while True:
         raw = store.list(filters=filters, top_k=batch_size, skip=skip)
         batch = normalize_vector_store_list(raw)
         if not batch:
             return
+        # Detect stores that ignore skip: same first id → infinite loop
+        first_id = extract_memory_id(batch[0])
+        if first_id == prev_first_id:
+            return
+        prev_first_id = first_id
         yield batch
+        # Advance offset: cursor (qdrant 2-tuple) or numeric skip
         if isinstance(raw, tuple) and len(raw) == 2:
-            skip = raw[1] if raw[1] is not None else None
+            cursor = raw[1]
+            if cursor is None:
+                return
+            skip = cursor
         elif len(batch) < batch_size:
             return
         else:
             skip += len(batch)
-        if skip is None:
-            return
+
+
+def safe_count(memory, filters=None) -> Optional[int]:
+    """Count memories via ``memory.count()``, returning ``None`` on transient failure.
+
+    Programming errors (NameError/AttributeError/SyntaxError/TypeError) are
+    re-raised; any other exception (store unavailable, timeout, ...) is logged
+    and returns ``None`` so list endpoints degrade gracefully instead of 500ing.
+    The result is normalized to ``int | None`` (defensive against stores that
+    return a non-int).
+
+    Caution: ``AttributeError`` is re-raised on the assumption that the store
+    client is not a lazy proxy. If a store uses a connection-pool proxy that
+    surfaces transient connection failures as ``AttributeError``, this will
+    500 instead of degrading. Re-evaluate if such a store is introduced.
+    """
+    try:
+        c = memory.count(filters=filters)
+    except (NameError, AttributeError, SyntaxError, TypeError):
+        raise
+    except Exception:
+        logger.exception("safe_count: count() failed for filters=%r", filters)
+        return None
+    return c if isinstance(c, int) else None
