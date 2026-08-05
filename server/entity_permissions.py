@@ -51,7 +51,7 @@ from entity import (
 )
 from models import Entity, EntityPermission, User
 from server_state import get_memory_instance
-from utils.helpers import is_wildcard, paginate_vector_store, unwrap_result
+from utils.helpers import extract_memory_id, is_wildcard, paginate_vector_store, safe_count, unwrap_result
 
 logger = logging.getLogger(__name__)
 
@@ -171,20 +171,8 @@ def _resolve_user_owner(entity_id: str, db: Session) -> tuple[uuid.UUID | None, 
 
 
 # --------------------------------------------------------------------------- #
-# Vector-store helpers
+# Entity lookup helpers
 # --------------------------------------------------------------------------- #
-def _result_id(row: Any) -> str | None:
-    if row is None:
-        return None
-    if isinstance(row, dict):
-        mid = row.get("id")
-        if mid is None:
-            mid = row.get("_id")
-    else:
-        mid = getattr(row, "id", None)
-    return str(mid) if mid is not None else None
-
-
 def get_parent_entity_id(entity: Entity, db: Session) -> str | None:
     """For an agent/run entity, the parent user entity's id (used to scope
     vector-store queries/counts since same-named agent/run are unique per parent).
@@ -207,6 +195,9 @@ def entity_filter_params(entity: Entity, db: Session) -> dict[str, str]:
     return params
 
 
+# --------------------------------------------------------------------------- #
+# Vector-store helpers
+# --------------------------------------------------------------------------- #
 def count_memories_for_entity(
     entity_type: str,
     entity_id: str,
@@ -225,13 +216,10 @@ def count_memories_for_entity(
     filters: dict[str, Any] = {field: entity_id}
     if is_scoped_entity_type(entity_type) and parent_entity_id:
         filters["user_id"] = parent_entity_id
-    try:
-        return get_memory_instance().vector_store.count(filters=filters)
-    except Exception as exc:
-        if isinstance(exc, (NameError, AttributeError, SyntaxError)):
-            raise
-        logger.exception("count_memories_for_entity: vector-store scan failed for %s/%s", entity_type, entity_id)
-        return 0
+    # Counts are advisory (not a security path): safe_count logs transient
+    # failures and returns None, which we surface as 0.
+    c = safe_count(get_memory_instance(), filters=filters)
+    return c if c is not None else 0
 
 
 def list_memory_ids_for_params(entity_params: dict[str, Any]) -> list[str]:
@@ -245,12 +233,15 @@ def list_memory_ids_for_params(entity_params: dict[str, Any]) -> list[str]:
     """
     if not entity_params:
         return []
+    # Direct vector_store access: the bulk-delete prescan needs ALL matching raw
+    # ids (including expired) for fail-closed authorization. Memory.get_all()
+    # filters expired and paginates, which would silently miss ids.
     store = get_memory_instance().vector_store
     ids: list[str] = []
     try:
         for batch in paginate_vector_store(store, filters=dict(entity_params), batch_size=_SCAN_BATCH_SIZE):
             for row in batch:
-                mid = _result_id(row)
+                mid = extract_memory_id(row)
                 if mid is not None:
                     ids.append(mid)
     except Exception:
@@ -262,9 +253,6 @@ def list_memory_ids_for_params(entity_params: dict[str, Any]) -> list[str]:
     return ids
 
 
-# --------------------------------------------------------------------------- #
-# Entity lookup helpers
-# --------------------------------------------------------------------------- #
 def get_entity_or_none(
     entity_type: str,
     entity_id: str,
