@@ -12,7 +12,8 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import server.mcp_server as mcp_server
-from server.compat.entities import iter_payloads, normalize_vector_store_list
+from server.compat.entities import iter_payloads
+from server.utils.helpers import normalize_vector_store_list
 from server.compat.events import event_cache_clear, event_cache_put, make_event_obj
 
 # User-Agent "Mozilla" is treated as a generic client (no platform injection),

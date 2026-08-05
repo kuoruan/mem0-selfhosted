@@ -200,56 +200,56 @@ class TestCompatEntity:
         assert bucket["created_at"].tzinfo is not None
         assert bucket["updated_at"].tzinfo is not None
 
-    def test_iter_payloads_uses_store_count_when_available(self, monkeypatch):
+    def test_iter_payloads_scans_single_batch_when_partial(self, monkeypatch):
+        """iter_payloads returns rows from a single partial batch."""
         row = MagicMock(payload={"user_id": "alice"})
         mem = MagicMock()
-        mem.vector_store.col_info.return_value = {"count": 15_000}
-        mem.vector_store.list.return_value = [row]
+        mem.vector_store.list.return_value = [row]  # flat list, 1 row < batch_size
 
         monkeypatch.setattr(compat_entities, "get_memory_instance", lambda: mem)
 
-        payloads = compat_entities.iter_payloads()
+        payloads = compat_entities.iter_payloads(limit=10_000)
         assert payloads == [{"user_id": "alice"}]
-        mem.vector_store.list.assert_called_once_with(top_k=15_000)
+        mem.vector_store.list.assert_called_once_with(filters=None, top_k=10_000, skip=0)
 
-    def test_iter_payloads_uses_object_store_count_when_available(self, monkeypatch):
+    def test_iter_payloads_paginates_across_full_batches(self, monkeypatch):
+        """iter_payloads scans multiple full batches until a partial batch ends the scan."""
+        rows_a = [MagicMock(payload={"user_id": f"u{i}"}) for i in range(5)]
+        rows_b = [MagicMock(payload={"user_id": f"u{i}"}) for i in range(5, 10)]
+        rows_c = [MagicMock(payload={"user_id": "last"})]  # partial
+        mem = MagicMock()
+        mem.vector_store.list.side_effect = [rows_a, rows_b, rows_c]
+
+        monkeypatch.setattr(compat_entities, "get_memory_instance", lambda: mem)
+
+        payloads = compat_entities.iter_payloads(limit=5)
+        assert len(payloads) == 11  # 5 + 5 + 1
+        assert [c.kwargs["skip"] for c in mem.vector_store.list.call_args_list] == [0, 5, 10]
+
+    def test_iter_payloads_handles_qdrant_cursor_none(self, monkeypatch):
+        """A qdrant (items, None) tuple signals end-of-results after one batch."""
         row = MagicMock(payload={"user_id": "alice"})
         mem = MagicMock()
-        mem.vector_store.col_info.return_value = MagicMock(points_count=12_000)
-        mem.vector_store.list.return_value = [row]
+        mem.vector_store.list.return_value = ([row], None)  # cursor=None → stop
 
         monkeypatch.setattr(compat_entities, "get_memory_instance", lambda: mem)
 
-        payloads = compat_entities.iter_payloads()
+        payloads = compat_entities.iter_payloads(limit=5)
         assert payloads == [{"user_id": "alice"}]
-        mem.vector_store.list.assert_called_once_with(top_k=12_000)
+        assert mem.vector_store.list.call_count == 1
 
-    def test_iter_payloads_warns_when_backend_returns_paged_tuple(self, monkeypatch, caplog):
-        row = MagicMock(payload={"user_id": "alice"})
+    def test_iter_payloads_detects_skip_ignoring_store(self, monkeypatch):
+        """A store that ignores skip (same first id, full batch) stops after one batch."""
+        rows = [MagicMock(id=f"m{i}", payload={"user_id": f"u{i}"}) for i in range(5)]
         mem = MagicMock()
-        mem.vector_store.col_info.return_value = {"count": 5}
-        mem.vector_store.list.return_value = ([row], "next-offset")
+        # Always returns the same full batch regardless of skip.
+        mem.vector_store.list.return_value = rows
 
         monkeypatch.setattr(compat_entities, "get_memory_instance", lambda: mem)
 
-        with caplog.at_level(logging.WARNING, logger="mem0.server.compat.entities"):
-            payloads = compat_entities.iter_payloads(limit=5)
-
-        assert payloads == [{"user_id": "alice"}]
-        assert "paged result while building entities" in caplog.text
-
-    def test_iter_payloads_retries_with_larger_top_k_when_count_missing(self, monkeypatch):
-        row1 = MagicMock(payload={"user_id": "alice"})
-        row2 = MagicMock(payload={"user_id": "bob"})
-        mem = MagicMock()
-        mem.vector_store.col_info.return_value = {}
-        mem.vector_store.list.side_effect = [([row1], "next-offset"), [row1, row2]]
-
-        monkeypatch.setattr(compat_entities, "get_memory_instance", lambda: mem)
-
-        payloads = compat_entities.iter_payloads(limit=2)
-        assert payloads == [{"user_id": "alice"}, {"user_id": "bob"}]
-        assert [call.kwargs["top_k"] for call in mem.vector_store.list.call_args_list] == [2, 4]
+        payloads = compat_entities.iter_payloads(limit=5)
+        assert len(payloads) == 5  # only the first batch
+        assert mem.vector_store.list.call_count == 2  # 2nd call detects dup id
 
     def test_v1_list_entities_returns_paginated_entities_with_mixed_timestamps(self, monkeypatch):
         from server.models import Entity
@@ -1152,8 +1152,9 @@ class TestWarnIgnoredCompatParams:
 
     def test_v2_list_warns_for_fields_and_latest_only(self, monkeypatch, caplog):
         mem = MagicMock()
+        mem.count.return_value = 0
         mem.get_all.return_value = []
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        monkeypatch.setattr("server.compat.helpers.get_memory_instance", lambda: mem)
 
         req = MagicMock()
         req.url = URL("http://testserver/v2/memories?page=1&page_size=10")
@@ -1165,7 +1166,7 @@ class TestWarnIgnoredCompatParams:
         assert "v2_list_memories" in caplog.text
         assert "fields" in caplog.text.lower()
         assert "latest_only" in caplog.text
-        mem.get_all.assert_called_once_with(filters={"user_id": "u1"})
+        mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, top_k=11, skip=0)
 
     def test_v3_search_warns_for_reference_date_and_latest_only(self, monkeypatch, caplog):
         mem = MagicMock()
@@ -2097,12 +2098,13 @@ class TestV1ListMemoriesShowExpired:
 class TestV3GetAllMemoriesShowExpired:
     def test_show_expired_passed_to_get_all(self, monkeypatch):
         mem = MagicMock()
+        mem.count.return_value = 0
         mem.get_all.return_value = [{"id": "m1"}]
 
         def _get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+        monkeypatch.setattr("server.compat.helpers.get_memory_instance", _get_mem)
 
         req = MagicMock()
         req.url.path = "/v3/memories"
@@ -2113,7 +2115,7 @@ class TestV3GetAllMemoriesShowExpired:
 
         v3_get_all_memories(request=req, body=body, page=1, page_size=10, auth=None)
 
-        mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True)
+        mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True, top_k=11, skip=0)
 
 
 # ---------------------------------------------------------------------------
@@ -2159,12 +2161,13 @@ class TestV3SearchMemoriesShowExpired:
 class TestV2ListMemoriesShowExpired:
     def test_show_expired_passed_to_get_all(self, monkeypatch):
         mem = MagicMock()
+        mem.count.return_value = 0
         mem.get_all.return_value = [{"id": "m1"}]
 
         def _get_mem():
             return mem
 
-        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+        monkeypatch.setattr("server.compat.helpers.get_memory_instance", _get_mem)
 
         req = MagicMock()
         req.url.path = "/v2/memories"
@@ -2175,7 +2178,7 @@ class TestV2ListMemoriesShowExpired:
 
         v2_list_memories(request=req, body=body, page=1, page_size=10, auth=None)
 
-        mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True)
+        mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True, top_k=11, skip=0)
 
 
 # ---------------------------------------------------------------------------

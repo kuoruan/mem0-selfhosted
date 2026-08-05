@@ -107,3 +107,28 @@ def test_previous_none_on_first_page_even_with_total():
     out = paginate_response(_request(1, 10), ["a"], 1, 10, total=1)
     assert out["previous"] is None
     assert out["next"] is None
+
+
+class TestPaginateResponseHasMore:
+    """``has_more`` overrides the total-based ``next`` derivation.
+
+    Decouples pagination correctness from *total* (which may be advisory or
+    unknown for stores whose ``count()`` ignores filters or counts expired rows).
+    """
+
+    def test_has_more_true_forces_next_even_when_total_says_no(self):
+        # total=5, page 1/size 10: total formula says no next (10 >= 5),
+        # but has_more=True forces a next link.
+        out = paginate_response(_request(1, 10), ["a", "b"], 1, 10, total=5, has_more=True)
+        assert out["next"] is not None
+        assert out["count"] == 5
+
+    def test_has_more_false_suppresses_next_even_when_total_says_yes(self):
+        # total=100, page 1/size 10: total formula says next, but has_more=False.
+        out = paginate_response(_request(1, 10), list(range(10)), 1, 10, total=100, has_more=False)
+        assert out["next"] is None
+        assert out["count"] == 100
+
+    def test_has_more_none_falls_back_to_total_formula(self):
+        out = paginate_response(_request(1, 10), list(range(10)), 1, 10, total=100, has_more=None)
+        assert out["next"] is not None  # 0 + 10 < 100

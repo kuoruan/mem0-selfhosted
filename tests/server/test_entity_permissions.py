@@ -22,11 +22,17 @@ from server.db import Base  # noqa: E402
 from server.models import Entity, EntityPermission, User  # noqa: E402
 
 
+# Sentinel for "count_return not overridden" (distinct from None, which means
+# the store does not support counting).
+_UNSET = object()
+
+
 class _FakeVectorStore:
     """Minimal vector-store stand-in for delete prescans."""
 
-    def __init__(self, store):
+    def __init__(self, store, *, count_return=_UNSET):
         self._store = store
+        self._count_return = count_return
 
     def get(self, memory_id):
         payload = self._store.get(memory_id)
@@ -57,8 +63,14 @@ class _FakeVectorStore:
             results = results[:top_k]
         return [results]
 
-    def count(self, filters=None) -> int:
-        """Count memories matching filters."""
+    def count(self, filters=None) -> int | None:
+        """Count memories matching filters.
+
+        Returns the configured ``count_return`` (e.g. ``None`` to simulate a
+        store that does not support counting) when set; otherwise the real count.
+        """
+        if self._count_return is not _UNSET:
+            return self._count_return
         filters = filters or {}
         return sum(
             1 for payload in self._store.values()
@@ -72,6 +84,9 @@ class FakeMemory:
     def __init__(self):
         self._store: dict[str, dict] = {}
         self._vector_store: _FakeVectorStore | None = None
+        # Set to None (or an int) to override count(); None simulates a store
+        # that does not support counting.
+        self.count_return: object = _UNSET
 
     def add(self, memory_id, payload):
         self._store[memory_id] = dict(payload)
@@ -79,13 +94,21 @@ class FakeMemory:
     def get(self, memory_id):
         return self._store.get(memory_id)
 
-    def get_all(self, filters=None, top_k=None):
+    def get_all(self, filters=None, top_k=None, skip=None):
         filters = filters or {}
-        return [
+        results = [
             {"id": mid, **payload}
             for mid, payload in self._store.items()
             if all(payload.get(k) == v for k, v in filters.items())
         ]
+        if skip:
+            results = results[skip:]
+        if top_k:
+            results = results[:top_k]
+        return results
+
+    def count(self, filters=None) -> int:
+        return self.vector_store.count(filters=filters)
 
     def delete_all(self, **kwargs):
         self._store = {
@@ -98,7 +121,7 @@ class FakeMemory:
     @property
     def vector_store(self):
         if self._vector_store is None:
-            self._vector_store = _FakeVectorStore(self._store)
+            self._vector_store = _FakeVectorStore(self._store, count_return=self.count_return)
         return self._vector_store
 
 
@@ -937,7 +960,7 @@ def test_count_memories_is_advisory_on_vector_error(monkeypatch, fake_memory):
     def boom(*args, **kwargs):
         raise RuntimeError("vector store down")
 
-    monkeypatch.setattr(fake_memory.vector_store, "count", boom)
+    monkeypatch.setattr(fake_memory, "count", boom)
     assert ep.count_memories_for_entity("user", "alice") == 0
 
 
@@ -949,7 +972,7 @@ def test_count_memories_propagates_programming_errors(monkeypatch, fake_memory):
     def boom(*args, **kwargs):
         raise NameError("undefined variable in vector store call")
 
-    monkeypatch.setattr(fake_memory.vector_store, "count", boom)
+    monkeypatch.setattr(fake_memory, "count", boom)
     with pytest.raises(NameError):
         ep.count_memories_for_entity("user", "alice")
 
