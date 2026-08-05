@@ -53,6 +53,7 @@ from mem0.memory.storage import SQLiteManager
 from mem0.memory.telemetry import MEM0_TELEMETRY, capture_event
 from mem0.memory.utils import (
     extract_json,
+    extract_memory_id,
     parse_messages,
     parse_vision_messages,
     process_telemetry_filters,
@@ -1263,7 +1264,10 @@ class Memory(MemoryBase):
                 Must contain at least one of: user_id, agent_id, app_id, run_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
-            skip (int, optional): Number of results to skip (offset). Defaults to None.
+                        skip (int, optional): Number of visible (non-expired) results to skip before
+                collecting output. Applied after expiry filtering, so skip counts only
+                memories that would appear in results. Not a raw store offset.
+                Defaults to None.
             show_expired (bool, optional): Include expired memories. Defaults to False.
 
         Returns:
@@ -1307,9 +1311,6 @@ class Memory(MemoryBase):
             )
 
         limit = top_k
-        fetch_limit = limit if show_expired else max(limit * 4, 60)
-        if skip is not None:
-            fetch_limit += skip
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
@@ -1317,7 +1318,7 @@ class Memory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"}
         )
 
-        all_memories_result = self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit, skip=skip)
+        all_memories_result = self._get_all_from_vector_store(effective_filters, limit, show_expired, limit, skip=skip)
 
         if scale_threshold_notice:
             display_scale_threshold_notice(self, "sync", "get_all", *scale_threshold_notice)
@@ -1325,9 +1326,29 @@ class Memory(MemoryBase):
             display_first_run_notice(self, "sync", "get_all")
         return {"results": all_memories_result}
 
-    def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None, skip=None):
-        memories_result = self.vector_store.list(filters=filters, top_k=limit, skip=skip)
+    @staticmethod
+    def _process_vector_store_batch(
+        memories_result: Any,
+        *,
+        show_expired: bool,
+        skip_count: list[int],
+        output_limit: int,
+        batch_size: int,
+        state: dict[str, Any],
+    ) -> bool:
+        """Process one ``list()`` batch: unwrap, filter expired, apply visible
+        skip, format into ``MemoryItem`` dicts, and advance the raw offset.
 
+        Returns ``True`` if the caller should stop the scan loop.
+        Mutates *state* (``formatted_memories``, ``raw_skip``, ``prev_first_id``).
+        *skip_count* is a one-element list ``[n]`` so the countdown survives
+        across batches (Python ints are immutable).
+
+        Note: ``skip`` is applied after expiry filtering, so the scan always
+        starts from raw offset 0 and skips visible rows in memory. For large
+        ``skip`` values this means O(skip / batch_size) store round-trips before
+        the first output row — a known trade-off of post-filter pagination.
+        """
         # Handle different vector store return formats by inspecting first element
         if isinstance(memories_result, (tuple, list)) and len(memories_result) > 0:
             first_element = memories_result[0]
@@ -1341,6 +1362,58 @@ class Memory(MemoryBase):
         else:
             actual_memories = memories_result
 
+        if not actual_memories:
+            return True
+
+        # Detect stores that ignore skip: same first id → infinite loop
+        first_id = extract_memory_id(actual_memories[0])
+        if first_id == state["prev_first_id"]:
+            return True
+        state["prev_first_id"] = first_id
+
+        for mem in actual_memories:
+            if not show_expired and _payload_is_expired(mem.payload):
+                continue
+            if skip_count[0] > 0:
+                skip_count[0] -= 1
+                continue
+            memory_item_dict = MemoryItem(
+                id=mem.id,
+                memory=mem.payload.get("data", ""),
+                hash=mem.payload.get("hash"),
+                created_at=mem.payload.get("created_at"),
+                updated_at=mem.payload.get("updated_at"),
+            ).model_dump(exclude={"score"})
+
+            for key in state["promoted_payload_keys"]:
+                if key in mem.payload:
+                    memory_item_dict[key] = mem.payload[key]
+
+            additional_metadata = {k: v for k, v in mem.payload.items() if k not in state["core_and_promoted_keys"]}
+            if additional_metadata:
+                memory_item_dict["metadata"] = additional_metadata
+
+            state["formatted_memories"].append(memory_item_dict)
+            if len(state["formatted_memories"]) >= output_limit:
+                return True
+
+        # Advance offset: cursor (qdrant 2-tuple) or numeric skip
+        batch_len = len(actual_memories)
+        if isinstance(memories_result, tuple) and len(memories_result) == 2:
+            cursor = memories_result[1]
+            if cursor is None:
+                return True
+            state["raw_skip"] = cursor
+        elif batch_len < batch_size:
+            return True
+        else:
+            state["raw_skip"] += batch_len
+        return False
+
+    def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None, skip=None):
+        skip_count = [skip or 0]
+        output_limit = output_limit or limit
+        batch_size = max(limit * 4, 60)
         promoted_payload_keys = [
             "user_id",
             "agent_id",
@@ -1352,32 +1425,27 @@ class Memory(MemoryBase):
             "expiration_date",
         ]
         core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", "text_lemmatized", "attributed_to", *promoted_payload_keys}
+        state = {
+            "raw_skip": 0,
+            "prev_first_id": None,
+            "formatted_memories": [],
+            "promoted_payload_keys": promoted_payload_keys,
+            "core_and_promoted_keys": core_and_promoted_keys,
+        }
 
-        formatted_memories = []
-        for mem in actual_memories:
-            if not show_expired and _payload_is_expired(mem.payload):
-                continue
-            memory_item_dict = MemoryItem(
-                id=mem.id,
-                memory=mem.payload.get("data", ""),
-                hash=mem.payload.get("hash"),
-                created_at=mem.payload.get("created_at"),
-                updated_at=mem.payload.get("updated_at"),
-            ).model_dump(exclude={"score"})
-
-            for key in promoted_payload_keys:
-                if key in mem.payload:
-                    memory_item_dict[key] = mem.payload[key]
-
-            additional_metadata = {k: v for k, v in mem.payload.items() if k not in core_and_promoted_keys}
-            if additional_metadata:
-                memory_item_dict["metadata"] = additional_metadata
-
-            formatted_memories.append(memory_item_dict)
-            if output_limit is not None and len(formatted_memories) >= output_limit:
+        while len(state["formatted_memories"]) < output_limit:
+            memories_result = self.vector_store.list(filters=filters, top_k=batch_size, skip=state["raw_skip"])
+            if self._process_vector_store_batch(
+                memories_result,
+                show_expired=show_expired,
+                skip_count=skip_count,
+                output_limit=output_limit,
+                batch_size=batch_size,
+                state=state,
+            ):
                 break
 
-        return formatted_memories
+        return state["formatted_memories"]
 
     def search(
         self,
@@ -1608,16 +1676,16 @@ class Memory(MemoryBase):
     def _has_advanced_operators(self, filters: Dict[str, Any]) -> bool:
         """
         Check if filters contain advanced operators that need special processing.
-        
+
         Args:
             filters: Dictionary of filters to check
-            
+
         Returns:
             bool: True if advanced operators are detected
         """
         if not isinstance(filters, dict):
             return False
-            
+
         for key, value in filters.items():
             # Check for platform-style logical operators
             if key in ["AND", "OR", "NOT"]:
@@ -1959,6 +2027,22 @@ class Memory(MemoryBase):
         else:
             display_first_run_notice(self, "sync", "delete_all")
         return {"message": "Memories deleted successfully!"}
+
+    def count(self, filters: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Count memories matching filters.
+
+        Delegates to the underlying vector store's ``count()`` method.
+        Returns ``None`` for stores that do not support native counting,
+        so callers can distinguish "genuinely zero" from "unknown".
+
+        Args:
+            filters (dict, optional): Entity-scope filters.
+
+        Returns:
+            int | None: Number of matching memories, or ``None`` if the
+                store does not support counting.
+        """
+        return self.vector_store.count(filters=filters)
 
     def history(self, memory_id):
         """
@@ -2946,7 +3030,10 @@ class AsyncMemory(MemoryBase):
                 Must contain at least one of: user_id, agent_id, app_id, run_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
-            skip (int, optional): Number of results to skip (offset). Defaults to None.
+            skip (int, optional): Number of visible (non-expired) results to skip before
+                collecting output. Applied after expiry filtering, so skip counts only
+                memories that would appear in results. Not a raw store offset.
+                Defaults to None.
             show_expired (bool, optional): Include expired memories. Defaults to False.
 
         Returns:
@@ -2990,9 +3077,6 @@ class AsyncMemory(MemoryBase):
             )
 
         limit = top_k
-        fetch_limit = limit if show_expired else max(limit * 4, 60)
-        if skip is not None:
-            fetch_limit += skip
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
@@ -3000,7 +3084,7 @@ class AsyncMemory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "async"}
         )
 
-        all_memories_result = await self._get_all_from_vector_store(effective_filters, fetch_limit, show_expired, limit, skip=skip)
+        all_memories_result = await self._get_all_from_vector_store(effective_filters, limit, show_expired, limit, skip=skip)
 
         if scale_threshold_notice:
             await display_scale_threshold_notice_async(self, "async", "get_all", *scale_threshold_notice)
@@ -3009,21 +3093,9 @@ class AsyncMemory(MemoryBase):
         return {"results": all_memories_result}
 
     async def _get_all_from_vector_store(self, filters, limit, show_expired=False, output_limit=None, skip=None):
-        memories_result = await asyncio.to_thread(self.vector_store.list, filters=filters, top_k=limit, skip=skip)
-
-        # Handle different vector store return formats by inspecting first element
-        if isinstance(memories_result, (tuple, list)) and len(memories_result) > 0:
-            first_element = memories_result[0]
-
-            # If first element is a container, unwrap one level
-            if isinstance(first_element, (list, tuple)):
-                actual_memories = first_element
-            else:
-                # First element is a memory object, structure is already flat
-                actual_memories = memories_result
-        else:
-            actual_memories = memories_result
-
+        skip_count = [skip or 0]
+        output_limit = output_limit or limit
+        batch_size = max(limit * 4, 60)
         promoted_payload_keys = [
             "user_id",
             "agent_id",
@@ -3035,32 +3107,29 @@ class AsyncMemory(MemoryBase):
             "expiration_date",
         ]
         core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", "text_lemmatized", "attributed_to", *promoted_payload_keys}
+        state = {
+            "raw_skip": 0,
+            "prev_first_id": None,
+            "formatted_memories": [],
+            "promoted_payload_keys": promoted_payload_keys,
+            "core_and_promoted_keys": core_and_promoted_keys,
+        }
 
-        formatted_memories = []
-        for mem in actual_memories:
-            if not show_expired and _payload_is_expired(mem.payload):
-                continue
-            memory_item_dict = MemoryItem(
-                id=mem.id,
-                memory=mem.payload.get("data", ""),
-                hash=mem.payload.get("hash"),
-                created_at=mem.payload.get("created_at"),
-                updated_at=mem.payload.get("updated_at"),
-            ).model_dump(exclude={"score"})
-
-            for key in promoted_payload_keys:
-                if key in mem.payload:
-                    memory_item_dict[key] = mem.payload[key]
-
-            additional_metadata = {k: v for k, v in mem.payload.items() if k not in core_and_promoted_keys}
-            if additional_metadata:
-                memory_item_dict["metadata"] = additional_metadata
-
-            formatted_memories.append(memory_item_dict)
-            if output_limit is not None and len(formatted_memories) >= output_limit:
+        while len(state["formatted_memories"]) < output_limit:
+            memories_result = await asyncio.to_thread(
+                self.vector_store.list, filters=filters, top_k=batch_size, skip=state["raw_skip"]
+            )
+            if self._process_vector_store_batch(
+                memories_result,
+                show_expired=show_expired,
+                skip_count=skip_count,
+                output_limit=output_limit,
+                batch_size=batch_size,
+                state=state,
+            ):
                 break
 
-        return formatted_memories
+        return state["formatted_memories"]
 
     async def search(
         self,
@@ -3652,6 +3721,14 @@ class AsyncMemory(MemoryBase):
             await display_first_run_notice_async(self, "async", "delete_all")
         return {"message": "Memories deleted successfully!"}
 
+    async def count(self, filters: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Count memories matching filters (async).
+
+        Delegates to the underlying vector store's ``count()`` method.
+        Returns ``None`` for stores that do not support native counting.
+        """
+        return await asyncio.to_thread(self.vector_store.count, filters=filters)
+
     async def history(self, memory_id):
         """
         Get the history of changes for a memory by ID asynchronously.
@@ -3743,7 +3820,7 @@ class AsyncMemory(MemoryBase):
             else:
                 procedural_memory = await asyncio.to_thread(self.llm.generate_response, messages=parsed_messages)
                 procedural_memory = remove_code_blocks(procedural_memory)
-        
+
         except Exception as e:
             logger.error(f"Error generating procedural memory summary: {e}")
             raise
