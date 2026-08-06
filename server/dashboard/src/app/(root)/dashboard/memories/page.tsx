@@ -159,24 +159,34 @@ export default function MemoriesPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold font-fustat">Memories</h1>
-        <Button
-          variant="ghost"
-          size="smIcon"
-          onClick={() => refetch()}
-          disabled={isLoading}
-          title="Refresh memories"
-        >
-          <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
-        </Button>
-        <MemoryUserSelect
-          value={selectedUserId}
-          onChange={handleUserChange}
-          ownUserId={ownUserId}
-          className="w-72"
-        />
-        <MemoryAppSelect value={appId} onChange={selectApp} className="w-72" />
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h1 className="text-xl font-semibold font-fustat">Memories</h1>
+          <Button
+            variant="outline"
+            onClick={() => refetch()}
+            disabled={isLoading}
+          >
+            <RefreshCw
+              className={`size-4 mr-2 ${isLoading ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </Button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <MemoryUserSelect
+            value={selectedUserId}
+            onChange={handleUserChange}
+            ownUserId={ownUserId}
+            className="w-72"
+          />
+          <MemoryAppSelect
+            value={appId}
+            onChange={selectApp}
+            className="w-72"
+          />
+        </div>
       </div>
 
       {isLoading ? (
@@ -186,7 +196,7 @@ export default function MemoriesPage() {
           title="No memories yet"
           description="Create your first memory by sending a POST /memories request."
         >
-          <pre className="text-xs text-left bg-surface-default-secondary p-3 rounded font-mono overflow-x-auto mt-3 max-w-lg">
+          <pre className="text-xs text-left bg-surface-default-secondary p-3 rounded font-mono overflow-x-auto mt-3 w-80 sm:w-full sm:max-w-lg">
             {`curl -X POST ${apiUrl}/memories \\
   -H "X-API-Key: <your-key>" \\
   -H "Content-Type: application/json" \\

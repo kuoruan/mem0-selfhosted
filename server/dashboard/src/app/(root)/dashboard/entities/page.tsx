@@ -240,56 +240,53 @@ export default function EntitiesPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h1 className="text-xl font-semibold font-fustat">Entities</h1>
-          <Button
-            variant="ghost"
-            size="smIcon"
-            onClick={reload}
-            disabled={isLoading}
-            title="Refresh entities"
-          >
-            <RefreshCw
-              className={`size-4 ${isLoading ? "animate-spin" : ""}`}
-            />
-          </Button>
-        </div>
-        <Button size="sm" onClick={() => setCreateOpen(true)}>
-          <Plus className="size-4 mr-1" /> Create Entity
-        </Button>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-3">
-        {isAdmin && (
-          <>
-            <EntityViewSelect
-              value={viewAs || ownUserId}
-              onChange={setViewAs}
-              ownUserId={ownUserId}
-              className="w-72"
-            />
-            <Label className="flex items-center gap-2 text-sm font-normal text-onSurface-default-tertiary">
-              <Checkbox
-                checked={showUnownedOnly}
-                disabled={!isWildcard(viewAs || ownUserId)}
-                onCheckedChange={(c) => setShowUnownedOnly(c === true)}
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={reload} disabled={isLoading}>
+              <RefreshCw
+                className={`size-4 mr-2 ${isLoading ? "animate-spin" : ""}`}
               />
-              Unowned only
-            </Label>
-            <Separator orientation="vertical" className="h-5" />
-          </>
-        )}
-        <Label className="text-sm font-normal text-onSurface-default-tertiary">
-          Type:
-        </Label>
-        <SimpleSelect
-          value={typeFilter}
-          onValueChange={setTypeFilter}
-          options={TYPE_OPTIONS}
-          placeholder="All"
-          className="w-28"
-        />
+              Refresh
+            </Button>
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="size-4 mr-1" /> Create Entity
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          {isAdmin && (
+            <>
+              <EntityViewSelect
+                value={viewAs || ownUserId}
+                onChange={setViewAs}
+                ownUserId={ownUserId}
+                className="w-72"
+              />
+              <Label className="flex items-center gap-2 text-sm font-normal text-onSurface-default-tertiary">
+                <Checkbox
+                  checked={showUnownedOnly}
+                  disabled={!isWildcard(viewAs || ownUserId)}
+                  onCheckedChange={(c) => setShowUnownedOnly(c === true)}
+                />
+                Unowned only
+              </Label>
+              <Separator orientation="vertical" className="h-5" />
+            </>
+          )}
+          <Label className="text-sm font-normal text-onSurface-default-tertiary">
+            Type:
+          </Label>
+          <SimpleSelect
+            value={typeFilter}
+            onValueChange={setTypeFilter}
+            options={TYPE_OPTIONS}
+            placeholder="All"
+            className="w-28"
+          />
+        </div>
       </div>
 
       {isLoading && entities.length === 0 ? (
