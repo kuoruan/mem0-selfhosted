@@ -1,6 +1,6 @@
 {
   "name": "@mem0/zapier",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Zapier integration for Mem0 — the memory layer for AI agents.",
   "keywords": [
     "zapier",
@@ -20,7 +20,7 @@
     "directory": "integrations/zapier-mem0"
   },
   "license": "Apache-2.0",
-  "main": "dist/index.js",
+  "main": "index.js",
   "scripts": {
     "build": "tsc",
     "test": "jest --testTimeout 180000",

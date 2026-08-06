@@ -1219,6 +1219,15 @@
 						"description": "Number of items per page. Default: 100."
 					},
 					{
+						"name": "limit",
+						"in": "query",
+						"schema": {
+							"type": "integer",
+							"maximum": 200
+						},
+						"description": "Maximum number of memories to return. Maximum accepted value: 200. Ignored when both `page` and `page_size` are supplied."
+					},
+					{
 						"name": "start_date",
 						"in": "query",
 						"schema": {
@@ -1261,6 +1270,7 @@
 													},
 													"metadata": {
 														"type": "object",
+														"nullable": true,
 														"additionalProperties": true,
 														"description": "User-supplied metadata attached to the memory."
 													},
@@ -1288,6 +1298,7 @@
 													},
 													"structured_attributes": {
 														"type": "object",
+														"nullable": true,
 														"additionalProperties": true,
 														"description": "System-derived temporal breakdown of the memory's creation time (e.g. year, month, day_of_week)."
 													},
@@ -1346,6 +1357,7 @@
 															},
 															"metadata": {
 																"type": "object",
+																"nullable": true,
 																"additionalProperties": true,
 																"description": "User-supplied metadata attached to the memory."
 															},
@@ -1373,6 +1385,7 @@
 															},
 															"structured_attributes": {
 																"type": "object",
+																"nullable": true,
 																"additionalProperties": true,
 																"description": "System-derived temporal breakdown of the memory's creation time (e.g. year, month, day_of_week)."
 															},
@@ -1416,11 +1429,44 @@
 						"content": {
 							"application/json": {
 								"schema": {
+									"oneOf": [
+										{
+											"type": "array",
+											"description": "Returned when none of the required filters (app_id, user_id, agent_id, run_id) is supplied.",
+											"items": {
+												"type": "string"
+											},
+											"example": [
+												"One of the filters: app_id, user_id, agent_id, run_id is required!"
+											]
+										},
+										{
+											"type": "object",
+											"description": "Returned when the `limit` query parameter is invalid.",
+											"properties": {
+												"error": {
+													"type": "string"
+												}
+											},
+											"example": {
+												"error": "limit must be <= 200"
+											}
+										}
+									]
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Not Found.",
+						"content": {
+							"application/json": {
+								"schema": {
 									"type": "object",
 									"properties": {
-										"message": {
+										"detail": {
 											"type": "string",
-											"example": "One of the filters: app_id, user_id, agent_id, run_id is required!"
+											"example": "Invalid page."
 										}
 									}
 								}
@@ -1774,6 +1820,7 @@
 											},
 											"metadata": {
 												"type": "object",
+												"nullable": true,
 												"additionalProperties": true,
 												"description": "Additional metadata associated with the memory"
 											},
@@ -1802,6 +1849,7 @@
 											},
 											"structured_attributes": {
 												"type": "object",
+												"nullable": true,
 												"additionalProperties": true,
 												"description": "System-derived temporal breakdown of the memory's creation time (e.g. year, month, day_of_week)."
 											},
@@ -1878,6 +1926,24 @@
 				],
 				"description": "Despite the endpoint name, this returns memory history entries (the same shape as `GET /v1/memories/{memory_id}/history/`), not event/ingestion-job records. For event/ingestion-job status, use `GET /v1/event/{event_id}/`.",
 				"operationId": "memories_events_list",
+				"parameters": [
+					{
+						"name": "page",
+						"in": "query",
+						"schema": {
+							"type": "integer"
+						},
+						"description": "Page number for pagination. Default: 1. Default page size is 100."
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"schema": {
+							"type": "integer"
+						},
+						"description": "Number of items per page. Default: 100."
+					}
+				],
 				"responses": {
 					"200": {
 						"description": "Successfully retrieved memory history entries.",
@@ -1940,6 +2006,21 @@
 														"type": "string",
 														"description": "The identifier of the user associated with this memory"
 													},
+													"agent_id": {
+														"type": "string",
+														"nullable": true,
+														"description": "The identifier of the agent associated with this memory, if any."
+													},
+													"app_id": {
+														"type": "string",
+														"nullable": true,
+														"description": "The identifier of the app associated with this memory, if any."
+													},
+													"session_id": {
+														"type": "string",
+														"nullable": true,
+														"description": "The run identifier associated with this memory, returned as `session_id`."
+													},
 													"categories": {
 														"type": "array",
 														"nullable": true,
@@ -2001,6 +2082,22 @@
 										"previous",
 										"results"
 									]
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Invalid page.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"detail": {
+											"type": "string",
+											"example": "Invalid page."
+										}
+									}
 								}
 							}
 						}
@@ -2514,6 +2611,7 @@
 													},
 													"metadata": {
 														"type": "object",
+														"nullable": true,
 														"additionalProperties": true,
 														"description": "User-supplied metadata attached to the memory."
 													},
@@ -2526,6 +2624,7 @@
 													},
 													"structured_attributes": {
 														"type": "object",
+														"nullable": true,
 														"additionalProperties": true,
 														"description": "System-derived temporal breakdown of the memory's creation time (e.g. year, month, day_of_week)."
 													},
@@ -2684,6 +2783,10 @@
 									"custom_instructions": {
 										"type": "string",
 										"description": "Project-level instructions that guide extraction for this call."
+									},
+									"agent_custom_instructions": {
+										"type": "string",
+										"description": "Extraction instructions for agent-scoped memories, overriding the project-level setting for this call. Applied when `agent_id` is sent without `user_id`; when both are sent it governs the assistant-attributed memories while `custom_instructions` governs the rest."
 									},
 									"custom_categories": {
 										"type": "array",
@@ -2930,7 +3033,7 @@
 											}
 										],
 										"nullable": true,
-										"description": "Optional query anchor time for relative temporal interpretation. Accepts Unix epoch, YYYY-MM-DD, or ISO datetime."
+										"description": "Date and time to simulate the search from. Accepts a Unix epoch, YYYY-MM-DD, or ISO datetime."
 									},
 									"fields": {
 										"type": "array",
@@ -3033,6 +3136,7 @@
 													},
 													"metadata": {
 														"type": "object",
+														"nullable": true,
 														"additionalProperties": true,
 														"description": "User-supplied metadata attached to the memory."
 													},
@@ -3114,7 +3218,42 @@
 				"tags": [
 					"memories"
 				],
+				"description": "Returns a paginated list of memories belonging to the given entity.",
 				"operationId": "memories_entity_read",
+				"parameters": [
+					{
+						"name": "entity_type",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"enum": [
+								"user",
+								"agent",
+								"run",
+								"app"
+							]
+						},
+						"description": "The type of entity to retrieve memories for. Any other value returns `400 {\"error\": \"Invalid entity type\"}`."
+					},
+					{
+						"name": "entity_id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						},
+						"description": "The identifier of the entity whose memories to retrieve."
+					},
+					{
+						"name": "page",
+						"in": "query",
+						"schema": {
+							"type": "integer"
+						},
+						"description": "Page number for pagination. Default: 1. Page size is fixed at 100 and is not client-configurable."
+					}
+				],
 				"responses": {
 					"200": {
 						"description": "Successfully retrieved memories.",
@@ -3218,34 +3357,25 @@
 								}
 							}
 						}
-					}
-				}
-			},
-			"parameters": [
-				{
-					"name": "entity_type",
-					"in": "path",
-					"required": true,
-					"schema": {
-						"type": "string",
-						"enum": [
-							"user",
-							"agent",
-							"run",
-							"app"
-						]
 					},
-					"description": "The type of entity to retrieve memories for."
-				},
-				{
-					"name": "entity_id",
-					"in": "path",
-					"required": true,
-					"schema": {
-						"type": "string"
+					"404": {
+						"description": "Invalid page.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"detail": {
+											"type": "string",
+											"example": "Invalid page."
+										}
+									}
+								}
+							}
+						}
 					}
 				}
-			]
+			}
 		},
 		"/v1/memories/{memory_id}/": {
 			"get": {
@@ -3288,8 +3418,24 @@
 											"nullable": true,
 											"description": "Identifier of the user associated with this memory"
 										},
+										"agent_id": {
+											"type": "string",
+											"nullable": true,
+											"description": "The identifier of the agent associated with this memory, if any."
+										},
+										"app_id": {
+											"type": "string",
+											"nullable": true,
+											"description": "The identifier of the app associated with this memory, if any."
+										},
+										"session_id": {
+											"type": "string",
+											"nullable": true,
+											"description": "The run identifier associated with this memory, returned as `session_id`."
+										},
 										"metadata": {
 											"type": "object",
+											"nullable": true,
 											"additionalProperties": true,
 											"description": "Additional metadata associated with the memory"
 										},
@@ -3318,6 +3464,7 @@
 										},
 										"structured_attributes": {
 											"type": "object",
+											"nullable": true,
 											"additionalProperties": true,
 											"description": "System-derived temporal breakdown of the memory's creation time (e.g. year, month, day_of_week)."
 										},
@@ -3333,6 +3480,22 @@
 										"lifecycle_state": {
 											"type": "string",
 											"description": "Lifecycle state of the memory."
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Invalid memory ID.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"error": {
+											"type": "string",
+											"example": "memory_id should be a valid UUID"
 										}
 									}
 								}
@@ -3387,7 +3550,7 @@
 				"tags": [
 					"memories"
 				],
-				"description": "Get or Update or delete a memory.",
+				"description": "Update a memory's text, metadata, or expiration date.",
 				"operationId": "memories_update",
 				"parameters": [
 					{
@@ -3398,7 +3561,7 @@
 							"type": "string",
 							"format": "uuid"
 						},
-						"description": "The unique identifier of the memory to retrieve."
+						"description": "The unique identifier of the memory to update."
 					}
 				],
 				"requestBody": {
@@ -3448,8 +3611,24 @@
 											"nullable": true,
 											"description": "Identifier of the user associated with this memory"
 										},
+										"agent_id": {
+											"type": "string",
+											"nullable": true,
+											"description": "The identifier of the agent associated with this memory, if any."
+										},
+										"app_id": {
+											"type": "string",
+											"nullable": true,
+											"description": "The identifier of the app associated with this memory, if any."
+										},
+										"session_id": {
+											"type": "string",
+											"nullable": true,
+											"description": "The run identifier associated with this memory, returned as `session_id`."
+										},
 										"metadata": {
 											"type": "object",
+											"nullable": true,
 											"additionalProperties": true,
 											"description": "Additional metadata associated with the memory"
 										},
@@ -3478,6 +3657,7 @@
 										},
 										"structured_attributes": {
 											"type": "object",
+											"nullable": true,
 											"additionalProperties": true,
 											"description": "System-derived temporal breakdown of the memory's creation time (e.g. year, month, day_of_week)."
 										},
@@ -3493,6 +3673,38 @@
 										"lifecycle_state": {
 											"type": "string",
 											"description": "Lifecycle state of the memory."
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Invalid memory ID.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"error": {
+											"type": "string",
+											"example": "memory_id should be a valid UUID"
+										}
+									}
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Memory not found.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"error": {
+											"type": "string",
+											"example": "Memory not found!"
 										}
 									}
 								}
@@ -3532,7 +3744,7 @@
 				"tags": [
 					"memories"
 				],
-				"description": "Get or Update or delete a memory.",
+				"description": "Delete a memory.",
 				"operationId": "memories_delete",
 				"parameters": [
 					{
@@ -3543,7 +3755,7 @@
 							"type": "string",
 							"format": "uuid"
 						},
-						"description": "The unique identifier of the memory to retrieve."
+						"description": "The unique identifier of the memory to delete."
 					},
 					{
 						"name": "delete_linked",
@@ -3570,6 +3782,38 @@
 										"cascade_count": {
 											"type": "integer",
 											"description": "Number of linked memories also deleted. Only present when `delete_linked=true` was passed."
+										}
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "Invalid memory ID.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"error": {
+											"type": "string",
+											"example": "memory_id should be a valid UUID"
+										}
+									}
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "Memory not found.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"type": "object",
+									"properties": {
+										"error": {
+											"type": "string",
+											"example": "Memory not found!"
 										}
 									}
 								}
@@ -3681,6 +3925,21 @@
 											"user_id": {
 												"type": "string",
 												"description": "The identifier of the user associated with this memory"
+											},
+											"agent_id": {
+												"type": "string",
+												"nullable": true,
+												"description": "The identifier of the agent associated with this memory, if any."
+											},
+											"app_id": {
+												"type": "string",
+												"nullable": true,
+												"description": "The identifier of the app associated with this memory, if any."
+											},
+											"session_id": {
+												"type": "string",
+												"nullable": true,
+												"description": "The run identifier associated with this memory, returned as `session_id`."
 											},
 											"categories": {
 												"type": "array",
@@ -5550,6 +5809,11 @@
 										},
 										"description": "Custom instructions for memory processing in this project"
 									},
+									"agent_custom_instructions": {
+										"type": "string",
+										"nullable": true,
+										"description": "Extraction instructions for agent-scoped memories. Falls back to `custom_instructions` when unset. Send an empty string to clear it."
+									},
 									"custom_categories": {
 										"type": "array",
 										"items": {
@@ -7173,6 +7437,12 @@
 					"custom_instructions": {
 						"description": "Defines project-specific guidelines for handling and organizing memories. When set at the project level, they apply to all new memories in that project.",
 						"title": "Custom instructions",
+						"type": "string",
+						"nullable": true
+					},
+					"agent_custom_instructions": {
+						"description": "Extraction instructions that apply only to agent-scoped memories. Used when `agent_id` is sent without `user_id`; when both are sent it governs the assistant-attributed memories while `custom_instructions` governs the rest. Falls back to `custom_instructions` when unset.",
+						"title": "Agent custom instructions",
 						"type": "string",
 						"nullable": true
 					},
