@@ -1,6 +1,7 @@
 import importlib
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -779,7 +780,7 @@ def test_add_memory_default_infer_passes_expiration_date(mcp_testbed):
 
     mock_memory.add.assert_called_once()
     call_kwargs = mock_memory.add.call_args.kwargs
-    assert call_kwargs["expiration_date"] == "2099-12-31"
+    assert call_kwargs["expiration_date"] == date(2099, 12, 31)
     assert "expiration_date" not in (call_kwargs.get("metadata") or {})
 
 
@@ -1065,7 +1066,7 @@ def test_update_memory_passes_expiration_date(mcp_testbed):
         {"memory_id": "mem-1", "text": "updated", "expiration_date": "2099-12-31"},
     )
 
-    mock_memory.update.assert_called_once_with(memory_id="mem-1", data="updated", expiration_date="2099-12-31")
+    mock_memory.update.assert_called_once_with(memory_id="mem-1", data="updated", expiration_date=date(2099, 12, 31))
 
 
 def test_update_memory_merges_source_into_metadata(mcp_testbed):

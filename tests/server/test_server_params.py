@@ -8,6 +8,8 @@ previously silently dropped by Pydantic v2's default extra='ignore' behavior.
 
 import pytest
 
+from datetime import date
+
 from mem0.exceptions import ValidationError as Mem0ValidationError
 
 pytest.importorskip("fastapi", reason="fastapi not installed")
@@ -561,7 +563,7 @@ class TestUpdateMemory:
         resp = client.put("/memories/mem-1", json={"expiration_date": "2999-01-01"})
         assert resp.status_code == 200
         _, kwargs = mock_memory.update.call_args
-        assert kwargs["expiration_date"] == "2999-01-01"
+        assert kwargs["expiration_date"] == date(2999, 1, 1)
         assert "data" not in kwargs
 
     def test_null_expiration_date_forwarded_for_clear(self, client, mock_memory):
