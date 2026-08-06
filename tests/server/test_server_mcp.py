@@ -891,9 +891,22 @@ def test_search_memories_source_param_is_advisory(mcp_testbed):
 # ---------------------------------------------------------------------------
 
 
+def _paginate_side_effect(all_memories):
+    """Return a side_effect that slices ``all_memories`` by top_k/skip kwargs."""
+
+    def _side_effect(*args, **kwargs):
+        top_k = kwargs.get("top_k", len(all_memories))
+        skip = kwargs.get("skip", 0)
+        return all_memories[skip : skip + top_k]
+
+    return _side_effect
+
+
 def test_get_memories_pagination(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    mock_memory.get_all.return_value = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(5)]
+    all_memories = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(5)]
+    mock_memory.get_all.side_effect = _paginate_side_effect(all_memories)
+    mock_memory.count.return_value = len(all_memories)
 
     structured = _structured(client, "get_memories", {"user_id": "alice", "page": 2, "page_size": 2})
 
@@ -904,7 +917,9 @@ def test_get_memories_pagination(mcp_testbed):
 
 def test_get_memories_page_without_page_size_uses_defaults(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    mock_memory.get_all.return_value = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(25)]
+    all_memories = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(25)]
+    mock_memory.get_all.side_effect = _paginate_side_effect(all_memories)
+    mock_memory.count.return_value = len(all_memories)
 
     structured = _structured(client, "get_memories", {"user_id": "alice", "page": 1})
 
@@ -914,7 +929,9 @@ def test_get_memories_page_without_page_size_uses_defaults(mcp_testbed):
 
 def test_get_memories_without_pagination_params_uses_default_first_page(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    mock_memory.get_all.return_value = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(25)]
+    all_memories = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(25)]
+    mock_memory.get_all.side_effect = _paginate_side_effect(all_memories)
+    mock_memory.count.return_value = len(all_memories)
 
     structured = _structured(client, "get_memories", {"user_id": "alice"})
 
@@ -926,7 +943,9 @@ def test_get_memories_without_pagination_params_uses_default_first_page(mcp_test
 def test_get_memories_page_beyond_range_returns_empty(mcp_testbed):
     """A page past the last item yields empty results but count stays the total."""
     _, client, mock_memory = mcp_testbed
-    mock_memory.get_all.return_value = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(5)]
+    all_memories = [{"id": f"mem-{i}", "memory": f"m{i}", "user_id": "alice"} for i in range(5)]
+    mock_memory.get_all.side_effect = _paginate_side_effect(all_memories)
+    mock_memory.count.return_value = len(all_memories)
 
     structured = _structured(client, "get_memories", {"user_id": "alice", "page": 10, "page_size": 2})
 
@@ -939,7 +958,7 @@ def test_get_memories_with_explicit_user_id(mcp_testbed):
 
     _call_tool(client, "get_memories", {"user_id": "alice"})
 
-    mock_memory.get_all.assert_called_once_with(filters={"user_id": "alice"})
+    mock_memory.get_all.assert_called_once_with(filters={"user_id": "alice"}, top_k=10, skip=0)
 
 
 def test_get_memories_requires_scope(mcp_testbed, monkeypatch):
