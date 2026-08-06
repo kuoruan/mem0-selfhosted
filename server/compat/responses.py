@@ -58,14 +58,17 @@ def resolve_optional_pagination(
     return effective_page, effective_page_size
 
 
-def warn_unsupported_fields(fields: Optional[List[str]], endpoint: str) -> None:
-    """Log a warning when 'fields' projection is requested but not supported by the OSS SDK."""
-    if fields:
-        logger.warning(
-            "%s: 'fields' projection is not supported by the OSS SDK and will be ignored. Requested fields: %s",
-            endpoint,
-            fields,
-        )
+def apply_fields(items: List[Dict[str, Any]], fields: Optional[List[str]]) -> List[Dict[str, Any]]:
+    """Restrict each memory dict to the requested top-level *fields*.
+
+    When *fields* is empty or ``None``, items are returned unchanged.
+    Only top-level keys are supported (``id``, ``memory``, ``user_id``, etc.);
+    fields nested under ``metadata`` are not projected.
+    """
+    if not fields:
+        return items
+    allow = set(fields)
+    return [{k: v for k, v in item.items() if k in allow} for item in items]
 
 
 def warn_ignored_compat_params(endpoint: str, **params: Any) -> None:

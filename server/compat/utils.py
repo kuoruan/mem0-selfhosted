@@ -31,3 +31,13 @@ def parse_iso_timestamp(value: Any) -> Optional[datetime]:
 def format_iso_timestamp(value: Optional[datetime]) -> Optional[str]:
     """Format *value* as ISO-8601, or ``None`` when *value* is missing."""
     return value.isoformat() if value else None
+
+
+def normalize_timestamp(timestamp: Optional[int]) -> Optional[str]:
+    """Convert a Unix-epoch *timestamp* to a UTC ISO-8601 string, or ``None``."""
+    if timestamp is None:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError, TypeError) as exc:
+        raise ValueError(f"invalid timestamp value: {timestamp!r}") from exc

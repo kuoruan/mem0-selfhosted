@@ -51,6 +51,7 @@ Stub endpoints (501 Not Implemented)
 
 import json
 import logging
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
@@ -67,11 +68,16 @@ from compat.helpers import (
     paginated_get_all,
     resolve_existing,
 )
-from compat.metadata import build_v3_add_extra_metadata, merge_v1_add_metadata, merge_v3_add_metadata
-from compat.utils import drop_none
+from compat.metadata import (
+    build_extraction_prompt,
+    build_v3_add_extra_metadata,
+    merge_v1_add_metadata,
+    merge_v3_add_metadata,
+)
+from compat.utils import drop_none, normalize_timestamp
 from compat.responses import (
+    apply_fields,
     warn_ignored_compat_params,
-    warn_unsupported_fields,
     pending_add_response,
     sync_add_response,
     unsupported_api_error,
@@ -171,7 +177,7 @@ class MemorySearchInput(BaseModel):
     )
     run_id: Optional[str] = Field(default=None, description="The run ID associated with the memory.")
     metadata: Optional[Dict[str, Any]] = Field(
-        default=None, description="Additional metadata associated with the memory."
+        default=None, description="Filter results to memories matching this metadata."
     )
     top_k: Optional[int] = Field(default=None, description="The number of top results to return.")
     threshold: Optional[float] = Field(
@@ -179,12 +185,11 @@ class MemorySearchInput(BaseModel):
     )
     rerank: Optional[bool] = Field(default=None, description="Whether to rerank the memories.")
     fields: Optional[List[str]] = Field(
-        default=None,
-        description="A list of field names to include in the response. If not provided, all fields will be returned.",
+        default=None, description="Restrict the fields returned per memory."
     )
     show_expired: Optional[bool] = Field(
         default=None,
-        description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
+        description="When true, include memories whose `expiration_date` has passed. Expired memories are hidden by default.",
     )
     latest_only: Optional[bool] = Field(
         default=None,
@@ -194,10 +199,12 @@ class MemorySearchInput(BaseModel):
 
 class MemoryUpdateInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    text: Optional[str] = Field(default=None, description="New text content for the memory.")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Updated metadata for the memory.")
-    timestamp: Optional[Any] = Field(default=None, description="Unix timestamp for the memory.")
-    expiration_date: Optional[str] = Field(
+    text: Optional[str] = Field(default=None, description="The updated text content of the memory.")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata associated with the memory.")
+    timestamp: Optional[int] = Field(
+        default=None, description="Unix epoch seconds to backdate created_at on the stored memory."
+    )
+    expiration_date: Optional[date] = Field(
         default=None,
         description="Expiration date in YYYY-MM-DD format, or null to clear.",
     )
@@ -259,14 +266,15 @@ class MemoryGetInputV2(BaseModel):
     end_date: Optional[str] = Field(
         default=None, description="Only return memories created on or before this ISO 8601 date."
     )
-    categories: Optional[List[str]] = Field(default=None, description="A list of categories to filter the memories by.")
+    categories: Optional[List[str]] = Field(
+        default=None, description="Filter results to memories tagged with any of these categories."
+    )
     show_expired: Optional[bool] = Field(
         default=None,
         description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
     )
     fields: Optional[List[str]] = Field(
-        default=None,
-        description="A list of field names to include in the response. If not provided, all fields will be returned.",
+        default=None, description="Restrict the fields returned per memory."
     )
     latest_only: Optional[bool] = Field(
         default=None,
@@ -288,7 +296,7 @@ class MemoryGetInputV3(BaseModel):
     end_date: Optional[str] = Field(
         default=None, description="Only return memories created on or before this ISO 8601 date."
     )
-    categories: Optional[List[str]] = Field(default=None, description="A list of categories to filter the memories by.")
+    categories: Optional[List[str]] = Field(default=None, description="Filter results to memories tagged with any of these categories.")
     show_expired: Optional[bool] = Field(
         default=None,
         description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
@@ -329,8 +337,7 @@ class MemorySearchInputV2(BaseModel):
         default=None, description="The run ID associated with the memory (also accepted inside filters)."
     )
     fields: Optional[List[str]] = Field(
-        default=None,
-        description="A list of field names to include in the response. If not provided, all fields will be returned.",
+        default=None, description="Restrict the fields returned per memory."
     )
     show_expired: Optional[bool] = Field(
         default=None,
@@ -367,25 +374,40 @@ class MemoryAddInputV3(BaseModel):
         ),
     )
     custom_categories: Optional[List[Dict[str, Any]]] = Field(
-        default=None, description="A list of categories with category name and its description."
+        default=None,
+        description="Category catalog for this call. Stored in memory metadata.",
     )
     custom_instructions: Optional[str] = Field(
         default=None, description="Project-level instructions that guide extraction for this call."
     )
-    structured_data_schema: Optional[Dict[str, Any]] = Field(
-        default=None, description="Schema for structured data extraction from the memory."
+    agent_custom_instructions: Optional[str] = Field(
+        default=None,
+        description="Extraction instructions for agent-scoped memories. Takes precedence over `custom_instructions` for this call when `agent_id` is present and the value is non-empty. No project-level persistence (self-hosted has no project settings API).",
     )
-    timestamp: Optional[int] = Field(default=None, description="The timestamp of the memory. Format: Unix timestamp")
+    includes: Optional[str] = Field(
+        default=None,
+        description="Free-text hint of what to include during extraction, e.g. 'vehicles'.",
+    )
+    excludes: Optional[str] = Field(
+        default=None,
+        description="Free-text hint of what to exclude during extraction, e.g. 'politics'.",
+    )
+    structured_data_schema: Optional[Dict[str, Any]] = Field(
+        default=None, description="Schema for structured data extraction. Not supported on the self-hosted server; accepted for wire compatibility."
+    )
+    timestamp: Optional[int] = Field(
+        default=None, description="Unix epoch seconds used to backdate created_at on the stored memories."
+    )
     source: Optional[str] = Field(
         default=None, description="Source identifier for the memory (e.g. 'OPENCLAW'). Stored in metadata."
     )
-    deduced_memories: Optional[List[Any]] = Field(
+    deduced_memories: Optional[List[str]] = Field(
         default=None,
-        description="Pre-extracted fact strings used by agentic harnesses when infer=False. Stored in metadata.",
+        description="Pre-extracted facts stored individually as memories when infer=False; ignored otherwise.",
     )
-    expiration_date: Optional[str] = Field(
+    expiration_date: Optional[date] = Field(
         default=None,
-        description="Optional expiration date in YYYY-MM-DD format.",
+        description="Optional expiration date in YYYY-MM-DD format. After this date, memories are hidden from search and get-all unless `show_expired` is true.",
     )
 
 
@@ -407,16 +429,17 @@ class MemorySearchInputV3(BaseModel):
         default=None, description="Minimum semantic relevance score. Pass `0.0` to disable filtering."
     )
     metadata: Optional[Dict[str, Any]] = Field(
-        default=None, description="Additional metadata associated with the memory."
+        default=None, description="Filter results to memories matching this metadata."
     )
     rerank: Optional[bool] = Field(
         default=None, description="Apply the managed reranker for better ordering (adds latency)."
     )
     fields: Optional[List[str]] = Field(
-        default=None,
-        description="A list of field names to include in the response. If not provided, all fields will be returned.",
+        default=None, description="Restrict the fields returned per memory."
     )
-    categories: Optional[List[str]] = Field(default=None, description="A list of categories to filter the memories by.")
+    categories: Optional[List[str]] = Field(
+        default=None, description="Filter results to memories tagged with any of these categories."
+    )
     output_format: Optional[str] = Field(
         default=None,
         description='Response format. `v1.1` (default) returns `{"results": [...]}`. '
@@ -428,12 +451,15 @@ class MemorySearchInputV3(BaseModel):
     )
     reference_date: Optional[Any] = Field(
         default=None,
-        description="Optional query anchor time for relative temporal interpretation. "
-        "Accepts Unix epoch, YYYY-MM-DD, or ISO datetime.",
+        description="Date and time to simulate the search from. Accepts a Unix epoch, YYYY-MM-DD, or ISO datetime.",
     )
     latest_only: Optional[bool] = Field(
         default=None,
         description="Accepted for compatibility; not processed by the self-hosted server.",
+    )
+    keyword_search: Optional[bool] = Field(
+        default=None,
+        description="Accepted for compatibility; the self-hosted server already runs hybrid (semantic + keyword) search.",
     )
 
 
@@ -574,7 +600,11 @@ def v1_update_memory(
         params["data"] = body.text
     metadata = body.metadata
     if body.timestamp is not None:
-        metadata = {**(metadata or {}), "timestamp": body.timestamp}
+        try:
+            iso = normalize_timestamp(body.timestamp)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        metadata = {**(metadata or {}), "created_at": iso}
     if metadata is not None:
         params["metadata"] = metadata
     if has_expiration_update:
@@ -672,7 +702,6 @@ def v1_search_memories(
     App-primary-gate: when both ``user_id`` and ``app_id`` are present,
     ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
-    warn_unsupported_fields(body.fields, "v1_search_memories")
     warn_ignored_compat_params("v1_search_memories", latest_only=body.latest_only)
     effective_filters = build_search_filters(
         user_id=body.user_id,
@@ -689,7 +718,7 @@ def v1_search_memories(
         query=body.query,
         **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank, body.show_expired),
     )
-    return normalize_results(raw)
+    return apply_fields(normalize_results(raw), body.fields)
 
 
 @router.delete("/v1/memories/", include_in_schema=False)
@@ -918,7 +947,6 @@ def v2_list_memories(
     App-primary-gate: when both ``user_id`` and ``app_id`` are present in
     filters, ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
-    warn_unsupported_fields(body.fields, "v2_list_memories")
     warn_ignored_compat_params("v2_list_memories", latest_only=body.latest_only)
     entity_params = require_entity_scope(
         filters=body.filters,
@@ -930,7 +958,9 @@ def v2_list_memories(
     kwargs: Dict[str, Any] = {"filters": filters}
     if body.show_expired is not None:
         kwargs["show_expired"] = body.show_expired
-    return paginated_get_all(request, page, page_size, **kwargs)
+    response = paginated_get_all(request, page, page_size, **kwargs)
+    response["results"] = apply_fields(response["results"], body.fields)
+    return response
 
 
 @router.post("/v2/memories/search/", include_in_schema=False)
@@ -947,7 +977,6 @@ def v2_search_memories(
     App-primary-gate: when both ``user_id`` and ``app_id`` are present,
     ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
-    warn_unsupported_fields(body.fields, "v2_search_memories")
     warn_ignored_compat_params("v2_search_memories", latest_only=body.latest_only)
     effective_filters = build_search_filters(
         user_id=body.user_id,
@@ -965,7 +994,9 @@ def v2_search_memories(
     )
     # NOTE: docs/openapi.json declares a bare array response, but MemoryClient
     # reads response["results"]. We intentionally return the envelope here.
-    return normalize_results_dict(raw)
+    response = normalize_results_dict(raw)
+    response["results"] = apply_fields(response["results"], body.fields)
+    return response
 
 
 @router.get("/v2/entities/{entity_type}/{entity_id}/", include_in_schema=False)
@@ -1091,11 +1122,7 @@ def v3_add_memory(
     )
     extra_md = build_v3_add_extra_metadata(
         custom_categories=body.custom_categories,
-        custom_instructions=body.custom_instructions,
-        structured_data_schema=body.structured_data_schema,
-        timestamp=body.timestamp,
         source=body.source,
-        deduced_memories=body.deduced_memories,
     )
 
     params["metadata"] = merge_v3_add_metadata(
@@ -1105,8 +1132,39 @@ def v3_add_memory(
         extra_metadata=extra_md,
     )
 
+    if body.timestamp is not None:
+        try:
+            iso = normalize_timestamp(body.timestamp)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        metadata = params.get("metadata") or {}
+        metadata["created_at"] = iso
+        params["metadata"] = metadata
+
     if body.expiration_date is not None:
         params["expiration_date"] = body.expiration_date
+
+    if body.structured_data_schema is not None:
+        logger.warning(
+            "v3_add_memory: structured_data_schema unsupported on self-hosted server"
+        )
+
+    extraction_prompt = build_extraction_prompt(
+        custom_instructions=body.custom_instructions,
+        agent_custom_instructions=body.agent_custom_instructions,
+        includes=body.includes,
+        excludes=body.excludes,
+        has_agent_scope=entity_params.get("agent_id") is not None,
+    )
+    if extraction_prompt and body.infer is not False:
+        params["prompt"] = extraction_prompt
+
+    # infer=False + deduced_memories: store each fact as its own memory.
+    effective_messages = body.messages
+    if body.infer is False and body.deduced_memories:
+        effective_messages = [
+            {"role": "user", "content": fact} for fact in body.deduced_memories
+        ]
 
     # Hybrid write path (same semantics as MCP add_memory):
     #   infer=False — fast path: no LLM, sync response with memory ids.
@@ -1114,7 +1172,7 @@ def v3_add_memory(
     if body.infer is False:
         params["infer"] = False
         raw = run_memory_write(
-            lambda memory: memory.add(messages=body.messages, **params),
+            lambda memory: memory.add(messages=effective_messages, **params),
             entity_params,
         )
         return sync_add_response(raw)
@@ -1122,7 +1180,7 @@ def v3_add_memory(
         params["infer"] = True
 
     event_id = create_pending_add_event(resolve_event_owner_id(auth, entity_params))
-    background_tasks.add_task(run_v3_add_memory_task, event_id, body.messages, params)
+    background_tasks.add_task(run_v3_add_memory_task, event_id, effective_messages, params)
     return pending_add_response(event_id)
 
 
@@ -1170,7 +1228,6 @@ def v3_search_memories(
     App-primary-gate: when both ``user_id`` and ``app_id`` are present,
     ``user_id`` is stripped (see ``strip_user_id_for_app_gate``)."""
     operator, _ = resolve_operator(request, auth, db)
-    warn_unsupported_fields(body.fields, "v3_search_memories")
     warn_ignored_compat_params(
         "v3_search_memories",
         latest_only=body.latest_only,
@@ -1196,9 +1253,8 @@ def v3_search_memories(
         **build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank, body.show_expired),
     )
 
-    items = normalize_results(raw)
+    items = apply_fields(normalize_results(raw), body.fields)
     if body.output_format == "v1.0":
-        # Legacy flat-array format requested by the caller.
         return items
     return {"results": items}
 

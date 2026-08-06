@@ -2,6 +2,7 @@ import contextvars
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
+from datetime import date
 from typing import Annotated, Any, AsyncIterator, Callable, Iterator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -176,7 +177,7 @@ def add_memory(
         Field(default=None, description="Event source tag (defaults to MCP if omitted)."),
     ] = None,
     expiration_date: Annotated[
-        Optional[str],
+        Optional[date],
         Field(
             default=None,
             description="Optional expiration date in YYYY-MM-DD format. After this date, memories are hidden from search and get_all unless show_expired is True.",
@@ -428,7 +429,7 @@ def update_memory(
         Optional[dict[str, Any]], Field(default=None, description="Metadata to merge into the memory.")
     ] = None,
     expiration_date: Annotated[
-        Optional[str],
+        Optional[date],
         Field(description="Optional expiration date in YYYY-MM-DD format, or null to clear."),
     ] = _EXPIRATION_DATE_DEFAULT,
     source: Annotated[

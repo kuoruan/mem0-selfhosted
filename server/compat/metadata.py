@@ -36,21 +36,13 @@ def merge_v1_add_metadata(
 def build_v3_add_extra_metadata(
     *,
     custom_categories: Optional[List[Dict[str, Any]]],
-    custom_instructions: Optional[str],
-    structured_data_schema: Optional[Dict[str, Any]],
-    timestamp: Optional[int],
     source: Optional[str],
-    deduced_memories: Optional[List[Any]],
 ) -> Dict[str, Any]:
-    """Build v3 explicit metadata fields from request body."""
+    """Build the v3 add body fields that belong in metadata."""
     return drop_none(
         {
             "custom_categories": custom_categories,
-            "custom_instructions": custom_instructions,
-            "structured_data_schema": structured_data_schema,
-            "timestamp": timestamp,
             "source": source,
-            "deduced_memories": deduced_memories,
         }
     )
 
@@ -81,3 +73,35 @@ def merge_v3_add_metadata(
     if extra_metadata is not None:
         merged.update(extra_metadata)
     return merged
+
+
+def build_extraction_prompt(
+    *,
+    custom_instructions: Optional[str],
+    agent_custom_instructions: Optional[str],
+    includes: Optional[str],
+    excludes: Optional[str],
+    has_agent_scope: bool,
+) -> Optional[str]:
+    """Merge instruction body fields into a single ``prompt`` for ``Memory.add()``.
+
+    ``agent_custom_instructions`` wins when ``has_agent_scope`` is true;
+    ``includes``/``excludes`` are appended as constraints.
+    """
+    base = agent_custom_instructions if (has_agent_scope and agent_custom_instructions) else custom_instructions
+
+    constraints: List[str] = []
+    if includes:
+        constraints.append(f"Include only: {includes}")
+    if excludes:
+        constraints.append(f"Exclude: {excludes}")
+
+    if not base and not constraints:
+        return None
+
+    parts: List[str] = []
+    if base:
+        parts.append(base)
+    if constraints:
+        parts.append("Extraction constraints:\n- " + "\n- ".join(constraints))
+    return "\n\n".join(parts)

@@ -7,12 +7,12 @@ Covers:
   - compat.helpers: normalize_results, normalize_results_dict
   - compat.decorators: upstream_guard exception mapping
   - routers.compat helpers: build_list_filters, paginate_response,
-                            warn_unsupported_fields, build_search_kwargs,
+                            apply_fields, build_search_kwargs,
                             resolve_existing
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -42,8 +42,12 @@ from server.compat.helpers import (
     normalize_results,
     normalize_results_dict,
 )
-from server.compat.metadata import merge_v1_add_metadata, merge_v3_add_metadata
-from server.compat.utils import drop_none, parse_iso_timestamp
+from server.compat.metadata import (
+    build_extraction_prompt,
+    merge_v1_add_metadata,
+    merge_v3_add_metadata,
+)
+from server.compat.utils import drop_none, normalize_timestamp, parse_iso_timestamp
 from server.compat.responses import (
     resolve_optional_pagination,
     warn_ignored_compat_params,
@@ -72,16 +76,20 @@ from server.routers.compat import (
     build_search_kwargs,
     paginate_response,
     resolve_existing,
-    warn_unsupported_fields,
+    apply_fields,
     v1_batch_delete,
     v1_batch_update,
+    v1_get_entity_memories,
     v1_get_event,
     v1_list_entities,
     v1_list_events,
     v1_list_memories,
+    v1_search_memories,
     v1_update_memory,
     v2_list_memories,
+    v2_search_memories,
     v3_add_memory,
+    v3_get_all_memories,
     v3_search_memories,
 )
 
@@ -358,7 +366,9 @@ class TestCollectDirectEntityParams:
         assert result == {}
 
     def test_app_id_nested_or(self):
-        result = collect_direct_entity_params(filters={"OR": [{"app_id": "app1"}, {"app_id": "app1", "agent_id": "a1"}]})
+        result = collect_direct_entity_params(
+            filters={"OR": [{"app_id": "app1"}, {"app_id": "app1", "agent_id": "a1"}]}
+        )
         assert result == {}
 
     def test_or_without_shared_entity_scope_is_ignored(self):
@@ -630,6 +640,111 @@ class TestMetadataMergeHelpers:
             extra_metadata={},
         )
         assert merged == {"source": "body-source", "keep": True, "platform": "cursor"}
+
+
+class TestBuildExtractionPrompt:
+    def test_returns_none_when_nothing_provided(self):
+        assert (
+            build_extraction_prompt(
+                custom_instructions=None,
+                agent_custom_instructions=None,
+                includes=None,
+                excludes=None,
+                has_agent_scope=False,
+            )
+            is None
+        )
+
+    def test_uses_custom_instructions_for_user_scope(self):
+        prompt = build_extraction_prompt(
+            custom_instructions="extract preferences",
+            agent_custom_instructions=None,
+            includes=None,
+            excludes=None,
+            has_agent_scope=False,
+        )
+        assert prompt == "extract preferences"
+
+    def test_agent_custom_instructions_win_when_agent_scoped(self):
+        prompt = build_extraction_prompt(
+            custom_instructions="extract preferences",
+            agent_custom_instructions="extract tool failures",
+            includes=None,
+            excludes=None,
+            has_agent_scope=True,
+        )
+        assert prompt == "extract tool failures"
+
+    def test_custom_instructions_used_when_not_agent_scoped_even_if_agent_instr_set(self):
+        prompt = build_extraction_prompt(
+            custom_instructions="extract preferences",
+            agent_custom_instructions="extract tool failures",
+            includes=None,
+            excludes=None,
+            has_agent_scope=False,
+        )
+        assert prompt == "extract preferences"
+
+    def test_explicit_empty_agent_custom_instructions_falls_back_to_config(self):
+        """Empty string is treated as None (no override) — SDK uses its config-level custom_instructions."""
+        prompt = build_extraction_prompt(
+            custom_instructions="extract preferences",
+            agent_custom_instructions="",
+            includes=None,
+            excludes=None,
+            has_agent_scope=True,
+        )
+        # agent_custom_instructions="" is falsy → falls back to custom_instructions
+        assert prompt == "extract preferences"
+
+    def test_includes_and_excludes_appended_as_constraints(self):
+        prompt = build_extraction_prompt(
+            custom_instructions="base instructions",
+            agent_custom_instructions=None,
+            includes="vehicles",
+            excludes="politics",
+            has_agent_scope=False,
+        )
+        assert "base instructions" in prompt
+        assert "Include only: vehicles" in prompt
+        assert "Exclude: politics" in prompt
+
+    def test_constraints_only_without_base_instruction(self):
+        prompt = build_extraction_prompt(
+            custom_instructions=None,
+            agent_custom_instructions=None,
+            includes="vehicles",
+            excludes=None,
+            has_agent_scope=False,
+        )
+        assert "Include only: vehicles" in prompt
+        assert "Extraction constraints:" in prompt
+
+    def test_agent_custom_instructions_plus_constraints(self):
+        prompt = build_extraction_prompt(
+            custom_instructions="user prefs",
+            agent_custom_instructions="tool failures",
+            includes="errors",
+            excludes="user details",
+            has_agent_scope=True,
+        )
+        assert prompt.startswith("tool failures")
+        assert "Include only: errors" in prompt
+        assert "Exclude: user details" in prompt
+
+
+class TestNormalizeTimestamp:
+    def test_none_returns_none(self):
+        assert normalize_timestamp(None) is None
+
+    def test_unix_epoch_to_iso(self):
+        result = normalize_timestamp(1700000000)
+        # 1700000000 = 2023-11-14 in UTC
+        assert result.startswith("2023-11-14")
+
+    def test_out_of_range_raises(self):
+        with pytest.raises(ValueError):
+            normalize_timestamp(99999999999999999999)
 
 
 class TestResolveEventOwnerId:
@@ -1109,31 +1224,28 @@ class TestResolveOptionalPagination:
 
 
 # ---------------------------------------------------------------------------
-# warn_unsupported_fields
+# apply_fields
 # ---------------------------------------------------------------------------
 
 
-class TestWarnUnsupportedFields:
-    def test_no_fields_no_warning(self, caplog):
-        with caplog.at_level(logging.WARNING):
-            warn_unsupported_fields(None, "v3_search_memories")
-        assert "fields" not in caplog.text
+class TestApplyFields:
+    def test_none_fields_returns_unchanged(self):
+        items = [{"id": "1", "memory": "a", "user_id": "u1"}]
+        assert apply_fields(items, None) == items
 
-    def test_empty_list_no_warning(self, caplog):
-        with caplog.at_level(logging.WARNING):
-            warn_unsupported_fields([], "v3_search_memories")
-        assert "fields" not in caplog.text
+    def test_empty_fields_returns_unchanged(self):
+        items = [{"id": "1", "memory": "a", "user_id": "u1"}]
+        assert apply_fields(items, []) == items
 
-    def test_fields_emits_warning(self, caplog):
-        with caplog.at_level(logging.WARNING):
-            warn_unsupported_fields(["id", "memory"], "v2_search_memories")
-        assert "v2_search_memories" in caplog.text
-        assert "fields" in caplog.text.lower()
+    def test_filters_to_requested_fields(self):
+        items = [{"id": "1", "memory": "a", "user_id": "u1", "score": 0.9}]
+        result = apply_fields(items, ["id", "memory"])
+        assert result == [{"id": "1", "memory": "a"}]
 
-    def test_warning_includes_field_names(self, caplog):
-        with caplog.at_level(logging.WARNING):
-            warn_unsupported_fields(["score"], "v3_search_memories")
-        assert "score" in caplog.text
+    def test_unknown_fields_dropped(self):
+        items = [{"id": "1", "memory": "a"}]
+        result = apply_fields(items, ["id", "nonexistent"])
+        assert result == [{"id": "1"}]
 
 
 class TestWarnIgnoredCompatParams:
@@ -1150,10 +1262,10 @@ class TestWarnIgnoredCompatParams:
         assert "latest_only" in caplog.text
         assert "reference_date" in caplog.text
 
-    def test_v2_list_warns_for_fields_and_latest_only(self, monkeypatch, caplog):
+    def test_v2_list_applies_fields_and_warns_latest_only(self, monkeypatch, caplog):
         mem = MagicMock()
         mem.count.return_value = 0
-        mem.get_all.return_value = []
+        mem.get_all.return_value = [{"id": "m1", "memory": "a", "user_id": "u1", "score": 0.9}]
         monkeypatch.setattr("server.compat.helpers.get_memory_instance", lambda: mem)
 
         req = MagicMock()
@@ -1161,11 +1273,10 @@ class TestWarnIgnoredCompatParams:
         body = MemoryGetInputV2(filters={"user_id": "u1"}, fields=["id"], latest_only=True)
 
         with caplog.at_level(logging.WARNING):
-            v2_list_memories(req, body, page=1, page_size=10, auth=None)
+            response = v2_list_memories(req, body, page=1, page_size=10, auth=None)
 
-        assert "v2_list_memories" in caplog.text
-        assert "fields" in caplog.text.lower()
         assert "latest_only" in caplog.text
+        assert response["results"] == [{"id": "m1"}]
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, top_k=11, skip=0)
 
     def test_v3_search_warns_for_reference_date_and_latest_only(self, monkeypatch, caplog):
@@ -1187,6 +1298,24 @@ class TestWarnIgnoredCompatParams:
         assert "reference_date" in caplog.text
         assert "latest_only" in caplog.text
         mem.search.assert_called_once_with(query="hello", filters={"user_id": "u1"})
+
+    def test_v3_search_accepts_keyword_search_without_422(self, monkeypatch):
+        """keyword_search is accepted (no 422) but not forwarded — OSS already runs hybrid."""
+        mem = MagicMock()
+        mem.search.return_value = []
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+
+        body = MemorySearchInputV3(
+            query="hello",
+            user_id="u1",
+            keyword_search=True,
+        )
+
+        v3_search_memories(body, request=_REQ, auth=None)
+
+        # keyword_search is accepted by schema but not forwarded to SDK
+        call_kwargs = mem.search.call_args.kwargs
+        assert "keyword_search" not in call_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -1357,12 +1486,33 @@ class TestV1UpdateMemoryForwarding:
         v1_update_memory("mem-1", MemoryUpdateInput(metadata={"k": "v"}), request=_REQ, auth=None)
         mem.update.assert_called_once_with(memory_id="mem-1", metadata={"k": "v"})
 
-    def test_timestamp_folded_into_metadata(self, monkeypatch):
+    def test_timestamp_backdates_created_at(self, monkeypatch):
+        """timestamp is converted to a UTC ISO created_at in metadata, not stored as a dead timestamp key."""
         mem = MagicMock()
         mem.update.return_value = {"message": "updated"}
         self._patch_run(monkeypatch, mem)
-        v1_update_memory("mem-1", MemoryUpdateInput(timestamp=123, metadata={"k": "v"}), request=_REQ, auth=None)
-        mem.update.assert_called_once_with(memory_id="mem-1", metadata={"k": "v", "timestamp": 123})
+        v1_update_memory(
+            "mem-1",
+            MemoryUpdateInput(timestamp=1700000000, metadata={"k": "v"}),
+            request=_REQ,
+            auth=None,
+        )
+        call_metadata = mem.update.call_args.kwargs["metadata"]
+        assert call_metadata["k"] == "v"
+        assert call_metadata["created_at"].startswith("2023-11-14")
+        # timestamp itself is NOT leaked into metadata
+        assert "timestamp" not in call_metadata
+
+    def test_invalid_timestamp_returns_422(self, monkeypatch):
+        """Out-of-range timestamp produces a 422, not a 500."""
+        with pytest.raises(HTTPException) as exc:
+            v1_update_memory(
+                "mem-1",
+                MemoryUpdateInput(timestamp=99999999999999999999, metadata={}),
+                request=_REQ,
+                auth=None,
+            )
+        assert exc.value.status_code == 422
 
     def test_not_found_returns_404(self, monkeypatch):
         mem = MagicMock()
@@ -1386,6 +1536,24 @@ class TestV1UpdateMemoryForwarding:
         with pytest.raises(HTTPException) as exc:
             v1_update_memory("mem-1", MemoryUpdateInput(), request=_REQ, auth=None)
         assert exc.value.status_code == 400
+
+    def test_invalid_expiration_date_returns_422(self):
+        """Invalid date string is rejected at schema validation (422), not 400."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            MemoryUpdateInput(expiration_date="not-a-date")
+
+    def test_v3_add_invalid_expiration_date_returns_422(self):
+        """Invalid date string is rejected at schema validation (422), not 400."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "x"}],
+                user_id="u1",
+                expiration_date="not-a-date",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1867,10 +2035,329 @@ class TestSyntheticEvents:
             request=_REQ,
             auth=None,
         )
-
         assert result["status"] == "SUCCEEDED"
         call_kwargs = mem.add.call_args.kwargs
-        assert call_kwargs["expiration_date"] == "2099-12-31"
+        assert call_kwargs["expiration_date"] == date(2099, 12, 31)
+
+    def test_v3_add_deduced_memories_rewrite_messages_when_infer_false(self, monkeypatch):
+        """deduced_memories with infer=False: each fact becomes its own message."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1"}, {"id": "m2"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "joined blob"}],
+                user_id="u1",
+                infer=False,
+                deduced_memories=["fact A", "fact B"],
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+
+        call_messages = mem.add.call_args.kwargs["messages"]
+        assert call_messages == [
+            {"role": "user", "content": "fact A"},
+            {"role": "user", "content": "fact B"},
+        ]
+        # deduced_memories is NOT leaked into metadata
+        assert "deduced_memories" not in mem.add.call_args.kwargs.get("metadata", {})
+
+    def test_v3_add_deduced_memories_ignored_when_infer_true(self, monkeypatch):
+        """deduced_memories with infer=True: original messages preserved (LLM extraction path)."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "original"}],
+                user_id="u1",
+                infer=True,
+                deduced_memories=["fact A"],
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+        self._run_background_tasks(tasks)
+
+        call_messages = mem.add.call_args.kwargs["messages"]
+        assert call_messages == [{"role": "user", "content": "original"}]
+        assert "deduced_memories" not in (mem.add.call_args.kwargs.get("metadata") or {})
+
+    def test_v3_add_timestamp_backdates_created_at(self, monkeypatch):
+        """timestamp sets created_at in metadata (OSS _create_memory preserves existing created_at)."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "remember"}],
+                user_id="u1",
+                infer=False,
+                timestamp=1700000000,
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+        metadata = mem.add.call_args.kwargs["metadata"]
+        assert metadata["created_at"].startswith("2023-11-14")
+        # timestamp itself is NOT leaked into metadata
+        assert "timestamp" not in metadata
+
+    def test_v3_add_structured_data_schema_accepted_but_unsupported(self, monkeypatch, caplog):
+        """structured_data_schema is accepted (no 422) but logged as unsupported."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        with caplog.at_level(logging.WARNING):
+            v3_add_memory(
+                MemoryAddInputV3(
+                    messages=[{"role": "user", "content": "remember"}],
+                    user_id="u1",
+                    infer=False,
+                    structured_data_schema={"type": "object"},
+                ),
+                background_tasks=tasks,
+                meta=RequestMeta(),
+                request=_REQ,
+                auth=None,
+            )
+        # schema accepted (no 422) and warning logged
+        assert "structured_data_schema" in caplog.text
+        assert "unsupported" in caplog.text.lower()
+        # NOT persisted in metadata
+        assert "structured_data_schema" not in (mem.add.call_args.kwargs.get("metadata") or {})
+
+    def test_v3_add_empty_deduced_memories_preserves_original_messages(self, monkeypatch):
+        """deduced_memories=[] does not rewrite messages."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "original"}],
+                user_id="u1",
+                infer=False,
+                deduced_memories=[],
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+        call_messages = mem.add.call_args.kwargs["messages"]
+        assert call_messages == [{"role": "user", "content": "original"}]
+
+    def test_v3_add_deduced_memories_rejects_non_string_entries(self):
+        """List[str] schema rejects non-string entries with 422."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "x"}],
+                user_id="u1",
+                infer=False,
+                deduced_memories=["valid", 123],
+            )
+
+    def test_v3_add_invalid_timestamp_returns_422(self, monkeypatch):
+        """Out-of-range timestamp produces a 422, not a 500."""
+        with pytest.raises(HTTPException) as exc_info:
+            v3_add_memory(
+                MemoryAddInputV3(
+                    messages=[{"role": "user", "content": "remember"}],
+                    user_id="u1",
+                    infer=False,
+                    timestamp=99999999999999999999,
+                ),
+                background_tasks=BackgroundTasks(),
+                meta=RequestMeta(),
+                request=_REQ,
+                auth=None,
+            )
+        assert exc_info.value.status_code == 422
+
+    def test_v3_add_timestamp_applied_for_async_path(self, monkeypatch):
+        """timestamp backdates created_at even on the infer=True async path."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "remember"}],
+                user_id="u1",
+                infer=True,
+                timestamp=1700000000,
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+        self._run_background_tasks(tasks)
+        metadata = mem.add.call_args.kwargs["metadata"]
+        assert metadata["created_at"].startswith("2023-11-14")
+
+    def test_v3_add_passes_agent_custom_instructions_as_prompt(self, monkeypatch):
+        """agent_custom_instructions reaches SDK as prompt= when agent-scoped and infer=True."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        result = v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "remember"}],
+                agent_id="agent1",
+                infer=True,
+                agent_custom_instructions="extract tool failures",
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+        assert result["status"] == "PENDING"
+        self._run_background_tasks(tasks)
+
+        call_kwargs = mem.add.call_args.kwargs
+        assert call_kwargs["prompt"] == "extract tool failures"
+        # instruction fields are NOT leaked into metadata
+        assert "custom_instructions" not in call_kwargs.get("metadata", {})
+        assert "agent_custom_instructions" not in call_kwargs.get("metadata", {})
+
+    def test_v3_add_passes_custom_instructions_with_constraints_as_prompt(self, monkeypatch):
+        """custom_instructions + includes/excludes are merged into a single prompt."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "remember"}],
+                user_id="u1",
+                infer=True,
+                custom_instructions="base instructions",
+                includes="vehicles",
+                excludes="politics",
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+        self._run_background_tasks(tasks)
+
+        prompt = mem.add.call_args.kwargs["prompt"]
+        assert "base instructions" in prompt
+        assert "Include only: vehicles" in prompt
+        assert "Exclude: politics" in prompt
+
+    def test_v3_add_infer_false_omits_prompt(self, monkeypatch):
+        """infer=False skips extraction, so no prompt is forwarded."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        result = v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "remember"}],
+                user_id="u1",
+                infer=False,
+                custom_instructions="base instructions",
+                includes="vehicles",
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+        assert result["status"] == "SUCCEEDED"
+        assert "prompt" not in mem.add.call_args.kwargs
+
+    def test_v3_add_schema_accepts_all_new_fields_without_422(self, monkeypatch):
+        """agent_custom_instructions, includes, excludes are all accepted by MemoryAddInputV3 (extra='forbid')."""
+        mem = MagicMock()
+        mem.add.return_value = {"results": [{"id": "m1", "memory": "saved"}]}
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        result = v3_add_memory(
+            MemoryAddInputV3(
+                messages=[{"role": "user", "content": "remember"}],
+                agent_id="agent1",
+                infer=False,
+                custom_instructions="base",
+                agent_custom_instructions="tool failures",
+                includes="vehicles",
+                excludes="politics",
+            ),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+        assert result["status"] == "SUCCEEDED"
 
 
 # ---------------------------------------------------------------------------
@@ -1881,7 +2368,7 @@ class TestSyntheticEvents:
 class TestMemoryUpdateInputExpirationDate:
     def test_accepts_expiration_date(self):
         body = MemoryUpdateInput(text="hello", expiration_date="2099-12-31")
-        assert body.expiration_date == "2099-12-31"
+        assert body.expiration_date == date(2099, 12, 31)
 
     def test_expiration_date_none_by_default(self):
         body = MemoryUpdateInput(text="hello")
@@ -1930,7 +2417,8 @@ class TestMemoryUpdateInputExpirationDate:
             _run_memory_write_for_memory_id,
         )
         v1_update_memory("mem-1", MemoryUpdateInput(text="new", expiration_date="2099-12-31"), request=_REQ, auth=None)
-        mem.update.assert_called_once_with(memory_id="mem-1", data="new", expiration_date="2099-12-31")
+
+        mem.update.assert_called_once_with(memory_id="mem-1", data="new", expiration_date=date(2099, 12, 31))
 
     def test_rejects_unknown_field(self):
         with pytest.raises(ValidationError):
@@ -2111,8 +2599,6 @@ class TestV3GetAllMemoriesShowExpired:
         req.query_params = {"page": "1", "page_size": "10"}
         body = MemoryGetInputV3(filters={"user_id": "u1"}, show_expired=True)
 
-        from server.routers.compat import v3_get_all_memories
-
         v3_get_all_memories(request=req, body=body, page=1, page_size=10, auth=None)
 
         mem.get_all.assert_called_once_with(filters={"user_id": "u1"}, show_expired=True, top_k=11, skip=0)
@@ -2152,6 +2638,34 @@ class TestV3SearchMemoriesShowExpired:
 
         assert "show_expired" not in mem.search.call_args.kwargs
 
+    def test_v3_search_applies_fields(self, monkeypatch):
+        mem = MagicMock()
+        mem.search.return_value = [{"id": "m1", "memory": "a", "score": 0.9}]
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        body = MemorySearchInputV3(query="hello", user_id="u1", fields=["id", "memory"])
+        response = v3_search_memories(body, request=_REQ, auth=None)
+
+        assert response == {"results": [{"id": "m1", "memory": "a"}]}
+
+    def test_v3_search_applies_fields_v1_0_output(self, monkeypatch):
+        mem = MagicMock()
+        mem.search.return_value = [{"id": "m1", "memory": "a", "score": 0.9}]
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        body = MemorySearchInputV3(query="hello", user_id="u1", fields=["id"], output_format="v1.0")
+        result = v3_search_memories(body, request=_REQ, auth=None)
+
+        assert result == [{"id": "m1"}]
+
 
 # ---------------------------------------------------------------------------
 # v2_list_memories — show_expired passthrough
@@ -2173,8 +2687,6 @@ class TestV2ListMemoriesShowExpired:
         req.url.path = "/v2/memories"
         req.query_params = {"page": "1", "page_size": "10"}
         body = MemoryGetInputV2(filters={"user_id": "u1"}, show_expired=True)
-
-        from server.routers.compat import v2_list_memories
 
         v2_list_memories(request=req, body=body, page=1, page_size=10, auth=None)
 
@@ -2198,11 +2710,24 @@ class TestV2SearchMemoriesShowExpired:
 
         body = MemorySearchInputV2(query="hello", user_id="u1", show_expired=True)
 
-        from server.routers.compat import v2_search_memories
-
         v2_search_memories(body, request=_REQ, auth=None)
 
         assert mem.search.call_args.kwargs["show_expired"] is True
+
+    def test_v2_search_applies_fields(self, monkeypatch):
+        mem = MagicMock()
+        mem.search.return_value = {"results": [{"id": "m1", "memory": "a", "score": 0.9}]}
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        body = MemorySearchInputV2(query="hello", user_id="u1", fields=["id", "memory"])
+        response = v2_search_memories(body, request=_REQ, auth=None)
+
+        assert "results" in response
+        assert response["results"] == [{"id": "m1", "memory": "a"}]
 
 
 # ---------------------------------------------------------------------------
@@ -2222,11 +2747,24 @@ class TestV1SearchMemoriesShowExpired:
 
         body = MemorySearchInput(query="hello", user_id="u1", show_expired=True)
 
-        from server.routers.compat import v1_search_memories
-
         v1_search_memories(body, request=_REQ, auth=None)
 
         assert mem.search.call_args.kwargs["show_expired"] is True
+
+    def test_v1_search_applies_fields(self, monkeypatch):
+        mem = MagicMock()
+        mem.search.return_value = [{"id": "m1", "memory": "a", "score": 0.9}]
+
+        def _get_mem():
+            return mem
+
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
+
+        body = MemorySearchInput(query="hello", user_id="u1", fields=["id", "memory"])
+
+        result = v1_search_memories(body, request=_REQ, auth=None)
+
+        assert result == [{"id": "m1", "memory": "a"}]
 
 
 # ---------------------------------------------------------------------------
@@ -2243,8 +2781,6 @@ class TestV1GetEntityMemoriesShowExpired:
             return mem
 
         monkeypatch.setattr("server.routers.compat.get_memory_instance", _get_mem)
-
-        from server.routers.compat import v1_get_entity_memories
 
         v1_get_entity_memories(entity_type="user", entity_id="alice", request=_REQ, show_expired=True, auth=None)
 

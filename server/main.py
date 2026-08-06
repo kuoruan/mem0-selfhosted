@@ -4,6 +4,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 import telemetry
@@ -252,7 +253,7 @@ class MemoryCreate(BaseModel):
     app_id: Optional[str] = None
     run_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
-    expiration_date: Optional[str] = Field(None, description="Expiration date in YYYY-MM-DD format.")
+    expiration_date: Optional[date] = Field(None, description="Expiration date in YYYY-MM-DD format.")
     infer: Optional[bool] = Field(None, description="Whether to extract facts from messages. Defaults to True.")
     memory_type: Optional[str] = Field(None, description="Type of memory to store (e.g. 'core').")
     prompt: Optional[str] = Field(None, description="Custom prompt to use for fact extraction.")
@@ -261,7 +262,7 @@ class MemoryCreate(BaseModel):
 class MemoryUpdate(BaseModel):
     text: Optional[str] = Field(None, description="New content to update the memory with.")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Metadata to update.")
-    expiration_date: Optional[str] = Field(None, description="Expiration date in YYYY-MM-DD format, or null to clear.")
+    expiration_date: Optional[date] = Field(None, description="Expiration date in YYYY-MM-DD format, or null to clear.")
 
 
 class SearchRequest(BaseModel):
