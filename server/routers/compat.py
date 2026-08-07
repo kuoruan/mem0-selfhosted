@@ -73,8 +73,9 @@ from compat.metadata import (
     build_v3_add_extra_metadata,
     merge_v1_add_metadata,
     merge_v3_add_metadata,
+    merge_update_metadata,
 )
-from compat.utils import drop_none, normalize_timestamp
+from compat.utils import drop_none
 from compat.responses import (
     apply_fields,
     warn_ignored_compat_params,
@@ -184,9 +185,7 @@ class MemorySearchInput(BaseModel):
         default=None, description="The minimum similarity threshold for returned results."
     )
     rerank: Optional[bool] = Field(default=None, description="Whether to rerank the memories.")
-    fields: Optional[List[str]] = Field(
-        default=None, description="Restrict the fields returned per memory."
-    )
+    fields: Optional[List[str]] = Field(default=None, description="Restrict the fields returned per memory.")
     show_expired: Optional[bool] = Field(
         default=None,
         description="When true, include memories whose `expiration_date` has passed. Expired memories are hidden by default.",
@@ -200,7 +199,9 @@ class MemorySearchInput(BaseModel):
 class MemoryUpdateInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: Optional[str] = Field(default=None, description="The updated text content of the memory.")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata associated with the memory.")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, description="Additional metadata associated with the memory."
+    )
     timestamp: Optional[int] = Field(
         default=None, description="Unix epoch seconds to backdate created_at on the stored memory."
     )
@@ -273,9 +274,7 @@ class MemoryGetInputV2(BaseModel):
         default=None,
         description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
     )
-    fields: Optional[List[str]] = Field(
-        default=None, description="Restrict the fields returned per memory."
-    )
+    fields: Optional[List[str]] = Field(default=None, description="Restrict the fields returned per memory.")
     latest_only: Optional[bool] = Field(
         default=None,
         description="Accepted for compatibility; not processed by the self-hosted server.",
@@ -296,7 +295,9 @@ class MemoryGetInputV3(BaseModel):
     end_date: Optional[str] = Field(
         default=None, description="Only return memories created on or before this ISO 8601 date."
     )
-    categories: Optional[List[str]] = Field(default=None, description="Filter results to memories tagged with any of these categories.")
+    categories: Optional[List[str]] = Field(
+        default=None, description="Filter results to memories tagged with any of these categories."
+    )
     show_expired: Optional[bool] = Field(
         default=None,
         description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
@@ -336,9 +337,7 @@ class MemorySearchInputV2(BaseModel):
     run_id: Optional[str] = Field(
         default=None, description="The run ID associated with the memory (also accepted inside filters)."
     )
-    fields: Optional[List[str]] = Field(
-        default=None, description="Restrict the fields returned per memory."
-    )
+    fields: Optional[List[str]] = Field(default=None, description="Restrict the fields returned per memory.")
     show_expired: Optional[bool] = Field(
         default=None,
         description="When true, include memories whose expiration_date has passed. Expired memories are hidden by default.",
@@ -393,7 +392,8 @@ class MemoryAddInputV3(BaseModel):
         description="Free-text hint of what to exclude during extraction, e.g. 'politics'.",
     )
     structured_data_schema: Optional[Dict[str, Any]] = Field(
-        default=None, description="Schema for structured data extraction. Not supported on the self-hosted server; accepted for wire compatibility."
+        default=None,
+        description="Schema for structured data extraction. Not supported on the self-hosted server; accepted for wire compatibility.",
     )
     timestamp: Optional[int] = Field(
         default=None, description="Unix epoch seconds used to backdate created_at on the stored memories."
@@ -434,9 +434,7 @@ class MemorySearchInputV3(BaseModel):
     rerank: Optional[bool] = Field(
         default=None, description="Apply the managed reranker for better ordering (adds latency)."
     )
-    fields: Optional[List[str]] = Field(
-        default=None, description="Restrict the fields returned per memory."
-    )
+    fields: Optional[List[str]] = Field(default=None, description="Restrict the fields returned per memory.")
     categories: Optional[List[str]] = Field(
         default=None, description="Filter results to memories tagged with any of these categories."
     )
@@ -598,13 +596,10 @@ def v1_update_memory(
     params: Dict[str, Any] = {"memory_id": memory_id}
     if body.text is not None:
         params["data"] = body.text
-    metadata = body.metadata
-    if body.timestamp is not None:
-        try:
-            iso = normalize_timestamp(body.timestamp)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        metadata = {**(metadata or {}), "created_at": iso}
+    try:
+        metadata = merge_update_metadata(body.metadata, body.timestamp)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if metadata is not None:
         params["metadata"] = metadata
     if has_expiration_update:
@@ -637,9 +632,7 @@ def v1_delete_memory(
     scope = resolve_memory_entities(memory_id)
     check_memory_scope_permission(scope, operator.id, "write", db)
     try:
-        result = run_memory_write_for_memory_id(
-            lambda memory: memory.delete(memory_id=memory_id), memory_id
-        )
+        result = run_memory_write_for_memory_id(lambda memory: memory.delete(memory_id=memory_id), memory_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
     return result
@@ -1045,7 +1038,11 @@ def v2_delete_entity(
     # the by-name lookup to the caller.
     parent_entity_id = None if is_bootstrap_admin(operator.id) else str(operator.id)
     entity = check_entity_delete_permission(
-        entity_type, entity_id, operator.id, False, db,
+        entity_type,
+        entity_id,
+        operator.id,
+        False,
+        db,
         parent_entity_id=parent_entity_id,
     )
     # Client zone: user entities with children cannot be deleted — the
@@ -1125,29 +1122,22 @@ def v3_add_memory(
         source=body.source,
     )
 
-    params["metadata"] = merge_v3_add_metadata(
-        params.get("metadata"),
-        source=meta.source,
-        platform=meta.platform,
-        extra_metadata=extra_md,
-    )
-
-    if body.timestamp is not None:
-        try:
-            iso = normalize_timestamp(body.timestamp)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        metadata = params.get("metadata") or {}
-        metadata["created_at"] = iso
-        params["metadata"] = metadata
+    try:
+        params["metadata"] = merge_v3_add_metadata(
+            params.get("metadata"),
+            source=meta.source,
+            platform=meta.platform,
+            timestamp=body.timestamp,
+            extra_metadata=extra_md,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if body.expiration_date is not None:
         params["expiration_date"] = body.expiration_date
 
     if body.structured_data_schema is not None:
-        logger.warning(
-            "v3_add_memory: structured_data_schema unsupported on self-hosted server"
-        )
+        logger.warning("v3_add_memory: structured_data_schema unsupported on self-hosted server")
 
     extraction_prompt = build_extraction_prompt(
         custom_instructions=body.custom_instructions,
@@ -1162,9 +1152,7 @@ def v3_add_memory(
     # infer=False + deduced_memories: store each fact as its own memory.
     effective_messages = body.messages
     if body.infer is False and body.deduced_memories:
-        effective_messages = [
-            {"role": "user", "content": fact} for fact in body.deduced_memories
-        ]
+        effective_messages = [{"role": "user", "content": fact} for fact in body.deduced_memories]
 
     # Hybrid write path (same semantics as MCP add_memory):
     #   infer=False — fast path: no LLM, sync response with memory ids.

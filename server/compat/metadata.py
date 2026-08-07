@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
-from compat.utils import drop_none
+from compat.utils import drop_none, normalize_timestamp
 
 
 def merge_v1_add_metadata(
@@ -52,6 +52,7 @@ def merge_v3_add_metadata(
     *,
     source: Optional[str],
     platform: Optional[str],
+    timestamp: Optional[int] = None,
     extra_metadata: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
     """Merge v3 add metadata using the original three-layer precedence.
@@ -60,9 +61,10 @@ def merge_v3_add_metadata(
     1) Header-injected values (``source``/``platform``) only fill missing keys.
        This is why ``setdefault`` is used.
     2) Existing ``metadata`` from the request body is preserved.
-    3) ``extra_metadata`` from dedicated v3 body fields always wins via ``update``.
+    3) ``timestamp`` (Unix epoch) is converted to ``created_at`` and overwrites.
+    4) ``extra_metadata`` from dedicated v3 body fields always wins via ``update``.
     """
-    if source is None and platform is None and extra_metadata is None:
+    if source is None and platform is None and timestamp is None and extra_metadata is None:
         return metadata
 
     merged: Dict[str, Any] = dict(metadata or {})
@@ -70,8 +72,23 @@ def merge_v3_add_metadata(
         merged.setdefault("source", source)
     if platform is not None:
         merged.setdefault("platform", platform)
+    if timestamp is not None:
+        merged["created_at"] = normalize_timestamp(timestamp)
     if extra_metadata is not None:
         merged.update(extra_metadata)
+    return merged
+
+
+def merge_update_metadata(
+    metadata: Optional[Dict[str, Any]],
+    timestamp: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Merge update metadata: request body ``metadata`` + ``timestamp``→``created_at``."""
+    if metadata is None and timestamp is None:
+        return None
+    merged: Dict[str, Any] = dict(metadata or {})
+    if timestamp is not None:
+        merged["created_at"] = normalize_timestamp(timestamp)
     return merged
 
 

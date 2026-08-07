@@ -46,6 +46,7 @@ from server.compat.metadata import (
     build_extraction_prompt,
     merge_v1_add_metadata,
     merge_v3_add_metadata,
+    merge_update_metadata,
 )
 from server.compat.utils import drop_none, normalize_timestamp, parse_iso_timestamp
 from server.compat.responses import (
@@ -640,6 +641,71 @@ class TestMetadataMergeHelpers:
             extra_metadata={},
         )
         assert merged == {"source": "body-source", "keep": True, "platform": "cursor"}
+
+    def test_merge_v3_add_metadata_converts_timestamp_to_created_at(self):
+        merged = merge_v3_add_metadata(
+            {"source": "body-source"},
+            source="HEADER",
+            platform=None,
+            timestamp=1700000000,
+            extra_metadata=None,
+        )
+        assert merged["source"] == "body-source"
+        assert merged["created_at"].startswith("2023-11-14")
+        assert "timestamp" not in merged
+
+    def test_merge_v3_add_metadata_extra_metadata_overwrites_timestamp(self):
+        merged = merge_v3_add_metadata(
+            {"keep": True},
+            source=None,
+            platform=None,
+            timestamp=1700000000,
+            extra_metadata={"created_at": "custom"},
+        )
+        assert merged["created_at"] == "custom"
+
+    def test_merge_v3_add_metadata_invalid_timestamp_raises(self):
+        with pytest.raises(ValueError):
+            merge_v3_add_metadata(
+                None,
+                source=None,
+                platform=None,
+                timestamp=10**18,
+                extra_metadata=None,
+            )
+
+    def test_merge_v3_add_metadata_no_changes_returns_original(self):
+        original = {"source": "body-source"}
+        merged = merge_v3_add_metadata(
+            original,
+            source=None,
+            platform=None,
+            timestamp=None,
+            extra_metadata=None,
+        )
+        assert merged is original
+
+    # ── merge_update_metadata ─────────────────────────────────────────
+
+    def test_merge_update_metadata_converts_timestamp_to_created_at(self):
+        merged = merge_update_metadata({"k": "v"}, 1700000000)
+        assert merged["k"] == "v"
+        assert merged["created_at"].startswith("2023-11-14")
+        assert "timestamp" not in merged
+
+    def test_merge_update_metadata_timestamp_overwrites_metadata_created_at(self):
+        merged = merge_update_metadata({"created_at": "old"}, 1700000000)
+        assert merged["created_at"].startswith("2023-11-14")
+
+    def test_merge_update_metadata_invalid_timestamp_raises(self):
+        with pytest.raises(ValueError):
+            merge_update_metadata(None, 10**18)
+
+    def test_merge_update_metadata_both_none_returns_none(self):
+        assert merge_update_metadata(None, None) is None
+
+    def test_merge_update_metadata_metadata_only(self):
+        assert merge_update_metadata({"k": "v"}, None) == {"k": "v"}
 
 
 class TestBuildExtractionPrompt:
