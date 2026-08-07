@@ -18,7 +18,7 @@ import {
 } from "./dream/index.ts";
 import { captureEvent } from "./telemetry.ts";
 import * as os from "node:os";
-import type { ScopeContext } from "./types.ts";
+import type { ScopeContext, Mem0Config } from "./types.ts";
 
 export function resolveUserId(configUserId: string): string {
   if (configUserId) return configUserId;
@@ -53,14 +53,23 @@ export async function buildRecallContext(
 }
 
 export default function mem0Extension(pi: ExtensionAPI): void {
-  const config = loadConfig();
+  let config: Mem0Config;
+  try {
+    config = loadConfig();
+  } catch (err) {
+    console.warn(`[mem0] ${err instanceof Error ? err.message : String(err)} Extension disabled.`);
+    return;
+  }
 
   if (!config.apiKey) {
     console.warn("[mem0] No API key found. Set MEM0_API_KEY or add apiKey to ~/.pi/agent/mem0-config.json. Extension disabled.");
     return;
   }
 
-  const mem0 = new MemoryClient({ apiKey: config.apiKey });
+  const mem0 = new MemoryClient({
+    apiKey: config.apiKey,
+    ...(config.apiUrl ? { host: config.apiUrl } : {}),
+  });
 
   const scopeCtx: ScopeContext = {
     userId: resolveUserId(config.userId),

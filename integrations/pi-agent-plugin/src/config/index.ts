@@ -18,12 +18,45 @@ const DEFAULT_DREAM: DreamConfig = {
 const DEFAULT_CONFIG: Mem0Config = {
   apiKey: "",
   userId: "",
+  apiUrl: "",
   autoCapture: true,
   defaultScope: "project",
   contextInjection: true,
   searchThreshold: 0.3,
   dream: DEFAULT_DREAM,
 };
+
+function isValidHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/**
+ * Resolve the REST API base URL. Precedence:
+ * 1. ``MEM0_API_URL`` env var
+ * 2. ``apiUrl`` from config file
+ * 3. Empty (platform default ``https://api.mem0.ai`` handled by MemoryClient)
+ *
+ * Throws when a URL was explicitly configured but is invalid — prevents
+ * silently falling back to the platform default.
+ */
+function resolveApiUrl(fileApiUrl: string): string {
+  const url = (process.env.MEM0_API_URL ?? "").trim();
+  if (url) {
+    if (!isValidHttpUrl(url)) {
+      throw new Error(`MEM0_API_URL does not start with http:// or https:// (got ${JSON.stringify(url)}).`);
+    }
+    return url.replace(/\/+$/, "");
+  }
+
+  const fileUrl = (fileApiUrl ?? "").trim();
+  if (fileUrl) {
+    if (!isValidHttpUrl(fileUrl)) {
+      throw new Error(`apiUrl in config does not start with http:// or https:// (got ${JSON.stringify(fileUrl)}).`);
+    }
+    return fileUrl.replace(/\/+$/, "");
+  }
+  return "";
+}
 
 export function loadConfig(): Mem0Config {
   let fileConfig: Partial<Mem0Config> = {};
@@ -54,6 +87,8 @@ export function loadConfig(): Mem0Config {
   if (process.env.MEM0_USER_ID) {
     config.userId = process.env.MEM0_USER_ID;
   }
+
+  config.apiUrl = resolveApiUrl(config.apiUrl);
 
   return config;
 }

@@ -56,4 +56,68 @@ describe("loadConfig", () => {
     const config = loadConfig();
     expect(config.apiKey).toBe("m0-env-key");
   });
+
+  // ── apiUrl resolution ────────────────────────────────────────────
+
+  it("apiUrl defaults to empty when no URL is configured", () => {
+    delete process.env.MEM0_API_KEY;
+    delete process.env.MEM0_API_URL;
+    const config = loadConfig();
+    expect(config.apiUrl).toBe("");
+  });
+
+  it("apiUrl reads MEM0_API_URL env var", () => {
+    process.env.MEM0_API_URL = "http://localhost:8888";
+    const config = loadConfig();
+    expect(config.apiUrl).toBe("http://localhost:8888");
+  });
+
+  it("apiUrl reads from config file when env vars are absent", () => {
+    delete process.env.MEM0_API_URL;
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ apiUrl: "http://config-host:7777" })
+    );
+    const config = loadConfig();
+    expect(config.apiUrl).toBe("http://config-host:7777");
+  });
+
+  it("env vars override config file apiUrl", () => {
+    process.env.MEM0_API_URL = "http://env:9999";
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ apiUrl: "http://file:8888" })
+    );
+    const config = loadConfig();
+    expect(config.apiUrl).toBe("http://env:9999");
+  });
+
+  it("trailing slashes are stripped from apiUrl", () => {
+    process.env.MEM0_API_URL = "http://localhost:8888///";
+    const config = loadConfig();
+    expect(config.apiUrl).toBe("http://localhost:8888");
+  });
+
+  it("invalid apiUrl in env var throws", () => {
+    process.env.MEM0_API_URL = "not-a-url";
+    expect(() => loadConfig()).toThrow(/MEM0_API_URL/);
+  });
+
+  it("invalid apiUrl in config file throws", () => {
+    delete process.env.MEM0_API_URL;
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ apiUrl: "ftp://bad" })
+    );
+    expect(() => loadConfig()).toThrow(/apiUrl in config/);
+  });
+
+  it("invalid env URL does not fall through to valid config file URL", () => {
+    process.env.MEM0_API_URL = "bad-scheme";
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ apiUrl: "http://valid:8888" })
+    );
+    expect(() => loadConfig()).toThrow(/MEM0_API_URL/);
+  });
 });

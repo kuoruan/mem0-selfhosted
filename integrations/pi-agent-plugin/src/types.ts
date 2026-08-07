@@ -9,6 +9,7 @@ export interface DreamConfig {
 }
 
 export interface Mem0Config {
+  apiUrl: string;
   apiKey: string;
   userId: string;
   autoCapture: boolean;
