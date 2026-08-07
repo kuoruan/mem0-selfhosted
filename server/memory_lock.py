@@ -34,7 +34,7 @@ import threading
 import time
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, Generator, Optional, Tuple, TypeVar
 
 from cachetools import TTLCache
 
@@ -69,7 +69,7 @@ class _RWGate:
         self._pending_writers = 0
 
     @contextmanager
-    def read(self) -> Iterator[None]:
+    def read(self) -> Generator[None, None, None]:
         with self._cond:
             while self._writer or self._pending_writers > 0:
                 self._cond.wait()
@@ -83,7 +83,7 @@ class _RWGate:
                     self._cond.notify_all()
 
     @contextmanager
-    def write(self) -> Iterator[None]:
+    def write(self) -> Generator[None, None, None]:
         with self._cond:
             self._pending_writers += 1
             try:
@@ -244,7 +244,7 @@ def _release_lock_record(record: _LockRecord, key: ScopeLockKey) -> None:
 
 
 @contextmanager
-def _hold_record(record: _LockRecord, key: ScopeLockKey) -> Iterator[None]:
+def _hold_record(record: _LockRecord, key: ScopeLockKey) -> Generator[None, None, None]:
     acquired = False
     try:
         record.lock.acquire()
@@ -257,7 +257,7 @@ def _hold_record(record: _LockRecord, key: ScopeLockKey) -> Iterator[None]:
 
 
 @contextmanager
-def _scoped_resource_lock(keys: Tuple[ScopeLockKey, ...]) -> Iterator[None]:
+def _scoped_resource_lock(keys: Tuple[ScopeLockKey, ...]) -> Generator[None, None, None]:
     """Acquire *keys* under the global read gate, in list order (see LOCK_ACQUIRE_ORDER)."""
     if not keys:
         raise ValueError("at least one lock key is required")
@@ -274,7 +274,7 @@ def memory_scope_lock(
     entity_scope: Optional[Dict[str, str]] = None,
     *,
     global_lock: bool = False,
-) -> Iterator[None]:
+) -> Generator[None, None, None]:
     """Hold the lock for *entity_scope*.
 
     When *global_lock* is True, blocks all other writes (scope + memory-id) for the
@@ -305,7 +305,7 @@ def memory_id_lock_keys(
 def memory_id_lock(
     memory_id: str,
     entity_scope: Optional[Dict[str, str]] = None,
-) -> Iterator[None]:
+) -> Generator[None, None, None]:
     """Hold the lock for a single ``memory_id`` (update/delete on one record).
 
     Keys must follow :data:`LOCK_ACQUIRE_ORDER`. When *entity_scope* is set,

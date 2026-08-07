@@ -3,7 +3,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import date
-from typing import Annotated, Any, AsyncIterator, Callable, Iterator, Optional
+from typing import Annotated, Any, AsyncGenerator, Callable, Generator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response
@@ -91,7 +91,7 @@ def _mcp_auth_user_id() -> str | None:
 
 
 @contextmanager
-def _mcp_db() -> Iterator[Any]:
+def _mcp_db() -> Generator[Any, None, None]:
     """Open a DB session from the server's session factory (MCP tools bypass FastAPI DI)."""
     factory = server_state._session_factory
     if factory is None:
@@ -736,7 +736,7 @@ def _install_mcp_lifespan(app: FastAPI) -> None:
     original_lifespan = app.router.lifespan_context
 
     @asynccontextmanager
-    async def lifespan_with_mcp(app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan_with_mcp(app: FastAPI) -> AsyncGenerator[None, None]:
         async with original_lifespan(app):
             # Fresh session manager per lifespan cycle: run() can only be
             # called once per instance, so reusing one across cycles (TestClient
@@ -757,7 +757,7 @@ def _install_mcp_lifespan(app: FastAPI) -> None:
 
 
 @contextmanager
-def _mcp_request_context(request: Request, user: Any) -> Iterator[None]:
+def _mcp_request_context(request: Request, user: Any) -> Generator[None, None, None]:
     # Resolve header metadata before setting any contextvar so a failure here
     # cannot leave auth_user_id_var set without a matching reset.
     meta = request_meta(request)
