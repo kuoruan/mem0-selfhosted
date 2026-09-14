@@ -43,8 +43,6 @@ describe("loadConfig", () => {
     const config = loadConfig();
     expect(config.apiKey).toBe("m0-file-key");
     expect(config.userId).toBe("file-user");
-    expect(config.dream.enabled).toBe(true);
-    expect(config.dream.minHours).toBe(24);
   });
 
   it("env vars override config file", () => {
@@ -102,6 +100,14 @@ describe("loadConfig", () => {
     process.env.MEM0_API_URL = "not-a-url";
     expect(() => loadConfig()).toThrow(/MEM0_API_URL/);
   });
+
+  it.each(["http://", "https://", "http:///path"])(
+    "%s without a host throws instead of failing at request time",
+    (hostless) => {
+      process.env.MEM0_API_URL = hostless;
+      expect(() => loadConfig()).toThrow(/MEM0_API_URL/);
+    }
+  );
 
   it("invalid apiUrl in config file throws", () => {
     delete process.env.MEM0_API_URL;

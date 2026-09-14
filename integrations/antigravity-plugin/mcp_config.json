@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mem0": {
+      "command": "python3",
+      "args": ["./core/mcp_server.py"]
+    },
+    "mem0-platform": {
+      "command": "uv",
+      "args": ["run", "./core/mcp_proxy.py"]
+    }
+  }
+}

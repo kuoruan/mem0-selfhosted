@@ -1,13 +1,5 @@
 export type Scope = "project" | "session" | "global";
 
-export interface DreamConfig {
-  enabled: boolean;
-  auto: boolean;
-  minHours: number;
-  minSessions: number;
-  minMemories: number;
-}
-
 export interface Mem0Config {
   apiUrl: string;
   apiKey: string;
@@ -16,18 +8,6 @@ export interface Mem0Config {
   defaultScope: Scope;
   contextInjection: boolean;
   searchThreshold: number;
-  dream: DreamConfig;
-}
-
-export interface DreamState {
-  lastConsolidatedAt: number;
-  sessionsSince: number;
-  lastSessionId: string | null;
-}
-
-export interface DreamLock {
-  pid: number;
-  startedAt: number;
 }
 
 export interface ScopeContext {

@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "mem0": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "${CURSOR_PLUGIN_ROOT}/core/mcp_server.py"
+      ],
+      "env": {
+        "PLUGIN_OPTION_API_KEY": "${api_key}",
+        "PLUGIN_OPTION_USER_ID": "${user_id}",
+        "PLUGIN_OPTION_TOP_K": "${top_k}",
+        "PLUGIN_OPTION_MAX_CONTEXT_CHARS": "${max_context_chars}",
+        "PLUGIN_OPTION_SEARCH_SCOPE": "${search_scope}",
+        "PLUGIN_OPTION_API_URL": "${api_url}"
+      }
+    },
+    "mem0-platform": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "${CURSOR_PLUGIN_ROOT}/core/mcp_proxy.py"
+      ],
+      "env": {
+        "PLUGIN_OPTION_API_KEY": "${api_key}",
+        "PLUGIN_OPTION_MCP_URL": "${mcp_url}"
+      }
+    }
+  }
+}
