@@ -26,6 +26,7 @@ Covered endpoints
 
     GET    /v1/entities
     GET    /v1/entities/filters
+    DELETE /v1/entities/{entity_type}/{entity_id}
     GET    /v2/entities/{entity_type}/{entity_id}
     DELETE /v2/entities/{entity_type}/{entity_id}
 
@@ -38,6 +39,12 @@ Covered endpoints
 
 Stub endpoints (501 Not Implemented)
 -------------------------------------
+Project management, feedback, exports, summary, and webhooks are hosted-platform
+features; the self-hosted server returns 501 for them. ``unsupported_api_error``
+keeps the status explicit so SDK callers see "not supported" rather than a 404.
+Keep this list in sync with the routes below — ``tests/server/test_server_compat.py``
+asserts every entry is registered, and that the docstring lists every stub.
+
     GET    /api/v1/orgs/organizations/{org_id}/projects/
     POST   /api/v1/orgs/organizations/{org_id}/projects/
     GET    /api/v1/orgs/organizations/{org_id}/projects/{project_id}/
@@ -47,6 +54,15 @@ Stub endpoints (501 Not Implemented)
     POST   /api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/
     PUT    /api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/
     DELETE /api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/
+
+    POST   /v1/feedback/
+    POST   /v1/exports/
+    POST   /v1/exports/get/
+    POST   /v1/summary/
+    GET    /api/v1/webhooks/projects/{project_id}/
+    POST   /api/v1/webhooks/projects/{project_id}/
+    PUT    /api/v1/webhooks/{webhook_id}/
+    DELETE /api/v1/webhooks/{webhook_id}/
 """
 
 import json
@@ -457,7 +473,10 @@ class MemorySearchInputV3(BaseModel):
     )
     keyword_search: Optional[bool] = Field(
         default=None,
-        description="Accepted for compatibility; the self-hosted server already runs hybrid (semantic + keyword) search.",
+        description=(
+            "Accepted for compatibility; the self-hosted server already runs hybrid (semantic + keyword) "
+            "search and cannot disable the keyword half, so False is ignored (and logged)."
+        ),
     )
 
 
@@ -1220,6 +1239,11 @@ def v3_search_memories(
         "v3_search_memories",
         latest_only=body.latest_only,
         reference_date=body.reference_date,
+        # Only False diverges from what the self-hosted server does: it always runs
+        # hybrid (semantic + keyword) search, so it cannot honour a request to drop
+        # the keyword half. True already matches the behaviour, so warning on it
+        # would be noise.
+        keyword_search=body.keyword_search if body.keyword_search is False else None,
     )
     effective_filters = build_search_filters(
         user_id=body.user_id,

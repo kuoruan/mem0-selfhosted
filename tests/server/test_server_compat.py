@@ -11,6 +11,7 @@ Covers:
                             resolve_existing
 """
 
+import asyncio
 import logging
 from datetime import date, datetime, timezone
 from typing import Any
@@ -50,6 +51,7 @@ from server.compat.metadata import (
 )
 from server.compat.utils import drop_none, normalize_timestamp, parse_iso_timestamp
 from server.compat.responses import (
+    API_UNSUPPORTED_DETAIL,
     resolve_optional_pagination,
     warn_ignored_compat_params,
 )
@@ -61,6 +63,7 @@ from server.compat.scope import (
     get_entity_field,
     require_entity_scope,
 )
+import server.routers.compat as compat_routes
 from server.routers.compat import (
     MemoryBatchDeleteInput,
     MemoryBatchDeleteLegacyInput,
@@ -2851,3 +2854,109 @@ class TestV1GetEntityMemoriesShowExpired:
         v1_get_entity_memories(entity_type="user", entity_id="alice", request=_REQ, show_expired=True, auth=None)
 
         mem.get_all.assert_called_once_with(filters={"user_id": "alice"}, show_expired=True)
+
+
+# ---------------------------------------------------------------------------
+# Declared 501 stubs — the fork's "not supported" contract
+# ---------------------------------------------------------------------------
+
+
+# Every declared unsupported endpoint as (method, path, endpoint kwargs).
+# Asserted against the router's route table rather than by calling the handlers,
+# so dropping a @router.<method> decorator fails here: it would turn an explicit
+# 501 into a bare 404 for SDK callers and no other test would notice.
+_UNSUPPORTED_STUBS = [
+    ("GET", "/api/v1/orgs/organizations/{org_id}/projects/", {"org_id": "o1"}),
+    ("POST", "/api/v1/orgs/organizations/{org_id}/projects/", {"org_id": "o1"}),
+    ("GET", "/api/v1/orgs/organizations/{org_id}/projects/{project_id}/", {"org_id": "o1", "project_id": "p1"}),
+    ("PATCH", "/api/v1/orgs/organizations/{org_id}/projects/{project_id}/", {"org_id": "o1", "project_id": "p1"}),
+    ("DELETE", "/api/v1/orgs/organizations/{org_id}/projects/{project_id}/", {"org_id": "o1", "project_id": "p1"}),
+    (
+        "GET",
+        "/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/",
+        {"org_id": "o1", "project_id": "p1"},
+    ),
+    (
+        "POST",
+        "/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/",
+        {"org_id": "o1", "project_id": "p1"},
+    ),
+    (
+        "PUT",
+        "/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/",
+        {"org_id": "o1", "project_id": "p1"},
+    ),
+    (
+        "DELETE",
+        "/api/v1/orgs/organizations/{org_id}/projects/{project_id}/members/",
+        {"org_id": "o1", "project_id": "p1"},
+    ),
+    ("POST", "/v1/feedback/", {}),
+    ("POST", "/v1/exports/", {}),
+    ("POST", "/v1/exports/get/", {}),
+    ("POST", "/v1/summary/", {}),
+    ("GET", "/api/v1/webhooks/projects/{project_id}/", {"project_id": "p1"}),
+    ("POST", "/api/v1/webhooks/projects/{project_id}/", {"project_id": "p1"}),
+    ("PUT", "/api/v1/webhooks/{webhook_id}/", {"webhook_id": "w1"}),
+    ("DELETE", "/api/v1/webhooks/{webhook_id}/", {"webhook_id": "w1"}),
+]
+
+
+class TestUnsupportedEndpointStubs:
+    @pytest.mark.parametrize(
+        "method,path,kwargs",
+        _UNSUPPORTED_STUBS,
+        ids=[f"{method} {path}" for method, path, _ in _UNSUPPORTED_STUBS],
+    )
+    def test_route_registered_and_returns_501(self, method, path, kwargs):
+        route = next((r for r in compat_routes.router.routes if r.path == path and method in r.methods), None)
+        assert route is not None, f"{method} {path} is not registered"
+
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(route.endpoint(**kwargs))
+
+        assert excinfo.value.status_code == 501
+        assert excinfo.value.detail == API_UNSUPPORTED_DETAIL
+
+    def test_docstring_lists_every_stub(self):
+        """compat.py's docstring is the published coverage inventory.
+
+        It drifted once already (feedback/exports/summary/webhooks were stubs but
+        unlisted), which reads as "implemented" to anyone checking support.
+        """
+        doc = compat_routes.__doc__ or ""
+        missing = [f"{method:<6} {path}" for method, path, _ in _UNSUPPORTED_STUBS if f"{method:<6} {path}" not in doc]
+        assert not missing, f"undocumented 501 stubs: {missing}"
+
+
+class TestV3SearchMemoriesKeywordSearch:
+    """keyword_search only diverges at False, so only False is worth warning about."""
+
+    @staticmethod
+    def _search(monkeypatch, **kwargs):
+        mem = MagicMock()
+        mem.search.return_value = {"results": []}
+        monkeypatch.setattr("server.routers.compat.get_memory_instance", lambda: mem)
+        v3_search_memories(MemorySearchInputV3(query="hello", user_id="u1", **kwargs), request=_REQ, auth=None)
+        return mem
+
+    def test_false_is_accepted_and_warns_hybrid_cannot_be_disabled(self, monkeypatch, caplog):
+        with caplog.at_level(logging.WARNING):
+            mem = self._search(monkeypatch, keyword_search=False)
+
+        assert "keyword_search" in caplog.text
+        # still searched — the flag is ignored, not honoured by skipping keyword work
+        mem.search.assert_called_once()
+
+    def test_true_does_not_warn(self, monkeypatch, caplog):
+        """True already matches the hybrid behaviour in effect; warning would be noise."""
+        with caplog.at_level(logging.WARNING):
+            self._search(monkeypatch, keyword_search=True)
+
+        assert "keyword_search" not in caplog.text
+
+    def test_omitted_does_not_warn(self, monkeypatch, caplog):
+        with caplog.at_level(logging.WARNING):
+            self._search(monkeypatch)
+
+        assert "keyword_search" not in caplog.text
