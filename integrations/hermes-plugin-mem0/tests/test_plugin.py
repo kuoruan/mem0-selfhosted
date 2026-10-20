@@ -284,3 +284,34 @@ def test_initialize_tolerates_non_numeric_sync_max_chars(plugin, monkeypatch):
     provider = plugin.Mem0MemoryProvider()
     provider.initialize("test-session")
     assert provider._sync_max_chars == plugin._SYNC_MSG_MAX_CHARS
+
+
+def test_selfhosted_url_normalization(plugin):
+    """Trailing slashes are stripped; the stored base URL has no trailing slash."""
+    backend = importlib.import_module(f"{plugin.__name__}._backend")
+    assert backend.normalize_selfhosted_url("http://localhost:8888/") == "http://localhost:8888"
+    assert backend.normalize_selfhosted_url("  https://mem0.example.com///  ") == "https://mem0.example.com"
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "localhost:8888", "ftp://x/y", "http://", "http:///path"])
+def test_selfhosted_url_fails_closed_on_malformed(plugin, bad):
+    """A set-but-malformed URL raises instead of routing to the cloud API."""
+    backend = importlib.import_module(f"{plugin.__name__}._backend")
+    with pytest.raises(ValueError, match="MEM0_HOST / MEM0_API_URL"):
+        backend.SelfHostedBackend("key", bad)
+
+
+def test_mem0_api_url_is_host_fallback(plugin, monkeypatch):
+    """MEM0_HOST wins; MEM0_API_URL is the cross-plugin alias; neither set -> ''."""
+    secrets = {"MEM0_HOST": "", "MEM0_API_URL": "http://selfhosted:8888"}
+    # The plugin binds get_secret into its own namespace at import time, so patch that
+    # binding; patching agent.secret_scope after import would have no effect.
+    monkeypatch.setattr(plugin, "get_secret", lambda k, default="": secrets.get(k, default))
+    monkeypatch.setattr(sys.modules["hermes_constants"], "get_hermes_home", lambda: Path("/nonexistent"))
+    assert plugin._load_config()["host"] == "http://selfhosted:8888"
+
+    secrets["MEM0_HOST"] = "http://primary:8888"
+    assert plugin._load_config()["host"] == "http://primary:8888"
+
+    secrets["MEM0_HOST"] = secrets["MEM0_API_URL"] = ""
+    assert plugin._load_config()["host"] == ""

@@ -1,10 +1,11 @@
 """Mem0 memory plugin — MemoryProvider interface.
 
 Server-side fact extraction and semantic search via the Mem0 Platform API (cloud), a
-self-hosted Mem0 server (MEM0_HOST, HTTP), or OSS Memory. Secrets live in $HERMES_HOME/.env
-(MEM0_API_KEY, MEM0_HOST); settings in $HERMES_HOME/mem0.json via `hermes memory setup`:
-mode ("platform"|"oss"), host, user_id (canonical id across gateways; unset → gateway-native
-id), agent_id. MEM0_* env vars remain a fallback.
+self-hosted Mem0 server (MEM0_HOST, or MEM0_API_URL as the cross-plugin alias; HTTP), or OSS
+Memory. Secrets live in $HERMES_HOME/.env (MEM0_API_KEY, MEM0_HOST); settings in
+$HERMES_HOME/mem0.json via `hermes memory setup`: mode ("platform"|"oss"), host, user_id
+(canonical id across gateways; unset → gateway-native id), agent_id. MEM0_* env vars remain
+a fallback.
 """
 
 from __future__ import annotations
@@ -83,7 +84,11 @@ def _load_config() -> dict:
     # profile scope too, or a secondary profile's memories land in the default profile's account.
     # A scope-less multiplex caller raises here on purpose — that is a spawn-site bug, and
     # swallowing it would silently route the turn's memories to the default profile.
-    config = {"mode": get_secret("MEM0_MODE", "") or "platform", "host": get_secret("MEM0_HOST", "") or "",
+    config = {"mode": get_secret("MEM0_MODE", "") or "platform",
+              # MEM0_HOST is this plugin's native variable; MEM0_API_URL is what the other Mem0
+              # plugins and the self-hosted docs use, so honour it as a fallback rather than
+              # silently routing a self-hosted installation to the cloud API.
+              "host": get_secret("MEM0_HOST", "") or get_secret("MEM0_API_URL", ""),
               "agent_id": get_secret("MEM0_AGENT_ID", "") or "hermes", "oss": {}}
     if user_id := get_secret("MEM0_USER_ID", ""):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
         config["user_id"] = user_id
@@ -157,7 +162,7 @@ class Mem0MemoryProvider(MemoryProvider):
         api_key_required = cfg.get("mode", "platform") != "oss" and not cfg.get("host")
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
-            {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},
+            {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud). MEM0_API_URL is accepted as a fallback.", "required": False, "env_var": "MEM0_HOST"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},

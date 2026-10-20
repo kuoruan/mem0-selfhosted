@@ -247,6 +247,13 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
         print("  Error: a server URL is required for self-hosted mode.", file=sys.stderr)
         return
     host = host.rstrip("/")
+    from ._backend import normalize_selfhosted_url
+
+    try:
+        host = normalize_selfhosted_url(host)
+    except ValueError as exc:
+        print(f"  Error: {exc}", file=sys.stderr)
+        return
     env_writes = _api_key_writes(flags, "Server API key", fresh_label="Server API key (blank if AUTH_DISABLED)")
     user_id = flags.get("user_id") or _prompt("User identifier", default=provider_config.get("user_id") or "hermes-user")
     agent_id = _prompt("Agent identifier", default=provider_config.get("agent_id") or "hermes")

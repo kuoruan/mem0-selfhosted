@@ -10,8 +10,26 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from threading import RLock
 from typing import Any
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_selfhosted_url(url: str) -> str:
+    """Validate a self-hosted server URL and strip trailing slashes.
+
+    Fails closed: a set-but-malformed URL raises instead of being ignored, because
+    ignoring it would route a self-hosted API key to the Platform API. Accepts
+    ``MEM0_HOST`` (the plugin's native variable) and ``MEM0_API_URL`` (the variable
+    the other Mem0 plugins and the self-hosted docs use).
+    """
+    value = (url or "").strip()
+    parts = urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(
+            f"MEM0_HOST / MEM0_API_URL must be an absolute http:// or https:// URL with a host (got {url!r})"
+        )
+    return value.rstrip("/")
 
 
 def _add_kwargs(user_id: str, agent_id: str, infer: bool, metadata: dict | None) -> dict[str, Any]:
@@ -80,9 +98,10 @@ class SelfHostedBackend(Mem0Backend):
 
     def __init__(self, api_key: str, host: str, transport=None):
         import httpx
+        host = normalize_selfhosted_url(host)
         headers = {"Content-Type": "application/json", **({"X-API-Key": api_key} if api_key else {})}  # key omitted only for AUTH_DISABLED servers
         # Connect-level retries keep one dropped SYN from counting toward the breaker. ``transport`` is injectable for tests.
-        self._client = httpx.Client(base_url=host.rstrip("/"), headers=headers, timeout=30.0, transport=transport or httpx.HTTPTransport(retries=2))
+        self._client = httpx.Client(base_url=host, headers=headers, timeout=30.0, transport=transport or httpx.HTTPTransport(retries=2))
         self._capture_timeout = httpx.Timeout(120.0, connect=30.0)
 
     def _json(self, method: str, path: str, **kwargs) -> Any:
