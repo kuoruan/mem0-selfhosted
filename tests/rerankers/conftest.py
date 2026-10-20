@@ -1,4 +1,3 @@
-import sys
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
@@ -19,7 +18,6 @@ def mock_cohere(monkeypatch):
     fake_cohere = ModuleType("cohere")
     fake_client = MagicMock()
     fake_cohere.Client = MagicMock(return_value=fake_client)
-    monkeypatch.setitem(sys.modules, "cohere", fake_cohere)
 
     import mem0.reranker.cohere_reranker as cohere_reranker
 
@@ -34,7 +32,6 @@ def mock_zero_entropy(monkeypatch):
     fake_module = ModuleType("zeroentropy")
     fake_client = MagicMock()
     fake_module.ZeroEntropy = MagicMock(return_value=fake_client)
-    monkeypatch.setitem(sys.modules, "zeroentropy", fake_module)
 
     import mem0.reranker.zero_entropy_reranker as zero_entropy_reranker
 

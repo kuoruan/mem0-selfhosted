@@ -16,7 +16,6 @@ is imported.
 import importlib
 import os
 import sys
-import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,16 +70,21 @@ def memory_patch():
     the server imports/loads without a real backend. Yields the mock; per-file
     ``_mock_memory`` fixtures customize its return values.
 
-    ``server_state._memory_instance`` is set so ``get_memory_instance()`` returns
-    the mock regardless of whether ``main`` is reloaded under the patch.
+    ``server_state._memory_instance`` is set for the fixture duration so
+    ``get_memory_instance()`` returns the mock regardless of whether ``main``
+    is reloaded under the patch.
     """
     mock = MagicMock()
+    import server.server_state as server_state
+
     with patch.dict(os.environ, {"OPENAI_API_KEY": "fake-key"}):
         with patch("mem0.Memory.from_config", return_value=mock):
-            import server.server_state as server_state
-
+            previous = server_state._memory_instance
             server_state._memory_instance = mock
-            yield mock
+            try:
+                yield mock
+            finally:
+                server_state._memory_instance = previous
 
 
 @pytest.fixture
@@ -121,13 +125,6 @@ def load_app(monkeypatch):
             admin_api_key=admin_api_key or None,
             auth_disabled=auth_disabled,
         )
-        # Patch the auth config seen by verify_auth (disabled/enabled request
-        # paths look it up as a module global on auth) and by main's lifespan
-        # validator (_validate_auth_config reads main.get_auth_config). The
-        # validator is only reached via `with TestClient(app)` (lifespan), but
-        # patching both seams keeps enabled-mode lifespan tests on the stub
-        # config instead of the real env/cache. Deterministic: no env/cache
-        # timing dependency. OIDC routes have their own @patch.
         monkeypatch.setattr(auth, "get_auth_config", lambda: cfg)
 
         if auth_disabled:
@@ -149,23 +146,22 @@ def load_app(monkeypatch):
 
 
 def _register_alias(mod_path: str, alias: str) -> None:
-    """Import *mod_path* (e.g. ``server.server_state``) and register it in
-    ``sys.modules`` under the short *alias* (e.g. ``server_state``).
+    """Import *mod_path* and alias it in ``sys.modules``; skip on ``ImportError``.
 
-    Silently catches ``ImportError`` so that one missing dependency does not
-    prevent unrelated aliases from being registered.
+    ImportWarning is ignored by default, so surface the skip on stderr — a silent skip
+    leaves a confusing ``ModuleNotFoundError`` at first use.
     """
     try:
         mod = importlib.import_module(mod_path)
         sys.modules.setdefault(alias, mod)
     except ImportError as exc:
-        warnings.warn(f"Failed to register alias '{alias}' for '{mod_path}': {exc}", ImportWarning, stacklevel=2)
+        print(f"conftest: skipping alias '{alias}' for '{mod_path}': {exc}", file=sys.stderr)
 
 
-# -- Layer 0: no bare-import deps on other server modules --------------------
-# utils.config must register before server_state, which imports it at module
-# top level; otherwise _register_alias silently swallows the ImportError and
-# leaves the server_state alias unset (breaking compat.entities/mcp_server).
+# Server flat imports (``from auth import ...``) resolve against the ``server/``
+# runtime sys.path. Pytest runs from the repo root, so register the short names
+# once here, in dependency order, instead of mutating ``sys.path``.
+# Each entry is exactly ``"server." + alias`` (``tests.server.helpers`` excepted).
 for _mod_path, _alias in [
     ("server.errors", "errors"),
     ("server.entity", "entity"),
@@ -173,14 +169,16 @@ for _mod_path, _alias in [
     ("server.utils.config", "utils.config"),
     ("server.utils.pagination", "utils.pagination"),
     ("server.server_state", "server_state"),
+    # memory_lock only needs entity + server_state (both above). compat.tasks
+    # flat-imports it, so it must be registered before the compat layer.
+    ("server.memory_lock", "memory_lock"),
     ("server.rate_limit", "rate_limit"),
     ("server.schemas", "schemas"),
     ("server.telemetry", "telemetry"),
 ]:
     _register_alias(_mod_path, _alias)
 
-# -- Layer 1: compat sub-modules (depend on errors, server_state) ------------
-# Order matters: modules with no bare-import deps first, then dependents.
+# Compat sub-modules depend on the aliases above.
 for _mod_path, _alias in [
     ("server.compat", "compat"),
     ("server.compat.utils", "compat.utils"),
@@ -195,11 +193,9 @@ for _mod_path, _alias in [
 ]:
     _register_alias(_mod_path, _alias)
 
-# -- Layer 2: depends on compat modules + Layer 0 ----------------------------
-# Order matters: auth_config → auth → entity_permissions because
-# entity_permissions does ``from auth import ...``.
+# Depends on compat + the layer above; order is load-bearing
+# (entity_permissions does ``from auth import ...``).
 for _mod_path, _alias in [
-    ("server.memory_lock", "memory_lock"),
     ("server.db", "db"),
     ("server.models", "models"),
     ("server.auth_config", "auth_config"),
@@ -210,7 +206,7 @@ for _mod_path, _alias in [
 ]:
     _register_alias(_mod_path, _alias)
 
-# -- Layer 3: depends on db, models, auth, compat ----------------------------
+# Depends on db, models, auth, and compat; ``helpers`` is a test module, not a server one.
 for _mod_path, _alias in [
     ("server.bg_tasks", "bg_tasks"),
     ("server.mcp_server", "mcp_server"),
@@ -218,8 +214,7 @@ for _mod_path, _alias in [
     ("server.routers.compat", "routers.compat"),
     ("server.routers.oidc", "routers.oidc"),
     ("server.routers.auth", "routers.auth"),
+    # Regular Python module, not a server module; registered last.
+    ("tests.server.helpers", "helpers"),
 ]:
     _register_alias(_mod_path, _alias)
-
-# -- Test helpers: regular Python module (not a server module) -----------------
-_register_alias("tests.server.helpers", "helpers")
