@@ -2899,6 +2899,15 @@ _UNSUPPORTED_STUBS = [
     ("POST", "/api/v1/webhooks/projects/{project_id}/", {"project_id": "p1"}),
     ("PUT", "/api/v1/webhooks/{webhook_id}/", {"webhook_id": "w1"}),
     ("DELETE", "/api/v1/webhooks/{webhook_id}/", {"webhook_id": "w1"}),
+    (
+        "GET",
+        "/v2/entities/{entity_type}/{entity_id}/profile/",
+        {"entity_type": "user", "entity_id": "alice"},
+    ),
+    ("GET", "/v2/profiles/settings/", {}),
+    ("POST", "/v2/profiles/settings/", {}),
+    ("POST", "/v2/profiles/jobs/", {}),
+    ("GET", "/v2/profiles/jobs/{job_id}/", {"job_id": "j1"}),
 ]
 
 

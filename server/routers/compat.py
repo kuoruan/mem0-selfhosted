@@ -39,8 +39,8 @@ Covered endpoints
 
 Stub endpoints (501 Not Implemented)
 -------------------------------------
-Project management, feedback, exports, summary, and webhooks are hosted-platform
-features; the self-hosted server returns 501 for them. ``unsupported_api_error``
+Project management, feedback, exports, summary, webhooks, and user profiles
+are hosted-platform features; the self-hosted server returns 501 for them. ``unsupported_api_error``
 keeps the status explicit so SDK callers see "not supported" rather than a 404.
 Keep this list in sync with the routes below — ``tests/server/test_server_compat.py``
 asserts every entry is registered, and that the docstring lists every stub.
@@ -63,6 +63,12 @@ asserts every entry is registered, and that the docstring lists every stub.
     POST   /api/v1/webhooks/projects/{project_id}/
     PUT    /api/v1/webhooks/{webhook_id}/
     DELETE /api/v1/webhooks/{webhook_id}/
+
+    GET    /v2/entities/{entity_type}/{entity_id}/profile/
+    GET    /v2/profiles/settings/
+    POST   /v2/profiles/settings/
+    POST   /v2/profiles/jobs/
+    GET    /v2/profiles/jobs/{job_id}/
 """
 
 import json
@@ -1348,4 +1354,32 @@ async def webhooks_project(project_id: str) -> None:
 @router.put("/api/v1/webhooks/{webhook_id}/", include_in_schema=False)
 @router.delete("/api/v1/webhooks/{webhook_id}/", include_in_schema=False)
 async def webhook_detail(webhook_id: str) -> None:
+    raise unsupported_api_error()
+
+
+# ---------------------------------------------------------------------------
+# User Profiles  — 501 stubs; hosted-platform beta, requires org enablement
+# (support@mem0.ai), usage metering, and async generation jobs. None of
+# these exist on the self-hosted server.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/v2/entities/{entity_type}/{entity_id}/profile/", include_in_schema=False)
+async def get_entity_profile(entity_type: str, entity_id: str) -> None:
+    raise unsupported_api_error()
+
+
+@router.get("/v2/profiles/settings/", include_in_schema=False)
+@router.post("/v2/profiles/settings/", include_in_schema=False)
+async def profile_settings() -> None:
+    raise unsupported_api_error()
+
+
+@router.post("/v2/profiles/jobs/", include_in_schema=False)
+async def profile_jobs() -> None:
+    raise unsupported_api_error()
+
+
+@router.get("/v2/profiles/jobs/{job_id}/", include_in_schema=False)
+async def profile_job_detail(job_id: str) -> None:
     raise unsupported_api_error()
