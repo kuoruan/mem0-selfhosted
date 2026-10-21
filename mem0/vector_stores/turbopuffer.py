@@ -342,13 +342,20 @@ class TurbopufferDB(VectorStoreBase):
             results = []
         return [results]
 
-    def count(self, filters=None) -> int:
-        """Get approximate count of vectors in the namespace."""
+    def count(self, filters=None) -> Optional[int]:
+        """Get approximate count of vectors in the namespace.
+
+        Namespace metadata cannot honor filters, so a filtered count is reported
+        as unknown (``None``) rather than as another tenant's total.
+        """
+        if filters:
+            return None
         try:
             metadata = self.namespace.metadata()
             return metadata.approx_row_count
-        except Exception:
-            return 0
+        except Exception as e:
+            logger.warning("Error counting vectors: %s", e, exc_info=True)
+            return None
 
     def reset(self):
         """Reset the namespace by deleting all vectors."""

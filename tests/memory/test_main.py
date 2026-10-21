@@ -3,7 +3,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -1366,3 +1366,73 @@ class TestAsyncPartialInsertFailure:
             )
 
         mock_async_memory.db.save_messages.assert_called_once()
+
+
+class TestScopedCountAndAppIdTrim:
+    """count() must enforce the same tenant scope as get_all(), and delete_all()
+    must trim app_id like add() does."""
+
+    @staticmethod
+    def _sync():
+        memory = Memory.__new__(Memory)
+        memory.vector_store = MagicMock()
+        return memory
+
+    @staticmethod
+    def _async():
+        memory = AsyncMemory.__new__(AsyncMemory)
+        memory.vector_store = MagicMock()
+        memory._delete_memory = MagicMock()
+        memory._entity_store = None
+        return memory
+
+    def test_sync_count_requires_entity_scope(self):
+        with pytest.raises(ValueError, match="at least one of"):
+            Memory.count(self._sync())
+
+    def test_async_count_requires_entity_scope(self):
+        import asyncio
+
+        with pytest.raises(ValueError, match="at least one of"):
+            asyncio.run(AsyncMemory.count(self._async()))
+
+    def test_sync_count_trims_entity_ids(self):
+        memory = self._sync()
+        memory.vector_store.count.return_value = 3
+        assert Memory.count(memory, {"user_id": "  alice  "}) == 3
+        memory.vector_store.count.assert_called_once_with(filters={"user_id": "alice"})
+
+    def test_async_count_trims_entity_ids(self):
+        import asyncio
+
+        memory = self._async()
+        memory.vector_store.count.return_value = 3
+        assert asyncio.run(AsyncMemory.count(memory, {"app_id": " app-1 "})) == 3
+        memory.vector_store.count.assert_called_once_with(filters={"app_id": "app-1"})
+
+    def test_sync_delete_all_trims_app_id(self):
+        memory = self._sync()
+        memory.vector_store.list.return_value = ([], None)
+        memory._entity_store = None
+        import mem0.memory.main as memory_main
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(memory_main, "capture_event", MagicMock())
+            mp.setattr(memory_main, "detect_decay_usage_from_delete_all", MagicMock(return_value=None))
+            mp.setattr(memory_main, "display_first_run_notice", MagicMock())
+            Memory.delete_all(memory, app_id=" app-1 ")
+        assert memory.vector_store.list.call_args.kwargs["filters"] == {"app_id": "app-1"}
+
+    def test_async_delete_all_trims_app_id(self):
+        import asyncio
+
+        memory = self._async()
+        memory.vector_store.list.return_value = ([], None)
+        import mem0.memory.main as memory_main
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(memory_main, "capture_event", MagicMock())
+            mp.setattr(memory_main, "detect_decay_usage_from_delete_all", MagicMock(return_value=None))
+            mp.setattr(memory_main, "display_first_run_notice_async", AsyncMock())
+            asyncio.run(AsyncMemory.delete_all(memory, app_id=" app-1 "))
+        assert memory.vector_store.list.call_args.kwargs["filters"] == {"app_id": "app-1"}

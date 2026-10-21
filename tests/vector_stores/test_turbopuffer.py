@@ -652,7 +652,15 @@ class TestCount:
 
     def test_count_handles_error(self, db):
         db.namespace.metadata.side_effect = Exception("error")
-        assert db.count() == 0
+        assert db.count() is None
+
+    def test_filtered_count_is_unknown_not_namespace_total(self, db):
+        mock_metadata = MagicMock()
+        mock_metadata.approx_row_count = 100
+        db.namespace.metadata.return_value = mock_metadata
+
+        assert db.count(filters={"user_id": "alice"}) is None
+        db.namespace.metadata.assert_not_called()
 
 
 # ── reset ────────────────────────────────────────────────────────────

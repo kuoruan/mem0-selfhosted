@@ -415,13 +415,19 @@ class PineconeDB(VectorStoreBase):
             logger.error(f"Error listing vectors: {e}")
             return [[]]
 
-    def count(self, filters = None) -> int:
+    def count(self, filters = None) -> Optional[int]:
         """
         Count number of vectors in the index.
 
+        ``describe_index_stats()`` only reports namespace/index totals and cannot
+        honor filters, so a filtered count is reported as unknown (``None``)
+        rather than as another tenant's total.
+
         Returns:
-            int: Total number of vectors.
+            int | None: Total number of vectors, or ``None`` for filtered counts.
         """
+        if filters:
+            return None
         stats = self.index.describe_index_stats()
         if self.namespace is not None:
             namespace_summary = (stats.namespaces or {}).get(self.namespace)

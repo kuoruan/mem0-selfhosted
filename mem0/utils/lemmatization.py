@@ -38,21 +38,23 @@ def lemmatize_for_bm25(text: str, *, nlp_config: Optional[NlpConfig] = None) -> 
     if nlp is None:
         return text
 
-    doc = nlp(text)
+    # Lowercase before tokenizing (as upstream does): capitalization changes POS
+    # tagging, which changes the lemma and would make new queries miss rows
+    # indexed by earlier versions.
+    doc = nlp(text.lower())
     tokens = []
 
     for token in doc:
         if token.is_punct or token.is_stop:
             continue
 
-        lemma = token.lemma_.lower()
+        lemma = token.lemma_
         if lemma.isalnum():
             tokens.append(lemma)
 
         # Also add original if it ends in -ing and differs from lemma.
         # This handles noun/verb ambiguity (meeting/meet, attending/attend).
-        token_text = token.text.lower()
-        if token_text.endswith("ing") and token_text != lemma and token_text.isalnum():
-            tokens.append(token_text)
+        if token.text.endswith("ing") and token.text != lemma and token.text.isalnum():
+            tokens.append(token.text)
 
     return " ".join(tokens)

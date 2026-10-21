@@ -210,6 +210,28 @@ def _validate_and_trim_entity_id(value: Optional[Any], name: str) -> Optional[st
     return trimmed
 
 
+_ENTITY_SCOPE_KEYS = ("user_id", "agent_id", "app_id", "run_id")
+
+
+def _normalize_scope_filters(filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Trim entity ids and require at least one entity scope dimension.
+
+    Shared by ``get_all`` and ``count`` so scoped reads and scoped counts
+    enforce the same tenant boundary: an empty or scope-less filter raises
+    instead of counting/returning the whole collection.
+    """
+    effective_filters = dict(filters) if filters else {}
+    for key in _ENTITY_SCOPE_KEYS:
+        if key in effective_filters:
+            effective_filters[key] = _validate_and_trim_entity_id(effective_filters[key], key)
+    if not any(key in effective_filters for key in _ENTITY_SCOPE_KEYS):
+        raise ValueError(
+            "filters must contain at least one of: user_id, agent_id, app_id, run_id. "
+            "Example: filters={'user_id': 'u1'}"
+        )
+    return effective_filters
+
+
 def _validate_search_params(threshold: Optional[float] = None, top_k: Optional[int] = None) -> None:
     """
     Validates search parameters.
@@ -1327,31 +1349,8 @@ class Memory(MemoryBase):
         # Validate top_k
         _validate_search_params(top_k=top_k)
 
-        # Validate and trim entity IDs in filters
-        effective_filters = dict(filters) if filters else {}
-        if "user_id" in effective_filters:
-            effective_filters["user_id"] = _validate_and_trim_entity_id(
-                effective_filters["user_id"], "user_id"
-            )
-        if "agent_id" in effective_filters:
-            effective_filters["agent_id"] = _validate_and_trim_entity_id(
-                effective_filters["agent_id"], "agent_id"
-            )
-        if "app_id" in effective_filters:
-            effective_filters["app_id"] = _validate_and_trim_entity_id(
-                effective_filters["app_id"], "app_id"
-            )
-        if "run_id" in effective_filters:
-            effective_filters["run_id"] = _validate_and_trim_entity_id(
-                effective_filters["run_id"], "run_id"
-            )
-
-        # Validate filters contains at least one entity ID
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "app_id", "run_id")):
-            raise ValueError(
-                "filters must contain at least one of: user_id, agent_id, app_id, run_id. "
-                "Example: filters={'user_id': 'u1'}"
-            )
+        # Validate, trim, and require at least one entity scope dimension.
+        effective_filters = _normalize_scope_filters(filters)
 
         limit = top_k
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
@@ -1411,6 +1410,13 @@ class Memory(MemoryBase):
         # Detect stores that ignore skip: same first id → infinite loop
         first_id = extract_memory_id(actual_memories[0])
         if first_id == state["prev_first_id"]:
+            if state["raw_skip"]:
+                logger.warning(
+                    "Vector store returned the same first memory id at skip=%s; it likely "
+                    "ignores the skip parameter, so pagination stopped early and results may "
+                    "be incomplete.",
+                    state["raw_skip"],
+                )
             return True
         state["prev_first_id"] = first_id
 
@@ -2024,6 +2030,7 @@ class Memory(MemoryBase):
         """
         user_id = _validate_and_trim_entity_id(user_id, "user_id")
         agent_id = _validate_and_trim_entity_id(agent_id, "agent_id")
+        app_id = _validate_and_trim_entity_id(app_id, "app_id")
         run_id = _validate_and_trim_entity_id(run_id, "run_id")
 
         filters: Dict[str, Any] = {}
@@ -2079,13 +2086,20 @@ class Memory(MemoryBase):
         so callers can distinguish "genuinely zero" from "unknown".
 
         Args:
-            filters (dict, optional): Entity-scope filters.
+            filters (dict, optional): Entity-scope filters. Must contain at
+                least one of ``user_id``/``agent_id``/``app_id``/``run_id`` —
+                an empty or scope-less filter raises ``ValueError`` instead of
+                counting the whole collection.
 
         Returns:
             int | None: Number of matching memories, or ``None`` if the
                 store does not support counting.
+
+        Raises:
+            ValueError: If no entity scope dimension is present.
         """
-        return self.vector_store.count(filters=filters)
+        effective_filters = _normalize_scope_filters(filters)
+        return self.vector_store.count(filters=effective_filters)
 
     def history(self, memory_id):
         """
@@ -2487,7 +2501,16 @@ class AsyncMemory(MemoryBase):
         """
         if self._entity_store is None:
             return
-        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "run_id") and v}
+        search_filters = {k: v for k, v in filters.items() if k in ("user_id", "agent_id", "app_id", "run_id") and v}
+        if not search_filters:
+            # Refuse an unscoped bulk entity delete: every caller passes at
+            # least one entity id (delete_all requires a non-empty scope),
+            # so an empty filter here is always a programming error, never a
+            # request to wipe the whole entity store.
+            logger.error(
+                "Refusing unscoped bulk entity delete for filters=%r", filters
+            )
+            return
         try:
             listed = await asyncio.to_thread(self.entity_store.list, filters=search_filters, top_k=10000)
             rows = listed[0] if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list) else listed
@@ -3129,31 +3152,8 @@ class AsyncMemory(MemoryBase):
         # Validate top_k
         _validate_search_params(top_k=top_k)
 
-        # Validate and trim entity IDs in filters
-        effective_filters = dict(filters) if filters else {}
-        if "user_id" in effective_filters:
-            effective_filters["user_id"] = _validate_and_trim_entity_id(
-                effective_filters["user_id"], "user_id"
-            )
-        if "agent_id" in effective_filters:
-            effective_filters["agent_id"] = _validate_and_trim_entity_id(
-                effective_filters["agent_id"], "agent_id"
-            )
-        if "app_id" in effective_filters:
-            effective_filters["app_id"] = _validate_and_trim_entity_id(
-                effective_filters["app_id"], "app_id"
-            )
-        if "run_id" in effective_filters:
-            effective_filters["run_id"] = _validate_and_trim_entity_id(
-                effective_filters["run_id"], "run_id"
-            )
-
-        # Validate filters contains at least one entity ID
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "app_id", "run_id")):
-            raise ValueError(
-                "filters must contain at least one of: user_id, agent_id, app_id, run_id. "
-                "Example: filters={'user_id': 'u1'}"
-            )
+        # Validate, trim, and require at least one entity scope dimension.
+        effective_filters = _normalize_scope_filters(filters)
 
         limit = top_k
         scale_threshold_notice = detect_scale_threshold_from_top_k(top_k)
@@ -3736,6 +3736,7 @@ class AsyncMemory(MemoryBase):
         """
         user_id = _validate_and_trim_entity_id(user_id, "user_id")
         agent_id = _validate_and_trim_entity_id(agent_id, "agent_id")
+        app_id = _validate_and_trim_entity_id(app_id, "app_id")
         run_id = _validate_and_trim_entity_id(run_id, "run_id")
 
         filters = {}
@@ -3805,8 +3806,12 @@ class AsyncMemory(MemoryBase):
 
         Delegates to the underlying vector store's ``count()`` method.
         Returns ``None`` for stores that do not support native counting.
+
+        Raises:
+            ValueError: If ``filters`` has no entity scope dimension.
         """
-        return await asyncio.to_thread(self.vector_store.count, filters=filters)
+        effective_filters = _normalize_scope_filters(filters)
+        return await asyncio.to_thread(self.vector_store.count, filters=effective_filters)
 
     async def history(self, memory_id):
         """

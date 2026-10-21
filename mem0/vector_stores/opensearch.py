@@ -410,14 +410,15 @@ class OpenSearchDB(VectorStoreBase):
             logger.error(f"Error listing vectors: {e}", exc_info=True)
             return [[]]
 
-    def count(self, filters: Optional[Dict] = None) -> int:
+    def count(self, filters: Optional[Dict] = None) -> Optional[int]:
         """Count memories matching filters.
 
         Args:
             filters (Dict, optional): Filters to apply.
 
         Returns:
-            int: Number of matching memories.
+            int | None: Number of matching memories, or ``None`` when the count
+                failed (unknown is distinguishable from a genuine zero).
         """
         try:
             body: Dict = {}
@@ -427,7 +428,7 @@ class OpenSearchDB(VectorStoreBase):
             return response["count"]
         except Exception as e:
             logger.error(f"Error counting vectors: {e}", exc_info=True)
-            return 0
+            return None
 
     def reset(self):
         """Reset the index by deleting and recreating it."""

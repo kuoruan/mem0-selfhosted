@@ -248,3 +248,39 @@ async def test_async_delete_all_stops_when_vector_store_repeats_batch(monkeypatc
     assert result == {"message": "Memories deleted successfully!"}
     assert memory.vector_store.list.call_count == 2
     assert memory._delete_memory.await_count == 2
+
+
+def test_async_delete_all_clears_entities_for_app_scope_only(monkeypatch):
+    """delete_all(app_id=...) must scope entity cleanup by app_id.
+
+    The async helper used to drop app_id from its filter whitelist, leaving an
+    empty filter that every vector store treats as "match all" — wiping entity
+    rows for every tenant.
+    """
+    memory = make_async_memory()
+    entity_store = MagicMock()
+    entity_store.list.return_value = [[SimpleNamespace(id="entity-1")]]
+    memory._entity_store = entity_store
+    memory.vector_store.list.return_value = ([], None)
+    monkeypatch.setattr(memory_main, "capture_event", MagicMock())
+    monkeypatch.setattr(memory_main, "detect_decay_usage_from_delete_all", MagicMock(return_value=None))
+    monkeypatch.setattr(memory_main, "display_first_run_notice_async", AsyncMock())
+
+    import asyncio
+
+    asyncio.run(AsyncMemory.delete_all(memory, app_id="app-1"))
+
+    entity_store.list.assert_called_once_with(filters={"app_id": "app-1"}, top_k=10000)
+    entity_store.delete.assert_called_once_with(vector_id="entity-1")
+
+
+def test_async_bulk_clear_entity_store_refuses_empty_scope():
+    memory = make_async_memory()
+    entity_store = MagicMock()
+    memory._entity_store = entity_store
+
+    import asyncio
+
+    asyncio.run(AsyncMemory._bulk_clear_entity_store(memory, {"app_id": ""}))
+
+    entity_store.list.assert_not_called()

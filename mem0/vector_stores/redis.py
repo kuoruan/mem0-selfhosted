@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from functools import reduce
+from typing import Optional
 
 import numpy as np
 import redis
@@ -324,7 +325,7 @@ class RedisDB(VectorStoreBase):
     def col_info(self, name):
         return self.index.info()
 
-    def count(self, filters=None) -> int:
+    def count(self, filters=None) -> Optional[int]:
         """Count memories matching filters."""
         try:
             filter_expr = None
@@ -335,8 +336,9 @@ class RedisDB(VectorStoreBase):
             query = Query(str(filter_expr) if filter_expr is not None else "*").paging(0, 0)
             result = self.index.search(query)
             return result.total
-        except Exception:
-            return 0
+        except Exception as e:
+            logger.warning("Error counting vectors: %s", e, exc_info=True)
+            return None
 
     def reset(self):
         """

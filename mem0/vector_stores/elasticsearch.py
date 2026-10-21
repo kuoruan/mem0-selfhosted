@@ -305,8 +305,12 @@ class ElasticsearchDB(VectorStoreBase):
 
         return [results]
 
-    def count(self, filters=None) -> int:
-        """Count memories matching filters."""
+    def count(self, filters=None) -> Optional[int]:
+        """Count memories matching filters.
+
+        Returns ``None`` when the count request fails, so callers can tell an
+        outage apart from a genuine zero.
+        """
         try:
             body: Dict[str, Any] = {}
             if filters:
@@ -319,7 +323,7 @@ class ElasticsearchDB(VectorStoreBase):
             return response["count"]
         except Exception as e:
             logger.error(f"Error counting vectors: {e}", exc_info=True)
-            return 0
+            return None
 
     def reset(self):
         """Reset the index by deleting and recreating it."""

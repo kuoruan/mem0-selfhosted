@@ -232,6 +232,15 @@ def test_count_with_empty_string_namespace(pinecone_db):
     assert count == 3
 
 
+def test_filtered_count_is_unknown_not_namespace_total(pinecone_db):
+    stats_mock = MagicMock()
+    stats_mock.namespaces = {"test_namespace": MagicMock(vector_count=10)}
+    pinecone_db.index.describe_index_stats.return_value = stats_mock
+
+    assert pinecone_db.count(filters={"user_id": "alice"}) is None
+    pinecone_db.index.describe_index_stats.assert_not_called()
+
+
 def test_list_error_returns_list_not_dict(pinecone_db):
     """list() error path must return [[]] so callers can do result[0]."""
     pinecone_db.index.query.side_effect = Exception("connection error")
