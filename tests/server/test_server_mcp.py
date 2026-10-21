@@ -647,7 +647,9 @@ def test_add_memory_failure_updates_event_status(mcp_testbed):
     event = _structured(client, "get_event_status", {"event_id": structured["event_id"]}, req_id=3)
 
     assert event["status"] == "FAILED"
-    assert "add failed" in event["metadata"]["error"]
+    # Classified code only: raw exception text is logged, not returned to clients.
+    assert event["metadata"]["error"] == "unknown"
+    assert "add failed" not in event["metadata"]["error"]
 
 
 def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):

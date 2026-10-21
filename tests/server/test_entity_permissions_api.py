@@ -170,6 +170,56 @@ class TestBootstrapEntityPermissions:
         )
         assert resp.status_code == 200, resp.text
 
+    def test_bootstrap_admin_bypass_is_management_zone_only(self):
+        """Client-zone routes never bypass: ADMIN_API_KEY reads everyone's
+        memories through the management API, but the SDK-compatible v1 surface
+        stays scoped to the caller (the bootstrap principal owns no namespace).
+
+        Design: ``compat.py`` / ``mcp_server.py`` carry "Client zone: no bypass".
+        """
+        # Management zone: admin bypass applies -> cross-namespace read works.
+        resp = self.client.get("/memories?user_id=alice", headers=self._auth)
+        assert resp.status_code == 200, resp.text
+        resp = self.client.post(
+            "/search",
+            json={"query": "pizza", "user_id": "alice"},
+            headers=self._auth,
+        )
+        assert resp.status_code == 200, resp.text
+        # Client zone: same key, same scope -> denied (no cross-namespace read).
+        resp = self.client.get("/v1/memories?user_id=alice", headers=self._auth)
+        assert resp.status_code == 403, resp.text
+        resp = self.client.post(
+            "/v1/memories/search",
+            json={"query": "pizza", "user_id": "alice"},
+            headers=self._auth,
+        )
+        assert resp.status_code == 403, resp.text
+
+    def test_bootstrap_compat_mutations_still_forbidden(self):
+        """The read bypass must not leak into writes: bootstrap still cannot
+        author or mutate memories on the compat surface."""
+        resp = self.client.post(
+            "/v1/memories",
+            json={
+                "messages": [{"role": "user", "content": "I like pizza"}],
+                "user_id": "alice",
+            },
+            headers=self._auth,
+        )
+        assert resp.status_code == 403, resp.text
+        resp = self.client.put("/v1/memories/mem-1", json={"text": "x"}, headers=self._auth)
+        assert resp.status_code == 403, resp.text
+        resp = self.client.delete("/v1/memories/mem-1", headers=self._auth)
+        assert resp.status_code == 403, resp.text
+
+    def test_memory_events_route_returns_empty_payload(self):
+        """HTTP-level lock for the route-order fix: `{memory_id}` used to capture
+        `events` and return 404 instead of the documented empty envelope."""
+        resp = self.client.get("/v1/memories/events", headers=self._auth)
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"count": 0, "next": None, "previous": None, "results": []}
+
     def test_delete_nonexistent_entity_is_404(self):
         """DELETE /entities on a never-claimed namespace returns 404 (not 403/silent 200)."""
         resp = self.client.delete("/entities/user/never-claimed", headers=self._auth)

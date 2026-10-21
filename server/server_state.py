@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict
 
 from utils.config import load_json_config, merge_config
-from utils.helpers import normalize_vector_store_list, safe_count
+from utils.helpers import normalize_vector_store_list
 from mem0 import Memory
 
 _state_lock = threading.RLock()
@@ -167,11 +167,10 @@ def _expiration_date_is_expired(expiration_date: Any) -> bool:
 
 def list_all_memories(limit: int | None = ALL_MEMORIES_LIMIT, show_expired: bool | None = None) -> Dict[str, Any]:
     memory = get_memory_instance()
-    if limit is not None:
-        top_k = limit
-    else:
-        c = safe_count(memory)
-        top_k = c if c and c > 0 else ALL_MEMORIES_LIMIT
+    # This is the unscoped admin listing, while ``Memory.count()`` requires an
+    # entity scope (it refuses to count the whole collection). There is no
+    # scoped count to size the page with, so use the default fetch limit.
+    top_k = limit if limit is not None else ALL_MEMORIES_LIMIT
 
     # Direct vector_store.list: admin listing has no entity scope, so Memory.get_all()
     # cannot be used (it enforces scope validation). See show_expired note below.

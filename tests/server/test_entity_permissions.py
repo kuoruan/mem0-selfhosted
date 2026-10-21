@@ -2902,3 +2902,19 @@ class TestResolveNonAdminParent:
         with pytest.raises(HTTPException) as exc:
             _resolve_non_admin_parent("agent", "alice", other.id, db)
         assert exc.value.status_code == 404
+
+
+def test_bulk_delete_rejects_wildcard_filters(db, make_user, fake_memory):
+    """Wildcard expansion exists only on the read path; a delete prescan would
+    match the literal "*" and silently delete nothing while reporting success."""
+    owner = make_user()
+    ep.ensure_entity_owner("user", "alice", owner.id, db)
+    db.commit()
+    fake_memory.add("m1", {"user_id": "alice", "data": "x"})
+
+    with pytest.raises(HTTPException) as exc:
+        ep.bulk_delete_memories(fake_memory, {"user_id": "*"}, owner.id, db, bypass=True)
+
+    assert exc.value.status_code == 400
+    assert "wildcard" in exc.value.detail.lower()
+    assert len(fake_memory.get_all({"user_id": "alice"})) == 1

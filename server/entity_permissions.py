@@ -16,9 +16,12 @@ Entity hierarchy:
 Permission model:
 - Single memory READ   : OR  — read on *any one* entity in the memory's scope.
 - Single memory WRITE  : AND — write on *all* entities in the scope.
-- Single memory DELETE  : AND — admin on *all* entities in the scope.
+- Single memory DELETE  : AND — write on *all* entities in the scope.
+  (Bulk delete_all stays stricter: prescan every matched memory and AND-check
+  ADMIN on each, or app-owner for app scopes. The bulk gate limits the blast
+  radius of one call — it does not stop a write holder from deleting the same
+  memories one by one.)
 - Query (search/list)  : per *branch* (each OR branch must independently pass READ).
-- Bulk destructive      : prescan every matched memory and AND-check ADMIN on each.
 
 Owner vs admin:
 - owner (owner_id): full control — read/write, grant/revoke read+write, delete entity,
@@ -106,8 +109,12 @@ def reject_bootstrap_memory_mutation(operator: User) -> None:
     """Forbid the admin_api_key bypass from authoring or mutating memories.
 
     Bootstrap is a governance + read-only principal: it manages entities (create
-    app, grant/revoke/transfer, delete entity) and reads all data, but never
-    authors or mutates scoped memories. Memories must be authored by a real user
+    app, grant/revoke/transfer, delete entity) and reads all data **through the
+    management API** (``/memories``, ``/search``, ``/entities``). The
+    client-compatible surface (``/v1``/``/v2``/``/v3`` + MCP) never bypasses —
+    those routes stay scoped to the caller's own namespace, and bootstrap owns
+    none. Bootstrap never authors or mutates scoped memories. Memories must be
+    authored by a real user
     so every memory has a scoped owner. Call this right after ``resolve_operator``
     on every memory-mutation endpoint (add / update / delete / delete_all).
 
@@ -1368,6 +1375,17 @@ def bulk_delete_memories(
     ``list_memory_ids_for_params`` raises ``HTTPException(503)`` on vector-store
     failure; MCP callers must wrap with ``_mcp_raise`` to convert to ``ValueError``.
     """
+    wildcards = sorted(key for key, value in params.items() if is_wildcard(value))
+    if wildcards:
+        # Wildcard expansion exists only on the read path. Deletion prescans with the
+        # literal value, so "*" silently deletes nothing while reporting success.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Wildcard filters are not supported for deletion ({', '.join(wildcards)}). "
+                "Pass concrete entity ids."
+            ),
+        )
     scope_hint = params_to_entities(params)
     if "app" in scope_hint:
         # App-scoped: validate owner once, delete_all handles the batch loop.

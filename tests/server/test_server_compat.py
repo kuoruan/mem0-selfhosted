@@ -2079,7 +2079,39 @@ class TestSyntheticEvents:
         event = v1_get_event(result["event_id"], auth=None)
         assert event["status"] == "FAILED"
         assert event["metadata"] is not None
-        assert "boom" in event["metadata"]["error"]
+        # Only the classified code is exposed; raw exception text stays in the log.
+        assert event["metadata"]["error"] == "unknown"
+        assert "boom" not in event["metadata"]["error"]
+
+    def test_v3_add_event_exposes_classified_code(self, monkeypatch):
+        """A classified failure must expose its code, proving `_classify` is
+        actually consulted (not a hardcoded "unknown" string)."""
+
+        class AuthenticationError(Exception):
+            pass
+
+        mem = MagicMock()
+        mem.add.side_effect = AuthenticationError("bad key")
+
+        def get_mem():
+            return mem
+
+        self._patch_memory(monkeypatch, get_mem)
+
+        tasks = BackgroundTasks()
+        result = v3_add_memory(
+            MemoryAddInputV3(messages=[{"role": "user", "content": "remember"}], app_id="app1", infer=True),
+            background_tasks=tasks,
+            meta=RequestMeta(),
+            request=_REQ,
+            auth=None,
+        )
+        self._run_background_tasks(tasks)
+
+        event = v1_get_event(result["event_id"], auth=None)
+        assert event["status"] == "FAILED"
+        assert event["metadata"]["error"] == "provider_auth_failed"
+        assert "bad key" not in event["metadata"]["error"]
 
     def test_v3_add_forwards_expiration_date(self, monkeypatch):
         """expiration_date is forwarded to memory.add() when provided."""
@@ -2969,3 +3001,29 @@ class TestV3SearchMemoriesKeywordSearch:
             self._search(monkeypatch)
 
         assert "keyword_search" not in caplog.text
+
+
+class TestStaticRoutePrecedence:
+    """Starlette matches routes in registration order, not static-first.
+
+    ``GET /v1/memories/events`` was registered after ``/{memory_id}``, so the
+    documented (empty) events endpoint was unreachable and every caller got
+    ``404 Memory 'events' not found``.
+    """
+
+    @staticmethod
+    def _first_full_match(method: str, path: str):
+        from starlette.routing import Match
+
+        scope = {"type": "http", "method": method, "path": path, "root_path": "", "headers": []}
+        for route in compat_routes.router.routes:
+            match, _ = route.matches(scope)
+            if match == Match.FULL:
+                return route
+        return None
+
+    @pytest.mark.parametrize("path", ["/v1/memories/events", "/v1/memories/events/"])
+    def test_memory_events_route_is_not_shadowed_by_memory_id(self, path):
+        route = self._first_full_match("GET", path)
+        assert route is not None, f"GET {path} matched no route"
+        assert route.endpoint is compat_routes.v1_list_memory_events

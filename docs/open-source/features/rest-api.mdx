@@ -186,7 +186,7 @@ Per-user keys inherit the creating user's scope. List or revoke them via `GET /a
 
 ### Legacy `ADMIN_API_KEY`
 
-Set the `ADMIN_API_KEY` environment variable and send it as `X-API-Key`. The request is treated as admin-level and is not tied to a dashboard user. This mode is kept for back-compat with older self-hosted deployments: prefer JWT or per-user keys for new setups.
+Set the `ADMIN_API_KEY` environment variable and send it as `X-API-Key`. The key acts at admin level but stays inside the same scoping rules as everyone else: **the management API** (`/memories`, `/search`, `/entities`) applies the admin bypass and can read every namespace, while **the SDK-compatible surface** (`/v1/*`, `/v2/*`, `/v3/*`, MCP tools) never bypasses — it is always scoped to the caller's own namespace, so the bootstrap key (which owns no namespace) reads nothing there. This mode is kept for back-compat with older self-hosted deployments: prefer JWT or per-user keys for new setups.
 
 ```bash
 ADMIN_API_KEY=your-long-admin-key

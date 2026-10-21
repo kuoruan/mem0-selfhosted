@@ -105,13 +105,13 @@ def test_list_all_memories_hides_expired_by_default(monkeypatch):
     assert ids == ["active"]
 
 
-def test_list_all_memories_uses_object_store_count_when_available(monkeypatch):
+def test_list_all_memories_uses_default_limit_without_scope(monkeypatch):
+    """The admin listing is unscoped, and ``Memory.count()`` refuses unscoped
+    counts — so ``limit=None`` falls back to ``ALL_MEMORIES_LIMIT`` instead of
+    sizing the page from a count."""
     class Row:
         id = "active"
         payload = {"data": "hello", "user_id": "u1"}
-
-    class CollectionInfo:
-        points_count = 12_000
 
     class VectorStore:
         def __init__(self):
@@ -121,9 +121,6 @@ def test_list_all_memories_uses_object_store_count_when_available(monkeypatch):
             self.top_k = top_k
             return [Row()]
 
-        def col_info(self):
-            return CollectionInfo()
-
     vector_store = VectorStore()
 
     class MemoryInstance:
@@ -131,13 +128,13 @@ def test_list_all_memories_uses_object_store_count_when_available(monkeypatch):
 
     memory_instance = MemoryInstance()
     memory_instance.vector_store = vector_store
-    memory_instance.count = lambda filters=None: 12_000
+    # No count() at all: the admin listing must not attempt an unscoped count.
 
     monkeypatch.setattr(server_state, "get_memory_instance", lambda: memory_instance)
 
     result = server_state.list_all_memories(limit=None)
 
-    assert vector_store.top_k == 12_000
+    assert vector_store.top_k == server_state.ALL_MEMORIES_LIMIT
     assert result["results"][0]["id"] == "active"
 
 

@@ -582,6 +582,17 @@ def v1_add_memories(
     return normalize_results(raw)
 
 
+@router.get("/v1/memories/events/", include_in_schema=False)
+@router.get("/v1/memories/events", summary="List memory events (v1)")
+def v1_list_memory_events(_auth=Depends(verify_auth)):
+    """Retrieve memory-level events.
+
+    Memory-level change events (create/update/delete per memory) are not tracked
+    by the self-hosted server. Returns an empty paginated response.
+    """
+    return {"count": 0, "next": None, "previous": None, "results": []}
+
+
 @router.get("/v1/memories/{memory_id}/", include_in_schema=False)
 @router.get("/v1/memories/{memory_id}", summary="Get a memory (v1)")
 @upstream_guard
@@ -817,17 +828,6 @@ def v1_get_event(event_id: str, auth=Depends(verify_auth)):
     return obj
 
 
-@router.get("/v1/memories/events/", include_in_schema=False)
-@router.get("/v1/memories/events", summary="List memory events (v1)")
-def v1_list_memory_events(_auth=Depends(verify_auth)):
-    """Retrieve memory-level events.
-
-    Memory-level change events (create/update/delete per memory) are not tracked
-    by the self-hosted server. Returns an empty paginated response.
-    """
-    return {"count": 0, "next": None, "previous": None, "results": []}
-
-
 @router.put("/v1/batch/", include_in_schema=False)
 @router.put("/v1/batch", summary="Batch update memories (v1)")
 @upstream_guard
@@ -887,9 +887,12 @@ def v1_batch_delete(
     )
     if len(memory_ids) > 1000:
         raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be deleted in a single request")
-    # Pre-validate admin permission on ALL memory_ids before deleting any: an
+    # Pre-validate write permission on ALL memory_ids before deleting any: an
     # unauthorized item fails the whole request (all-or-nothing) instead of being
-    # silently skipped. resolve_memory_entities raises 404 for a missing memory;
+    # silently skipped. This is intentionally the write level (matching single
+    # DELETE); the stricter owner/admin gate lives in validate_bulk_admin_operation,
+    # which the unscoped delete_all path uses.
+    # resolve_memory_entities raises 404 for a missing memory;
     # check_memory_scope_permission raises 403 for insufficient permission.
     for memory_id in memory_ids:
         scope = resolve_memory_entities(memory_id)

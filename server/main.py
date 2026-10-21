@@ -402,15 +402,18 @@ def health_check():
         with SessionLocal() as session:
             session.execute(select(1))
             checks["db"] = "ok"
-    except Exception as exc:
-        checks["db"] = f"error: {exc}"
+    except Exception:
+        # Never echo driver errors: they contain hostnames/ports/DSN fragments.
+        logging.exception("health check: database unavailable")
+        checks["db"] = "unavailable"
 
     # Check vector store via Memory instance
     try:
         get_memory_instance()
         checks["vector_store"] = "ok"
-    except Exception as exc:
-        checks["vector_store"] = f"error: {exc}"
+    except Exception:
+        logging.exception("health check: vector store unavailable")
+        checks["vector_store"] = "unavailable"
 
     status_code = 200 if all(v == "ok" for v in checks.values()) else 503
     return JSONResponse(content=checks, status_code=status_code)
