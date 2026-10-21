@@ -219,9 +219,12 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     # Routing checks ``host`` before platform, so clear a stale self-hosted host. "" rather than
     # pop(): save_config merges into the existing mem0.json, so a popped key would survive.
     provider_config.update(mode="platform", host="")
-    # _load_config() also seeds ``host`` from MEM0_HOST (.env); the file clear can't help there, so warn.
-    if os.environ.get("MEM0_HOST", "").strip():
-        print(f"\n  ⚠ MEM0_HOST is set in your environment ({os.environ['MEM0_HOST']}). It overrides platform mode — remove it from ~/.hermes/.env (or unset it) or Hermes will keep routing to the self-hosted server.")
+    # _load_config() seeds ``host`` from MEM0_HOST/MEM0_API_URL only when mem0.json does not
+    # pin the key. The platform choice written above pins it, so an ambient variable no longer
+    # overrides this choice; mention it so the user can clean up unused configuration.
+    for var in ("MEM0_HOST", "MEM0_API_URL"):
+        if os.environ.get(var, "").strip():
+            print(f"\n  Note: {var} is set in your environment. The platform choice saved here takes precedence (it is stored in mem0.json); remove the variable if you no longer use it.")
     _persist_provider_config(hermes_home, config, provider_config, env_writes, "mem0", "API keys saved to .env")
 
 

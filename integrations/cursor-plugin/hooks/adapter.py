@@ -91,6 +91,7 @@ def main() -> int:
             key: value
             for key in (
                 "PLUGIN_OPTION_API_KEY",
+                "PLUGIN_OPTION_API_URL",
                 "PLUGIN_OPTION_USER_ID",
                 "PLUGIN_OPTION_TOP_K",
                 "PLUGIN_OPTION_MAX_CONTEXT_CHARS",

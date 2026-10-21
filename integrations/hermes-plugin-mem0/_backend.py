@@ -26,9 +26,9 @@ def normalize_selfhosted_url(url: str) -> str:
     value = (url or "").strip()
     parts = urlsplit(value)
     if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ValueError(
-            f"MEM0_HOST / MEM0_API_URL must be an absolute http:// or https:// URL with a host (got {url!r})"
-        )
+        # Do not echo the value: a URL may carry userinfo credentials, and this
+        # message can reach logs or an agent transcript.
+        raise ValueError("MEM0_HOST / MEM0_API_URL must be an absolute http:// or https:// URL with a host")
     return value.rstrip("/")
 
 

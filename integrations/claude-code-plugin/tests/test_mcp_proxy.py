@@ -365,6 +365,22 @@ def test_main_connects_and_initializes(monkeypatch, tmp_path):
     stdio_mod.stdio_server.assert_called_once()
 
 
+def test_main_dials_selfhosted_url_with_token_auth(monkeypatch, tmp_path):
+    """With a self-hosted MEM0_API_URL, main() must dial the derived
+    <api_url>/mcp/ endpoint (not the public default) with Token auth."""
+    mock_client = _make_mock_client()
+    mcp_proxy = _reload_mcp_proxy(monkeypatch, tmp_path, mock_client)
+    monkeypatch.setenv("MEM0_API_URL", "http://mem0.internal:8888")
+
+    asyncio.run(mcp_proxy.main())
+
+    import mcp.client.streamable_http as sh
+
+    (endpoint,), kwargs = sh.streamablehttp_client.call_args
+    assert endpoint == "http://mem0.internal:8888/mcp/"
+    assert kwargs["headers"] == {"Authorization": "Token test-key"}
+
+
 def test_main_respects_capabilities_tools_only(monkeypatch, tmp_path):
     """When upstream only advertises tools, only tool handlers are registered."""
     mock_client = _make_mock_client(tools=True, prompts=False, resources=False, completions=False)

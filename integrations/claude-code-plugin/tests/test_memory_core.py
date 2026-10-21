@@ -4793,3 +4793,42 @@ def test_telemetry_survives_malformed_api_url(clear_url_env, monkeypatch):
 
     monkeypatch.setenv("MEM0_API_URL", "localhost:8888")
     assert telemetry._resolve_email("m0-test-key") == ""
+
+
+@pytest.mark.parametrize("bad", ["http://user:pass@", "http://:8888", "http:///path"])
+def test_api_url_rejects_hostless_value(clear_url_env, monkeypatch, bad):
+    """A URL-shaped value without a real host must raise instead of passing
+    validation and failing later (or routing somewhere unintended)."""
+    monkeypatch.setenv("MEM0_API_URL", bad)
+    with pytest.raises(ValueError, match="MEM0_API_URL must be an http:// or https:// URL"):
+        memory_core.api_url()
+
+
+@pytest.mark.parametrize(
+    "base,expected",
+    [
+        ("HTTPS://API.MEM0.AI", "https://mcp.mem0.ai/mcp/"),
+        ("https://api.mem0.ai:443", "https://mcp.mem0.ai/mcp/"),
+    ],
+)
+def test_mcp_url_public_detection_ignores_case_and_port(clear_url_env, monkeypatch, base, expected):
+    """Platform detection compares the host, not the raw netloc string."""
+    monkeypatch.setenv("MEM0_API_URL", base)
+    assert memory_core.mcp_url() == expected
+
+
+def test_config_error_does_not_echo_url_value(clear_url_env, monkeypatch):
+    """The rejection message must not contain the offending URL: it may carry
+    userinfo credentials and is surfaced to agent transcripts."""
+    monkeypatch.setenv("MEM0_API_URL", "http://user:s3cret@:8888")
+    with pytest.raises(ValueError) as excinfo:
+        memory_core.api_url()
+    assert "s3cret" not in str(excinfo.value)
+    assert "user" not in str(excinfo.value)
+
+
+def test_mcp_url_explicit_port_is_not_platform(clear_url_env, monkeypatch):
+    """A non-default port on the platform hostname is an explicit user choice
+    (proxy/gateway); the port must not be silently dropped for the public default."""
+    monkeypatch.setenv("MEM0_API_URL", "https://api.mem0.ai:8443")
+    assert memory_core.mcp_url() == "https://api.mem0.ai:8443/mcp/"

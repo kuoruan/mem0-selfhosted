@@ -381,7 +381,22 @@ def resolve_repo(cwd: str | None) -> RepoContext:
 
 def _valid_http_url(value: str) -> bool:
     parsed = urllib.parse.urlsplit(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
+
+def _url_origin(value: str) -> tuple[str | None, int | None]:
+    """Return a comparable ``(hostname, effective_port)`` pair.
+
+    The default port of the scheme is folded in, so ``https://api.mem0.ai`` and
+    ``https://api.mem0.ai:443`` are the same origin. Hostnames compare
+    case-insensitively (``urlsplit`` already lowercases them) and userinfo is
+    not part of the identity.
+    """
+    parsed = urllib.parse.urlsplit(value)
+    port = parsed.port
+    if port is None:
+        port = {"http": 80, "https": 443}.get(parsed.scheme)
+    return parsed.hostname, port
 
 
 def _configured_url(names: tuple[str, ...]) -> str:
@@ -397,7 +412,9 @@ def _configured_url(names: tuple[str, ...]) -> str:
             continue
         if _valid_http_url(value):
             return value
-        raise ValueError(f"{name} must be an http:// or https:// URL with a host (got {value!r})")
+        # Do not echo the value: a URL may carry userinfo credentials, and this
+        # message is surfaced to MCP clients/agent transcripts.
+        raise ValueError(f"{name} must be an http:// or https:// URL with a host")
     return ""
 
 
@@ -433,7 +450,7 @@ def mcp_url() -> str:
     if configured:
         return configured
     base = api_url()
-    if urllib.parse.urlsplit(base).netloc != urllib.parse.urlsplit(DEFAULT_API_URL).netloc:
+    if _url_origin(base) != _url_origin(DEFAULT_API_URL):
         return base + "/mcp/"
     return DEFAULT_MCP_URL
 

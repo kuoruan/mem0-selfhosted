@@ -22,6 +22,7 @@
       "cwd": ".",
       "env_vars": [
         "MEM0_API_KEY",
+        "MEM0_API_URL",
         "MEM0_MCP_URL"
       ]
     }

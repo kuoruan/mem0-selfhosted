@@ -301,6 +301,14 @@ def test_selfhosted_url_fails_closed_on_malformed(plugin, bad):
         backend.SelfHostedBackend("key", bad)
 
 
+def test_selfhosted_url_error_does_not_echo_credentials(plugin):
+    backend = importlib.import_module(f"{plugin.__name__}._backend")
+    with pytest.raises(ValueError) as excinfo:
+        backend.SelfHostedBackend("key", "http://user:s3cret@:8888")
+    assert "s3cret" not in str(excinfo.value)
+    assert "user" not in str(excinfo.value)
+
+
 def test_mem0_api_url_is_host_fallback(plugin, monkeypatch):
     """MEM0_HOST wins; MEM0_API_URL is the cross-plugin alias; neither set -> ''."""
     secrets = {"MEM0_HOST": "", "MEM0_API_URL": "http://selfhosted:8888"}
@@ -315,3 +323,37 @@ def test_mem0_api_url_is_host_fallback(plugin, monkeypatch):
 
     secrets["MEM0_HOST"] = secrets["MEM0_API_URL"] = ""
     assert plugin._load_config()["host"] == ""
+
+
+def test_explicit_platform_config_not_overridden_by_env_alias(plugin, monkeypatch, tmp_path):
+    """mem0.json pins ``host`` (the wizard clears it for platform mode), so an
+    ambient MEM0_API_URL must not resurrect the self-hosted backend and send the
+    platform key there."""
+    (tmp_path / "mem0.json").write_text(json.dumps({"mode": "platform", "host": ""}))
+    monkeypatch.setattr(sys.modules["hermes_constants"], "get_hermes_home", lambda: tmp_path)
+    secrets = {"MEM0_HOST": "", "MEM0_API_URL": "http://selfhosted:8888"}
+    monkeypatch.setattr(plugin, "get_secret", lambda k, default="": secrets.get(k, default))
+
+    config = plugin._load_config()
+
+    assert config["mode"] == "platform"
+    assert config["host"] == ""
+
+
+def test_env_alias_still_applies_when_file_omits_host(plugin, monkeypatch, tmp_path):
+    (tmp_path / "mem0.json").write_text(json.dumps({"mode": "platform"}))
+    monkeypatch.setattr(sys.modules["hermes_constants"], "get_hermes_home", lambda: tmp_path)
+    secrets = {"MEM0_HOST": "", "MEM0_API_URL": "http://selfhosted:8888"}
+    monkeypatch.setattr(plugin, "get_secret", lambda k, default="": secrets.get(k, default))
+
+    assert plugin._load_config()["host"] == "http://selfhosted:8888"
+
+
+def test_env_alias_applies_when_file_host_is_null(plugin, monkeypatch, tmp_path):
+    """A null host is "not set", matching the merge rule that drops None values."""
+    (tmp_path / "mem0.json").write_text(json.dumps({"mode": "platform", "host": None}))
+    monkeypatch.setattr(sys.modules["hermes_constants"], "get_hermes_home", lambda: tmp_path)
+    secrets = {"MEM0_HOST": "", "MEM0_API_URL": "http://selfhosted:8888"}
+    monkeypatch.setattr(plugin, "get_secret", lambda k, default="": secrets.get(k, default))
+
+    assert plugin._load_config()["host"] == "http://selfhosted:8888"

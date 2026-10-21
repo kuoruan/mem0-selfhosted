@@ -88,11 +88,33 @@ def _load_config() -> dict:
               # MEM0_HOST is this plugin's native variable; MEM0_API_URL is what the other Mem0
               # plugins and the self-hosted docs use, so honour it as a fallback rather than
               # silently routing a self-hosted installation to the cloud API.
-              "host": get_secret("MEM0_HOST", "") or get_secret("MEM0_API_URL", ""),
+              # Applied below only when mem0.json does not pin the key, so an explicit
+              # wizard choice (e.g. mode=platform with host cleared) is not resurrected
+              # by a stale environment variable.
+              "host": "",
               "agent_id": get_secret("MEM0_AGENT_ID", "") or "hermes", "oss": {}}
     if user_id := get_secret("MEM0_USER_ID", ""):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
         config["user_id"] = user_id
     file_cfg = read_json_or_empty(get_hermes_home() / "mem0.json")
+    # An explicit file choice wins over environment fallbacks: the setup wizard writes
+    # mode/host explicitly, so a mem0.json that pins "platform" (host cleared) must not be
+    # resurrected by a stale MEM0_API_URL in the environment. A file value of null
+    # counts as "not set" (same as a missing key). Env fallbacks only fill in
+    # keys the file does not pin.
+    env_fallbacks = {"host": get_secret("MEM0_HOST", "") or get_secret("MEM0_API_URL", "")}
+    for key, value in env_fallbacks.items():
+        if value and file_cfg.get(key) is None:
+            config[key] = value
+        elif value and file_cfg.get(key, None) == "":
+            # The file explicitly pins this key to empty (wizard's platform choice)
+            # while the environment points elsewhere: say so loudly instead of
+            # silently ignoring the env var (or silently overriding the file).
+            logger.warning(
+                "%s is set in the environment but mem0.json pins %r to empty; "
+                "the file choice wins. Re-run `hermes memory setup` or clear the "
+                "variable to change backends.",
+                "MEM0_HOST/MEM0_API_URL", key,
+            )
     config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
     # MEM0_API_KEY authenticates the Platform and self-hosted HTTP backends; pure OSS mode builds its
     # backend from the local ``oss`` config and has no platform credential to resolve, so a profile
